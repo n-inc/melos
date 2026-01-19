@@ -57,10 +57,10 @@ npx marathon --engine claude
 npx marathon --engine codex --max-iterations 10
 ```
 
-### 対話モードで watch
+### 対話モードで動作確認
 
 ```bash
-npx marathon watch --hitl
+npx marathon --hitl
 ```
 
 ### PR 対応モード
