@@ -178,7 +178,6 @@ Spec作成開始前に現在の状況を確認する。
   {
     "id": "1",
     "description": "タスクの説明（必須要件のみ）",
-    "category": "feature",
     "stepsToVerify": [
       "[auto:typecheck] 型エラーがない",
       "[browser] UIが正しく表示される"
@@ -194,7 +193,6 @@ Spec作成開始前に現在の状況を確認する。
 |-----------|------|------|
 | `id` | ○ | タスク識別子（連番またはセマンティック） |
 | `description` | ○ | タスクの説明（必須要件のみ、実装詳細は含めない） |
-| `category` | ○ | `feature`, `research`, `review-fix` のいずれか |
 | `stepsToVerify` | ○ | 検証ステップ（プレフィックス付き） |
 | `passes` | ○ | 完了フラグ（初期値: `false`） |
 
@@ -213,12 +211,6 @@ Spec作成開始前に現在の状況を確認する。
 | `[manual]` | 手動確認が必要 | `[manual] ログインフローが正常に完了する` |
 
 プレフィックスなしの場合は `[manual]` として扱う。
-
-### カテゴリの使い分け
-
-- **feature**: 通常の実装タスク
-- **research**: 調査タスク（結果は `.claude/research/` に保存）
-- **review-fix**: レビュー指摘から追加されたタスク（最優先で処理）
 
 ## 完了後
 

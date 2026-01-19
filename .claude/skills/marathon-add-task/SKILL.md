@@ -64,20 +64,10 @@ WORKTREE_ROOT=$(git rev-parse --show-toplevel)
 {
   "id": "自動採番",
   "description": "タスクの説明",
-  "category": "task",
   "stepsToVerify": ["検証ステップ"],
   "passes": false
 }
 ```
-
-**categoryの許可値（厳守）**:
-| category | 用途 |
-|----------|------|
-| `task` | 新機能、ドキュメント作成、改善など（デフォルト） |
-| `research` | 調査・リサーチタスク |
-| `review-fix` | レビュー指摘への対応 |
-
-⚠️ **注意**: 上記3つ以外の値（`docs`, `feature` 等）は使用不可。
 
 **stepsToVerifyプレフィックス**:
 | プレフィックス | 用途 |
@@ -149,7 +139,6 @@ PRD.mdにも受入基準を追記しました。
 {
   "id": "5",
   "description": "ログインに2FA（TOTP）を追加。リカバリーコード機能も含む",
-  "category": "task",
   "stepsToVerify": [
     "[auto:rspec] 2FA有効化・無効化のAPIが動作する",
     "[auto:jest] 2FA設定UIが正しく動作する",
@@ -172,7 +161,6 @@ PRD.mdにも受入基準を追記しました。
 {
   "id": "3",
   "description": "検索結果のキャッシュ実装。Redis使用、TTL設定可能",
-  "category": "task",
   "stepsToVerify": [
     "[auto:rspec] キャッシュが正しく保存・取得される",
     "[auto:rspec] TTL経過後にキャッシュが無効化される",
