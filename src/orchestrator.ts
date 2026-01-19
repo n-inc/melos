@@ -207,8 +207,11 @@ export class Orchestrator {
     }
 
     // 完了時にステータスを更新
-    this.status.status = result.success ? 'completed' : 'error';
-    await this.saveCurrentStatus();
+    // HITL pause の場合は runUnifiedLoop で既に paused を設定済みなので上書きしない
+    if (result.reason !== 'hitl_pause') {
+      this.status.status = result.success ? 'completed' : 'error';
+      await this.saveCurrentStatus();
+    }
 
     return result;
   }
