@@ -120,14 +120,13 @@ export async function watchPlanFile(
     } finally {
       activeOrchestrator = null;
       running = false;
-      if (closed) {
-        return;
-      }
-      const pending = await refreshPendingTasks();
-      if (pendingRun) {
-        pendingRun = false;
-        if (pending.length > 0) {
-          await handleRun();
+      if (!closed) {
+        const pending = await refreshPendingTasks();
+        if (pendingRun) {
+          pendingRun = false;
+          if (pending.length > 0) {
+            await handleRun();
+          }
         }
       }
     }
