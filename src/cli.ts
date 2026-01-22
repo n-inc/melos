@@ -4,8 +4,8 @@
  * @module cli
  */
 
-import { Command } from 'commander';
-import { readFileSync } from 'node:fs';
+import { Command, Option } from 'commander';
+import { readFileSync, existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,6 +17,7 @@ import {
 } from './orchestrator.js';
 import type { ExecutionMode } from './state/progress.js';
 import { watchPlanFile } from './watch.js';
+import { loadConfig, type MarathonConfig } from './config/index.js';
 
 /**
  * CLI オプション
@@ -34,6 +35,12 @@ export interface CLIOptions {
   hitl?: boolean;
   /** エンジン選択 */
   engine?: EngineType;
+  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など） */
+  model?: string;
+  /** Codex 推論努力レベル */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** 開始前にリセット（スモークテスト用） */
+  dangerouslyResetBeforeStart?: boolean;
 }
 
 /**
@@ -101,8 +108,18 @@ export function createProgram(): Command {
     .option('--hitl', '対話モード（1イテレーションずつ実行）')
     .option(
       '--engine <engine>',
-      'エンジン選択 (claude | codex)',
-      'claude'
+      'エンジン選択 (claude | codex)'
+    )
+    .option(
+      '--model <model>',
+      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など）'
+    )
+    .option(
+      '--reasoning-effort <level>',
+      'Codex 推論努力レベル (low | medium | high | xhigh)'
+    )
+    .addOption(
+      new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
     )
     .helpOption('-h, --help', 'ヘルプを表示');
 
@@ -117,8 +134,15 @@ export function createProgram(): Command {
     .option('--hitl', '対話モード（1イテレーションずつ実行）')
     .option(
       '--engine <engine>',
-      'エンジン選択 (claude | codex)',
-      'claude'
+      'エンジン選択 (claude | codex)'
+    )
+    .option(
+      '--model <model>',
+      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など）'
+    )
+    .option(
+      '--reasoning-effort <level>',
+      'Codex 推論努力レベル (low | medium | high | xhigh)'
     )
     .action(async (options: CLIOptions) => {
       await handleCommandAction(() => executeWatch(options));
@@ -144,21 +168,34 @@ export async function run(argv?: string[]): Promise<void> {
  * オプションを使用して実行
  */
 export async function executeWithOptions(options: CLIOptions): Promise<void> {
+  // 設定ファイルを読み込み
+  const fileConfig = await loadConfig();
+
+  // CLI オプションと設定ファイルをマージ（CLI が優先）
+  const merged = mergeOptions(options, fileConfig);
+
   // 実行モードを決定
-  const mode = getExecutionMode(options);
+  const mode = getExecutionMode(merged);
 
   // デフォルトイテレーション数を取得
   const defaultIterations = getDefaultMaxIterations(mode);
 
   // エンジンを検証
-  const engine = validateEngine(options.engine ?? 'claude');
+  const engine = validateEngine(merged.engine ?? 'claude');
+
+  // 推論努力レベルを検証
+  const reasoningEffort = merged.reasoningEffort
+    ? validateReasoningEffort(merged.reasoningEffort)
+    : undefined;
 
   // 設定を作成
   const config = getDefaultConfig({
     mode,
-    maxIterations: options.maxIterations ?? defaultIterations,
-    hitl: options.hitl ?? false,
+    maxIterations: merged.maxIterations ?? defaultIterations,
+    hitl: merged.hitl ?? false,
     engine,
+    model: merged.model,
+    reasoningEffort,
   });
 
   // オーケストレーターを作成して実行
@@ -173,6 +210,11 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
 
   process.on('SIGINT', handleSignal);
   process.on('SIGTERM', handleSignal);
+
+  // スモークテスト用リセット（開始前）
+  if (options.dangerouslyResetBeforeStart) {
+    resetForSmokeTest();
+  }
 
   try {
     const result = await orchestrator.run();
@@ -190,14 +232,25 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
  * watch モードを実行
  */
 export async function executeWatch(options: CLIOptions): Promise<void> {
-  const engine = validateEngine(options.engine ?? 'claude');
+  // 設定ファイルを読み込み
+  const fileConfig = await loadConfig();
+
+  // CLI オプションと設定ファイルをマージ（CLI が優先）
+  const merged = mergeOptions(options, fileConfig);
+
+  const engine = validateEngine(merged.engine ?? 'claude');
   const maxIterations =
-    options.maxIterations ?? getDefaultMaxIterations('default');
+    merged.maxIterations ?? getDefaultMaxIterations('default');
+  const reasoningEffort = merged.reasoningEffort
+    ? validateReasoningEffort(merged.reasoningEffort)
+    : undefined;
 
   await watchPlanFile({
     engine,
     maxIterations,
-    hitl: options.hitl ?? false,
+    hitl: merged.hitl ?? false,
+    model: merged.model,
+    reasoningEffort,
   });
 }
 
@@ -222,4 +275,73 @@ function validateEngine(engine: string): EngineType {
     return engine;
   }
   throw new Error(`無効なエンジン: ${engine}（claude または codex を指定してください）`);
+}
+
+/**
+ * 推論努力レベルを検証
+ */
+function validateReasoningEffort(level: string): 'low' | 'medium' | 'high' | 'xhigh' {
+  if (level === 'low' || level === 'medium' || level === 'high' || level === 'xhigh') {
+    return level;
+  }
+  throw new Error(`無効な推論努力レベル: ${level}（low, medium, high, xhigh のいずれかを指定してください）`);
+}
+
+/**
+ * CLI オプションと設定ファイルをマージ（CLI が優先）
+ */
+function mergeOptions(cliOptions: CLIOptions, fileConfig: MarathonConfig): CLIOptions {
+  return {
+    ...cliOptions,
+    // CLI で明示的に指定されていない場合のみ設定ファイルの値を使用
+    engine: cliOptions.engine ?? fileConfig.engine,
+    model: cliOptions.model ?? fileConfig.model,
+    reasoningEffort: cliOptions.reasoningEffort ?? fileConfig.reasoningEffort,
+    maxIterations: cliOptions.maxIterations ?? fileConfig.maxIterations,
+    hitl: cliOptions.hitl ?? fileConfig.hitl,
+  };
+}
+
+/**
+ * スモークテスト用リセット処理
+ * PLAN.json の passes を false にリセットし、PROGRESS.md と STATUS.json を削除
+ */
+function resetForSmokeTest(): void {
+  const cwd = process.cwd();
+  const planPath = join(cwd, 'PLAN.json');
+  const progressPath = join(cwd, 'PROGRESS.md');
+  const statusPath = join(cwd, 'STATUS.json');
+
+  console.log('\n🔄 Smoke Test リセット...');
+
+  // PLAN.json をリセット
+  if (existsSync(planPath)) {
+    try {
+      const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
+      if (Array.isArray(plan)) {
+        const resetPlan = plan.map((task: { passes?: boolean }) => ({
+          ...task,
+          passes: false,
+        }));
+        writeFileSync(planPath, JSON.stringify(resetPlan, null, 2) + '\n');
+        console.log('  Reset PLAN.json');
+      }
+    } catch {
+      console.error('  Failed to reset PLAN.json');
+    }
+  }
+
+  // PROGRESS.md を削除
+  if (existsSync(progressPath)) {
+    unlinkSync(progressPath);
+    console.log('  Removed PROGRESS.md');
+  }
+
+  // STATUS.json を削除
+  if (existsSync(statusPath)) {
+    unlinkSync(statusPath);
+    console.log('  Removed STATUS.json');
+  }
+
+  console.log('\n✅ リセット完了\n');
 }
