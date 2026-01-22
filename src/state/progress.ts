@@ -40,6 +40,12 @@ export interface Progress {
   entries: IterationEntry[];
   /** Codebase Patterns セクション（オプション） */
   codebasePatterns?: string;
+  /** Current Objective セクション（オプション） */
+  currentObjective?: string;
+  /** Learnings セクション（オプション） */
+  learnings?: string;
+  /** Open Questions / Risks セクション（オプション） */
+  openQuestionsRisks?: string;
 }
 
 /**
@@ -101,13 +107,19 @@ export function parseProgress(content: string): Progress {
   // イテレーションエントリをパース
   const entries = parseIterations(lines);
 
-  // Codebase Patterns セクションをパース
+  // 各セクションをパース
   const codebasePatterns = parseCodebasePatterns(lines);
+  const currentObjective = parseCurrentObjective(lines);
+  const learnings = parseLearnings(lines);
+  const openQuestionsRisks = parseOpenQuestionsRisks(lines);
 
   return {
     header,
     entries,
     codebasePatterns,
+    currentObjective,
+    learnings,
+    openQuestionsRisks,
   };
 }
 
@@ -238,6 +250,79 @@ function parseCodebasePatterns(lines: string[]): string | undefined {
 }
 
 /**
+ * Current Objective セクションをパース
+ */
+function parseCurrentObjective(lines: string[]): string | undefined {
+  const startIndex = lines.findIndex((line) =>
+    line.startsWith('## Current Objective')
+  );
+  if (startIndex === -1) {
+    return undefined;
+  }
+
+  const contentLines: string[] = [];
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // 次の H2 セクションで終了
+    if (line.startsWith('## ')) {
+      break;
+    }
+    contentLines.push(line);
+  }
+
+  const content = contentLines.join('\n').trim();
+  return content || undefined;
+}
+
+/**
+ * Learnings セクションをパース
+ */
+function parseLearnings(lines: string[]): string | undefined {
+  const startIndex = lines.findIndex((line) => line.startsWith('## Learnings'));
+  if (startIndex === -1) {
+    return undefined;
+  }
+
+  const contentLines: string[] = [];
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // 次の H2 セクションで終了
+    if (line.startsWith('## ')) {
+      break;
+    }
+    contentLines.push(line);
+  }
+
+  const content = contentLines.join('\n').trim();
+  return content || undefined;
+}
+
+/**
+ * Open Questions / Risks セクションをパース
+ */
+function parseOpenQuestionsRisks(lines: string[]): string | undefined {
+  const startIndex = lines.findIndex((line) =>
+    line.startsWith('## Open Questions / Risks')
+  );
+  if (startIndex === -1) {
+    return undefined;
+  }
+
+  const contentLines: string[] = [];
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // 次の H2 セクションで終了
+    if (line.startsWith('## ')) {
+      break;
+    }
+    contentLines.push(line);
+  }
+
+  const content = contentLines.join('\n').trim();
+  return content || undefined;
+}
+
+/**
  * PROGRESS.md を保存する
  */
 export async function saveProgress(
@@ -264,6 +349,14 @@ export function serializeProgress(progress: Progress): string {
   lines.push(`**Max iterations**: ${progress.header.maxIterations}`);
   lines.push('');
 
+  // Current Objective セクション
+  if (progress.currentObjective) {
+    lines.push('## Current Objective');
+    lines.push('');
+    lines.push(progress.currentObjective);
+    lines.push('');
+  }
+
   // Progress Log セクション
   lines.push('## Progress Log');
   lines.push('');
@@ -283,6 +376,22 @@ export function serializeProgress(progress: Progress): string {
     lines.push('## Codebase Patterns');
     lines.push('');
     lines.push(progress.codebasePatterns);
+    lines.push('');
+  }
+
+  // Learnings セクション
+  if (progress.learnings) {
+    lines.push('## Learnings');
+    lines.push('');
+    lines.push(progress.learnings);
+    lines.push('');
+  }
+
+  // Open Questions / Risks セクション
+  if (progress.openQuestionsRisks) {
+    lines.push('## Open Questions / Risks');
+    lines.push('');
+    lines.push(progress.openQuestionsRisks);
     lines.push('');
   }
 
@@ -377,6 +486,61 @@ ${patternLine}`;
   } else {
     // パターンセクションがない場合は末尾に追加
     progress.codebasePatterns += `\n\n### 発見したパターン\n${patternLine}`;
+  }
+
+  await saveProgress(path, progress);
+  return progress;
+}
+
+/**
+ * Current Objective を設定/更新する
+ */
+export async function updateObjective(
+  path: string,
+  objective: string
+): Promise<Progress> {
+  const progress = await loadProgress(path);
+  progress.currentObjective = objective;
+  await saveProgress(path, progress);
+  return progress;
+}
+
+/**
+ * Learnings に項目を追記する
+ */
+export async function addLearning(
+  path: string,
+  learning: string
+): Promise<Progress> {
+  const progress = await loadProgress(path);
+
+  const learningLine = `- ${learning}`;
+
+  if (!progress.learnings) {
+    progress.learnings = learningLine;
+  } else {
+    progress.learnings += `\n${learningLine}`;
+  }
+
+  await saveProgress(path, progress);
+  return progress;
+}
+
+/**
+ * Open Questions / Risks に項目を追記する
+ */
+export async function addOpenQuestion(
+  path: string,
+  question: string
+): Promise<Progress> {
+  const progress = await loadProgress(path);
+
+  const questionLine = `- ${question}`;
+
+  if (!progress.openQuestionsRisks) {
+    progress.openQuestionsRisks = questionLine;
+  } else {
+    progress.openQuestionsRisks += `\n${questionLine}`;
   }
 
   await saveProgress(path, progress);

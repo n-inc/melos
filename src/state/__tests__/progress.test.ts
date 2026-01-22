@@ -11,6 +11,9 @@ import {
   addIteration,
   getCurrentIteration,
   addCodebasePattern,
+  updateObjective,
+  addLearning,
+  addOpenQuestion,
   type Progress,
   type ExecutionMode,
 } from '../progress.js';
@@ -177,6 +180,116 @@ describe('progress', () => {
       const progress = parseProgress(content);
       expect(progress.codebasePatterns).toBeUndefined();
     });
+
+    it('parses current objective correctly', () => {
+      const content = `# Marathon Progress: DEFAULT
+
+**Mode**: Default (Task → Review → PR)
+**Started**: 2026-01-17 16:15
+**Max iterations**: 30
+
+## Current Objective
+
+- Marathon v0.2.2 の安定化と機能拡張
+
+## Progress Log
+
+### Iteration 1 (2026-01-17)
+
+- Did something
+`;
+
+      const progress = parseProgress(content);
+      expect(progress.currentObjective).toBe(
+        '- Marathon v0.2.2 の安定化と機能拡張'
+      );
+    });
+
+    it('parses learnings correctly', () => {
+      const content = `# Marathon Progress: DEFAULT
+
+**Mode**: Default (Task → Review → PR)
+**Started**: 2026-01-17 16:15
+**Max iterations**: 30
+
+## Progress Log
+
+### Iteration 1 (2026-01-17)
+
+- Did something
+
+## Learnings
+
+- Codex の filterCodexOutput で ANSI コードを strip しないと Promise 検出に失敗
+- Display width ベースで truncate しないと日本語でレイアウト崩れ
+`;
+
+      const progress = parseProgress(content);
+      expect(progress.learnings).toContain('Codex の filterCodexOutput');
+      expect(progress.learnings).toContain('Display width ベース');
+    });
+
+    it('parses open questions / risks correctly', () => {
+      const content = `# Marathon Progress: DEFAULT
+
+**Mode**: Default (Task → Review → PR)
+**Started**: 2026-01-17 16:15
+**Max iterations**: 30
+
+## Progress Log
+
+### Iteration 1 (2026-01-17)
+
+- Did something
+
+## Open Questions / Risks
+
+- リファクタリング後のパフォーマンス検証が必要
+- エラーハンドリングのカバレッジ向上
+`;
+
+      const progress = parseProgress(content);
+      expect(progress.openQuestionsRisks).toContain('リファクタリング後');
+      expect(progress.openQuestionsRisks).toContain('エラーハンドリング');
+    });
+
+    it('parses all new sections together', () => {
+      const content = `# Marathon Progress: DEFAULT
+
+**Mode**: Default (Task → Review → PR)
+**Started**: 2026-01-17 16:15
+**Max iterations**: 30
+
+## Current Objective
+
+- Marathon v0.2.2 の安定化
+
+## Progress Log
+
+### Iteration 1 (2026-01-17)
+
+- タスク実行
+
+## Codebase Patterns
+
+- **エントリーポイント**: src/index.ts
+
+## Learnings
+
+- 学んだこと1
+
+## Open Questions / Risks
+
+- リスク1
+`;
+
+      const progress = parseProgress(content);
+
+      expect(progress.currentObjective).toBe('- Marathon v0.2.2 の安定化');
+      expect(progress.codebasePatterns).toContain('エントリーポイント');
+      expect(progress.learnings).toBe('- 学んだこと1');
+      expect(progress.openQuestionsRisks).toBe('- リスク1');
+    });
   });
 
   describe('serializeProgress', () => {
@@ -224,6 +337,91 @@ describe('progress', () => {
       expect(content).toContain('# Marathon Progress: CI-FIX-ONLY');
       expect(content).toContain('## Progress Log');
       expect(content).not.toContain('## Codebase Patterns');
+    });
+
+    it('serializes current objective correctly', () => {
+      const progress: Progress = {
+        header: {
+          mode: 'default',
+          started: '2026-01-17 16:15',
+          maxIterations: 30,
+        },
+        entries: [],
+        currentObjective: '- Marathon v0.2.2 の安定化',
+      };
+
+      const content = serializeProgress(progress);
+
+      expect(content).toContain('## Current Objective');
+      expect(content).toContain('- Marathon v0.2.2 の安定化');
+      // Current Objective should appear before Progress Log
+      const objectiveIndex = content.indexOf('## Current Objective');
+      const progressLogIndex = content.indexOf('## Progress Log');
+      expect(objectiveIndex).toBeLessThan(progressLogIndex);
+    });
+
+    it('serializes learnings correctly', () => {
+      const progress: Progress = {
+        header: {
+          mode: 'default',
+          started: '2026-01-17 16:15',
+          maxIterations: 30,
+        },
+        entries: [],
+        learnings: '- 学んだこと1\n- 学んだこと2',
+      };
+
+      const content = serializeProgress(progress);
+
+      expect(content).toContain('## Learnings');
+      expect(content).toContain('- 学んだこと1');
+      expect(content).toContain('- 学んだこと2');
+    });
+
+    it('serializes open questions / risks correctly', () => {
+      const progress: Progress = {
+        header: {
+          mode: 'default',
+          started: '2026-01-17 16:15',
+          maxIterations: 30,
+        },
+        entries: [],
+        openQuestionsRisks: '- リスク1',
+      };
+
+      const content = serializeProgress(progress);
+
+      expect(content).toContain('## Open Questions / Risks');
+      expect(content).toContain('- リスク1');
+    });
+
+    it('serializes sections in correct order', () => {
+      const progress: Progress = {
+        header: {
+          mode: 'default',
+          started: '2026-01-17 16:15',
+          maxIterations: 30,
+        },
+        entries: [{ iteration: 1, date: '2026-01-17', content: 'test' }],
+        codebasePatterns: '- Pattern 1',
+        currentObjective: '- Objective',
+        learnings: '- Learning',
+        openQuestionsRisks: '- Risk',
+      };
+
+      const content = serializeProgress(progress);
+
+      // Verify order: Current Objective -> Progress Log -> Codebase Patterns -> Learnings -> Open Questions
+      const objectiveIndex = content.indexOf('## Current Objective');
+      const progressLogIndex = content.indexOf('## Progress Log');
+      const patternsIndex = content.indexOf('## Codebase Patterns');
+      const learningsIndex = content.indexOf('## Learnings');
+      const risksIndex = content.indexOf('## Open Questions / Risks');
+
+      expect(objectiveIndex).toBeLessThan(progressLogIndex);
+      expect(progressLogIndex).toBeLessThan(patternsIndex);
+      expect(patternsIndex).toBeLessThan(learningsIndex);
+      expect(learningsIndex).toBeLessThan(risksIndex);
     });
   });
 
@@ -377,6 +575,63 @@ describe('progress', () => {
 
       expect(progress.codebasePatterns).toContain('Existing pattern');
       expect(progress.codebasePatterns).toContain('New pattern');
+    });
+  });
+
+  describe('updateObjective', () => {
+    it('sets current objective', async () => {
+      await initializeProgress(progressPath, 'default', 30);
+
+      const progress = await updateObjective(progressPath, '- Marathon v0.2.2 の安定化');
+
+      expect(progress.currentObjective).toBe('- Marathon v0.2.2 の安定化');
+    });
+
+    it('updates existing objective', async () => {
+      await initializeProgress(progressPath, 'default', 30);
+      await updateObjective(progressPath, '- 古い目標');
+
+      const progress = await updateObjective(progressPath, '- 新しい目標');
+
+      expect(progress.currentObjective).toBe('- 新しい目標');
+    });
+  });
+
+  describe('addLearning', () => {
+    it('adds first learning', async () => {
+      await initializeProgress(progressPath, 'default', 30);
+
+      const progress = await addLearning(progressPath, '学んだこと1');
+
+      expect(progress.learnings).toBe('- 学んだこと1');
+    });
+
+    it('appends to existing learnings', async () => {
+      await initializeProgress(progressPath, 'default', 30);
+      await addLearning(progressPath, '学んだこと1');
+
+      const progress = await addLearning(progressPath, '学んだこと2');
+
+      expect(progress.learnings).toBe('- 学んだこと1\n- 学んだこと2');
+    });
+  });
+
+  describe('addOpenQuestion', () => {
+    it('adds first open question', async () => {
+      await initializeProgress(progressPath, 'default', 30);
+
+      const progress = await addOpenQuestion(progressPath, 'リスク1');
+
+      expect(progress.openQuestionsRisks).toBe('- リスク1');
+    });
+
+    it('appends to existing questions', async () => {
+      await initializeProgress(progressPath, 'default', 30);
+      await addOpenQuestion(progressPath, 'リスク1');
+
+      const progress = await addOpenQuestion(progressPath, 'リスク2');
+
+      expect(progress.openQuestionsRisks).toBe('- リスク1\n- リスク2');
     });
   });
 });
