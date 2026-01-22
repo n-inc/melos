@@ -173,10 +173,24 @@ This prevents you from re-doing work or re-exploring the codebase unnecessarily.
 
 ---
 
-## Codebase Insights
+## PROGRESS.md のセクション
 
-実装中に発見した知見は {PROGRESS_FILE} に「## Codebase Insights」セクションを作成し、追記すること。
-後続のイテレーションや将来の開発者が恩恵を受ける情報を記録する。
+{PROGRESS_FILE} には以下のセクションを記録する。
+
+### Current Objective
+
+現在のイテレーションで達成しようとしている目標を記載。
+目標が変わった場合は更新する。
+
+```markdown
+## Current Objective
+
+- Marathon v0.2.2 の安定化と機能拡張
+```
+
+### Codebase Patterns
+
+実装中に発見した知見を記録。後続のイテレーションや将来の開発者が恩恵を受ける情報。
 
 **記録すべき3種類の情報:**
 
@@ -191,6 +205,28 @@ This prevents you from re-doing work or re-exploring the codebase unnecessarily.
 3. **コンテキスト** - コードベースのナビゲーションに役立つ情報
    - 例：「設定パネルはsrc/features/settings/SettingsPanel.tsx」
    - 例：「認証ロジックはapi/app/services/auth/に集約」
+
+### Learnings
+
+実装中に学んだこと、失敗から得た教訓、将来のガードレール候補を記録。
+
+```markdown
+## Learnings
+
+- Codex の filterCodexOutput で ANSI コードを strip しないと Promise 検出に失敗
+- Display width ベースで truncate しないと日本語でレイアウト崩れ
+```
+
+### Open Questions / Risks
+
+未解決の疑問、リスク、今後の調査が必要な事項を記録。
+
+```markdown
+## Open Questions / Risks
+
+- パフォーマンステストが未実施
+- エラーハンドリングのカバレッジ向上が必要
+```
 
 ---
 
