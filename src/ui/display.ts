@@ -202,7 +202,8 @@ export function printIterationHeader(
   totalTasks: number,
   startedAt: string,
   engine: 'claude' | 'codex',
-  prdTitle?: string | null
+  prdTitle?: string | null,
+  model?: string | null
 ): void {
   const modeName = MODE_NAMES[mode];
   const progressBar = createColoredProgressBar(completedTasks, totalTasks);
@@ -250,7 +251,7 @@ export function printIterationHeader(
     boxLine(`  ${Colors.DIM}タスク${Colors.NC}    ${truncatedTask}`),
     boxLine(`  ${Colors.DIM}進捗${Colors.NC}      [${progressBar}] ${progressPercent}%`),
     boxLine(`  ${Colors.DIM}経過${Colors.NC}      ${elapsed}`),
-    boxLine(`  ${Colors.DIM}エンジン${Colors.NC}  ${engine}`),
+    boxLine(`  ${Colors.DIM}エンジン${Colors.NC}  ${engine}${model ? ` (${model})` : ''}`),
     boxBottom(),
     ''
   );

@@ -188,13 +188,16 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     ? validateReasoningEffort(merged.reasoningEffort)
     : undefined;
 
+  // デフォルトモデルを決定（スモークテストは haiku、それ以外は opus）
+  const defaultModel = options.dangerouslyResetBeforeStart ? 'haiku' : 'opus';
+
   // 設定を作成
   const config = getDefaultConfig({
     mode,
     maxIterations: merged.maxIterations ?? defaultIterations,
     hitl: merged.hitl ?? false,
     engine,
-    model: merged.model,
+    model: merged.model ?? defaultModel,
     reasoningEffort,
   });
 
@@ -249,7 +252,7 @@ export async function executeWatch(options: CLIOptions): Promise<void> {
     engine,
     maxIterations,
     hitl: merged.hitl ?? false,
-    model: merged.model,
+    model: merged.model ?? 'opus',
     reasoningEffort,
   });
 }

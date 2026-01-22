@@ -636,7 +636,8 @@ export class Orchestrator {
       totalTasks,
       this.loopStartTime.toISOString(),
       engineType,
-      this.prdTitle
+      this.prdTitle,
+      this.config.model
     );
 
     // スピナーを開始
