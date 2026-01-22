@@ -203,7 +203,9 @@ export function printIterationHeader(
   startedAt: string,
   engine: 'claude' | 'codex',
   prdTitle?: string | null,
-  model?: string | null
+  model?: string | null,
+  thinkingBudget?: number | null,
+  reasoningEffort?: string | null
 ): void {
   const modeName = MODE_NAMES[mode];
   const progressBar = createColoredProgressBar(completedTasks, totalTasks);
@@ -247,11 +249,25 @@ export function printIterationHeader(
     lines.push(boxLine(`  ${Colors.DIM}モード${Colors.NC}    ${modeName}`));
   }
 
+  // エンジン表示を構築
+  let engineDisplay = engine;
+  if (model) {
+    engineDisplay += ` (${model})`;
+  }
+  // Claude エンジンの場合は thinking budget を表示（デフォルト: 31999）
+  if (engine === 'claude') {
+    engineDisplay += ` [thinking: ${thinkingBudget ?? 31999}]`;
+  }
+  // Codex エンジンの場合は reasoning effort を表示
+  if (engine === 'codex' && reasoningEffort) {
+    engineDisplay += ` [effort: ${reasoningEffort}]`;
+  }
+
   lines.push(
     boxLine(`  ${Colors.DIM}タスク${Colors.NC}    ${truncatedTask}`),
     boxLine(`  ${Colors.DIM}進捗${Colors.NC}      [${progressBar}] ${progressPercent}%`),
     boxLine(`  ${Colors.DIM}経過${Colors.NC}      ${elapsed}`),
-    boxLine(`  ${Colors.DIM}エンジン${Colors.NC}  ${engine}${model ? ` (${model})` : ''}`),
+    boxLine(`  ${Colors.DIM}エンジン${Colors.NC}  ${engineDisplay}`),
     boxBottom(),
     ''
   );

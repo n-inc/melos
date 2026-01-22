@@ -39,6 +39,8 @@ export interface CLIOptions {
   model?: string;
   /** Codex 推論努力レベル */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** Claude thinking budget */
+  thinkingBudget?: number;
   /** 開始前にリセット（スモークテスト用） */
   dangerouslyResetBeforeStart?: boolean;
 }
@@ -118,6 +120,11 @@ export function createProgram(): Command {
       '--reasoning-effort <level>',
       'Codex 推論努力レベル (low | medium | high | xhigh)'
     )
+    .option(
+      '--thinking-budget <number>',
+      'Claude thinking budget（1024〜31999、デフォルト: 31999）',
+      parseThinkingBudget
+    )
     .addOption(
       new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
     )
@@ -143,6 +150,11 @@ export function createProgram(): Command {
     .option(
       '--reasoning-effort <level>',
       'Codex 推論努力レベル (low | medium | high | xhigh)'
+    )
+    .option(
+      '--thinking-budget <number>',
+      'Claude thinking budget（1024〜31999、デフォルト: 31999）',
+      parseThinkingBudget
     )
     .action(async (options: CLIOptions) => {
       await handleCommandAction(() => executeWatch(options));
@@ -199,6 +211,7 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     engine,
     model: merged.model ?? defaultModel,
     reasoningEffort,
+    thinkingBudget: merged.thinkingBudget,
   });
 
   // オーケストレーターを作成して実行
@@ -254,6 +267,7 @@ export async function executeWatch(options: CLIOptions): Promise<void> {
     hitl: merged.hitl ?? false,
     model: merged.model ?? 'opus',
     reasoningEffort,
+    thinkingBudget: merged.thinkingBudget,
   });
 }
 
@@ -265,6 +279,19 @@ function parseMaxIterations(value: string): number {
   if (isNaN(num) || num < 1 || num > 1000) {
     throw new Error(
       `無効な --max-iterations: ${value}（1〜1000 の整数を指定してください）`
+    );
+  }
+  return num;
+}
+
+/**
+ * --thinking-budget オプションをパース
+ */
+function parseThinkingBudget(value: string): number {
+  const num = parseInt(value, 10);
+  if (isNaN(num) || num < 1024 || num > 31999) {
+    throw new Error(
+      `無効な --thinking-budget: ${value}（1024〜31999 の整数を指定してください）`
     );
   }
   return num;
@@ -300,6 +327,7 @@ function mergeOptions(cliOptions: CLIOptions, fileConfig: MarathonConfig): CLIOp
     engine: cliOptions.engine ?? fileConfig.engine,
     model: cliOptions.model ?? fileConfig.model,
     reasoningEffort: cliOptions.reasoningEffort ?? fileConfig.reasoningEffort,
+    thinkingBudget: cliOptions.thinkingBudget ?? fileConfig.thinkingBudget,
     maxIterations: cliOptions.maxIterations ?? fileConfig.maxIterations,
     hitl: cliOptions.hitl ?? fileConfig.hitl,
   };

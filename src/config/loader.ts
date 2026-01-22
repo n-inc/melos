@@ -27,6 +27,8 @@ export interface MarathonConfig {
   engine?: 'claude' | 'codex';
   /** HITL モード */
   hitl?: boolean;
+  /** Claude thinking budget（1024〜31999） */
+  thinkingBudget?: number;
 }
 
 /**
@@ -111,6 +113,14 @@ function validateConfig(config: MarathonConfig): MarathonConfig {
   // hitl: boolean
   if (typeof config.hitl === 'boolean') {
     validated.hitl = config.hitl;
+  }
+
+  // thinkingBudget: 1024〜31999 の整数
+  if (typeof config.thinkingBudget === 'number') {
+    const num = Math.floor(config.thinkingBudget);
+    if (num >= 1024 && num <= 31999) {
+      validated.thinkingBudget = num;
+    }
   }
 
   return validated;

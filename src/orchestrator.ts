@@ -79,6 +79,8 @@ export interface OrchestratorConfig {
   model?: string;
   /** Codex 推論努力レベル */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** Claude thinking budget（1024〜31999） */
+  thinkingBudget?: number;
   /** カスタムエンジンマップ（テスト用） */
   engines?: Map<EngineType, Engine>;
 }
@@ -366,6 +368,14 @@ export class Orchestrator {
     if (this.config.model) {
       log('CYAN', `モデル: ${this.config.model}`);
     }
+    // Claude エンジン用: thinking budget（デフォルト: 31999）
+    if (this.config.engine === 'claude') {
+      log('CYAN', `Thinking Budget: ${this.config.thinkingBudget ?? 31999}`);
+    }
+    // Codex エンジン用: reasoning effort
+    if (this.config.engine === 'codex' && this.config.reasoningEffort) {
+      log('CYAN', `Reasoning Effort: ${this.config.reasoningEffort}`);
+    }
     if (this.config.hitl) {
       log('CYAN', 'HITL モード: 有効');
     }
@@ -637,7 +647,9 @@ export class Orchestrator {
       this.loopStartTime.toISOString(),
       engineType,
       this.prdTitle,
-      this.config.model
+      this.config.model,
+      this.config.thinkingBudget,
+      this.config.reasoningEffort
     );
 
     // スピナーを開始
@@ -659,6 +671,7 @@ export class Orchestrator {
       cwd: this.config.cwd,
       model: this.config.model,
       reasoningEffort: this.config.reasoningEffort,
+      thinkingBudget: this.config.thinkingBudget,
     });
 
     // スピナーを停止

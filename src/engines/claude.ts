@@ -12,6 +12,8 @@ export interface ClaudeEngineOptions extends EngineOptions {
   printMode?: boolean;
   /** モデル名（haiku, sonnet, opus など） */
   model?: string;
+  /** Claude thinking budget（デフォルト: 31999） */
+  thinkingBudget?: number;
 }
 
 /**
@@ -36,6 +38,7 @@ export class ClaudeEngine extends Engine {
       skipPermissions = true,
       printMode = true,
       model,
+      thinkingBudget,
     } = options;
 
     const args: string[] = [];
@@ -61,7 +64,10 @@ export class ClaudeEngine extends Engine {
       const child = spawn('claude', args, {
         cwd,
         stdio: ['inherit', 'pipe', 'pipe'],
-        env: process.env,
+        env: {
+          ...process.env,
+          MAX_THINKING_TOKENS: String(thinkingBudget ?? 31999),
+        },
       });
 
       let stdout = '';

@@ -24,6 +24,8 @@ export interface EngineOptions {
   model?: string;
   /** 推論努力レベル（Codex用） */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** Claude thinking budget（1024〜31999） */
+  thinkingBudget?: number;
 }
 
 /**

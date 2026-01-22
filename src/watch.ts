@@ -24,6 +24,8 @@ export interface WatchOptions {
   model?: string;
   /** Codex 推論努力レベル */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** Claude thinking budget（1024〜31999） */
+  thinkingBudget?: number;
 }
 
 export interface WatchLogger {
@@ -66,6 +68,7 @@ export async function watchPlanFile(
     progressFile: dependencies.progressFile ?? DEFAULT_PROGRESS_FILE,
     model: options.model,
     reasoningEffort: options.reasoningEffort,
+    thinkingBudget: options.thinkingBudget,
   });
 
   const planPath = join(config.cwd, config.planFile);
