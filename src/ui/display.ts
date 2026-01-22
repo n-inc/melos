@@ -254,23 +254,24 @@ export function printIterationHeader(
   if (model) {
     engineDisplay += ` (${model})`;
   }
-  // Claude エンジンの場合は thinking budget を表示（デフォルト: 31999）
-  if (engine === 'claude') {
-    engineDisplay += ` [thinking: ${thinkingBudget ?? 31999}]`;
-  }
-  // Codex エンジンの場合は reasoning effort を表示
-  if (engine === 'codex' && reasoningEffort) {
-    engineDisplay += ` [effort: ${reasoningEffort}]`;
-  }
 
   lines.push(
     boxLine(`  ${Colors.DIM}タスク${Colors.NC}    ${truncatedTask}`),
     boxLine(`  ${Colors.DIM}進捗${Colors.NC}      [${progressBar}] ${progressPercent}%`),
     boxLine(`  ${Colors.DIM}経過${Colors.NC}      ${elapsed}`),
-    boxLine(`  ${Colors.DIM}エンジン${Colors.NC}  ${engineDisplay}`),
-    boxBottom(),
-    ''
+    boxLine(`  ${Colors.DIM}エンジン${Colors.NC}  ${engineDisplay}`)
   );
+
+  // Claude エンジンの場合は thinking budget を別行で表示
+  if (engine === 'claude') {
+    lines.push(boxLine(`  ${Colors.DIM}thinking${Colors.NC}  ${thinkingBudget ?? 31999}`));
+  }
+  // Codex エンジンの場合は reasoning effort を別行で表示
+  if (engine === 'codex' && reasoningEffort) {
+    lines.push(boxLine(`  ${Colors.DIM}effort${Colors.NC}    ${reasoningEffort}`));
+  }
+
+  lines.push(boxBottom(), '');
 
   for (const line of lines) {
     process.stderr.write(line + '\n');
