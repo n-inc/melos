@@ -138,6 +138,20 @@ export function createColoredProgressBar(
 const BOX_WIDTH = 42;
 
 /**
+ * 文字の表示幅を取得（全角=2、半角=1）
+ */
+function getCharWidth(char: string): number {
+  const code = char.charCodeAt(0);
+  if (
+    (code >= 0x3000 && code <= 0x9fff) || // CJK文字
+    (code >= 0xff00 && code <= 0xffef) // 全角英数
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+/**
  * 文字列の表示幅を計算（全角文字を考慮）
  */
 function getDisplayWidth(str: string): number {
@@ -145,18 +159,26 @@ function getDisplayWidth(str: string): number {
   const plain = str.replace(/\x1b\[[0-9;]*m/g, '');
   let width = 0;
   for (const char of plain) {
-    // 全角文字（日本語など）は幅2、それ以外は幅1
-    const code = char.charCodeAt(0);
-    if (
-      (code >= 0x3000 && code <= 0x9fff) || // CJK文字
-      (code >= 0xff00 && code <= 0xffef) // 全角英数
-    ) {
-      width += 2;
-    } else {
-      width += 1;
-    }
+    width += getCharWidth(char);
   }
   return width;
+}
+
+/**
+ * 文字列を表示幅ベースで切り詰める
+ */
+function truncateByWidth(str: string, maxWidth: number): string {
+  let width = 0;
+  let result = '';
+  for (const char of str) {
+    const charWidth = getCharWidth(char);
+    if (width + charWidth > maxWidth - 1) {
+      return result + '…';
+    }
+    width += charWidth;
+    result += char;
+  }
+  return str;
 }
 
 /**
@@ -217,18 +239,18 @@ export function printIterationHeader(
     ? `[${currentTask.id}] ${currentTask.description}`
     : '(タスク未選択)';
 
-  // タスク名が長すぎる場合は切り詰め
-  const maxTaskLen = 28;
+  // タスク名が長すぎる場合は切り詰め（表示幅ベース）
+  const maxTaskWidth = 26;
   const truncatedTask =
-    getDisplayWidth(taskDisplay) > maxTaskLen
-      ? taskDisplay.slice(0, maxTaskLen - 1) + '…'
+    getDisplayWidth(taskDisplay) > maxTaskWidth
+      ? truncateByWidth(taskDisplay, maxTaskWidth)
       : taskDisplay;
 
-  // PRD タイトルが長すぎる場合は切り詰め
-  const maxPrdLen = 28;
+  // PRD タイトルが長すぎる場合は切り詰め（表示幅ベース）
+  const maxPrdWidth = 26;
   const truncatedPrd = prdTitle
-    ? getDisplayWidth(prdTitle) > maxPrdLen
-      ? prdTitle.slice(0, maxPrdLen - 1) + '…'
+    ? getDisplayWidth(prdTitle) > maxPrdWidth
+      ? truncateByWidth(prdTitle, maxPrdWidth)
       : prdTitle
     : null;
 
