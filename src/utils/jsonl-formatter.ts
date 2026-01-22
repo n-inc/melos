@@ -8,6 +8,7 @@
 /** ANSI カラーコード */
 const COLORS = {
   green: '\x1b[32m',
+  red: '\x1b[31m',
   yellow: '\x1b[33m',
   cyan: '\x1b[36m',
   magenta: '\x1b[35m',
@@ -64,6 +65,62 @@ function truncate(str: string, maxLen: number): string {
   return cleaned.slice(0, maxLen - 3) + '...';
 }
 
+/** diff 表示の設定 */
+const DIFF_CONFIG = {
+  maxLines: 10,
+  maxLineLength: 80,
+} as const;
+
+/**
+ * 行を切り詰める（diff 表示用）
+ */
+function truncateLine(line: string, maxLen: number): string {
+  if (line.length <= maxLen) return line;
+  return line.slice(0, maxLen - 3) + '...';
+}
+
+/**
+ * Edit/Write ツールの差分を色付きでフォーマットする
+ *
+ * @param oldStr 削除されるテキスト（Edit の場合）
+ * @param newStr 追加されるテキスト
+ * @returns 差分行の配列
+ */
+function formatDiff(oldStr: string | null, newStr: string): string[] {
+  const results: string[] = [];
+  const { maxLines, maxLineLength } = DIFF_CONFIG;
+
+  // 削除行（Edit の場合のみ）
+  if (oldStr) {
+    const oldLines = oldStr.split('\n');
+    const showOldLines = oldLines.slice(0, maxLines);
+    for (const line of showOldLines) {
+      const truncated = truncateLine(line, maxLineLength);
+      results.push(`${COLORS.red}  - ${truncated}${COLORS.reset}`);
+    }
+    if (oldLines.length > maxLines) {
+      results.push(
+        `${COLORS.dim}  ...（残り${oldLines.length - maxLines}行）${COLORS.reset}`
+      );
+    }
+  }
+
+  // 追加行
+  const newLines = newStr.split('\n');
+  const showNewLines = newLines.slice(0, maxLines);
+  for (const line of showNewLines) {
+    const truncated = truncateLine(line, maxLineLength);
+    results.push(`${COLORS.green}  + ${truncated}${COLORS.reset}`);
+  }
+  if (newLines.length > maxLines) {
+    results.push(
+      `${COLORS.dim}  ...（残り${newLines.length - maxLines}行）${COLORS.reset}`
+    );
+  }
+
+  return results;
+}
+
 /**
  * Todo リストをフォーマットする
  */
@@ -88,9 +145,10 @@ function formatTodos(todos: unknown): string {
 /**
  * ツール使用をフォーマットする
  */
-function formatToolUse(block: ToolUseBlock): string {
+function formatToolUse(block: ToolUseBlock): string[] {
   const { name, input } = block;
   let summary = '';
+  let diffLines: string[] = [];
 
   switch (name) {
     case 'Bash':
@@ -101,9 +159,18 @@ function formatToolUse(block: ToolUseBlock): string {
       break;
     case 'Write':
       summary = `${input.file_path} (${(input.content as string)?.length || 0} chars)`;
+      if (input.content) {
+        diffLines = formatDiff(null, input.content as string);
+      }
       break;
     case 'Edit':
       summary = input.file_path as string;
+      if (input.old_string !== undefined && input.new_string !== undefined) {
+        diffLines = formatDiff(
+          input.old_string as string,
+          input.new_string as string
+        );
+      }
       break;
     case 'Glob':
       summary = `${input.pattern}${input.path ? ` in ${input.path}` : ''}`;
@@ -121,17 +188,18 @@ function formatToolUse(block: ToolUseBlock): string {
       summary = truncate(JSON.stringify(input), 80);
   }
 
-  return `${COLORS.yellow}TOOL[${name}]: ${summary}${COLORS.reset}`;
+  const header = `${COLORS.yellow}TOOL[${name}]: ${summary}${COLORS.reset}`;
+  return [header, ...diffLines];
 }
 
 /**
  * ストリームイベントをフォーマットする
  *
  * @param event パース済みのJSONイベント
- * @returns フォーマットされた文字列、または表示不要の場合は null
+ * @returns フォーマットされた文字列の配列、または表示不要の場合は空配列
  */
-export function formatStreamEvent(event: unknown): string | null {
-  if (!event || typeof event !== 'object') return null;
+export function formatStreamEvent(event: unknown): string[] {
+  if (!event || typeof event !== 'object') return [];
 
   const e = event as StreamEvent;
 
@@ -141,7 +209,7 @@ export function formatStreamEvent(event: unknown): string | null {
       if (block.type === 'text') {
         const text = truncate((block as TextBlock).text, 200);
         if (text) {
-          return `${COLORS.green}CLAUDE: ${text}${COLORS.reset}`;
+          return [`${COLORS.green}CLAUDE: ${text}${COLORS.reset}`];
         }
       }
       if (block.type === 'tool_use') {
@@ -155,17 +223,17 @@ export function formatStreamEvent(event: unknown): string | null {
     for (const block of e.message.content) {
       if (block.type === 'tool_result') {
         const content = truncate((block as ToolResultBlock).content, 100);
-        return `${COLORS.cyan}RESULT: ${content}${COLORS.reset}`;
+        return [`${COLORS.cyan}RESULT: ${content}${COLORS.reset}`];
       }
     }
   }
 
   // セッション完了
   if (e.type === 'result') {
-    return `${COLORS.magenta}SESSION COMPLETE${COLORS.reset}`;
+    return [`${COLORS.magenta}SESSION COMPLETE${COLORS.reset}`];
   }
 
-  return null;
+  return [];
 }
 
 /**
@@ -195,9 +263,7 @@ export class JsonlBuffer {
       try {
         const event = JSON.parse(trimmed);
         const formatted = formatStreamEvent(event);
-        if (formatted) {
-          results.push(formatted);
-        }
+        results.push(...formatted);
       } catch {
         // JSON以外の行は無視
       }
@@ -216,7 +282,7 @@ export class JsonlBuffer {
       const event = JSON.parse(this.buffer.trim());
       const formatted = formatStreamEvent(event);
       this.buffer = '';
-      return formatted ? [formatted] : [];
+      return formatted;
     } catch {
       this.buffer = '';
       return [];
