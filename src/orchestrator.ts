@@ -75,6 +75,12 @@ export interface OrchestratorConfig {
   progressFile: string;
   /** ステータスファイルパス */
   statusFile: string;
+  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など） */
+  model?: string;
+  /** Codex 推論努力レベル */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** カスタムエンジンマップ（テスト用） */
+  engines?: Map<EngineType, Engine>;
 }
 
 /**
@@ -149,9 +155,13 @@ export class Orchestrator {
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
-    this.engines = new Map();
-    this.engines.set('claude', new ClaudeEngine());
-    this.engines.set('codex', new CodexEngine());
+    if (config.engines) {
+      this.engines = config.engines;
+    } else {
+      this.engines = new Map();
+      this.engines.set('claude', new ClaudeEngine());
+      this.engines.set('codex', new CodexEngine());
+    }
     this.status = createDefaultStatus();
   }
 
@@ -353,6 +363,9 @@ export class Orchestrator {
     log('GREEN', `進捗ファイル: ${this.config.progressFile}`);
     log('YELLOW', `最大イテレーション: ${this.config.maxIterations}`);
     log('CYAN', `デフォルトエンジン: ${this.config.engine}`);
+    if (this.config.model) {
+      log('CYAN', `モデル: ${this.config.model}`);
+    }
     if (this.config.hitl) {
       log('CYAN', 'HITL モード: 有効');
     }
@@ -643,6 +656,8 @@ export class Orchestrator {
     // エンジンを実行
     const engineResult = await engine.execute(prompt, {
       cwd: this.config.cwd,
+      model: this.config.model,
+      reasoningEffort: this.config.reasoningEffort,
     });
 
     // スピナーを停止

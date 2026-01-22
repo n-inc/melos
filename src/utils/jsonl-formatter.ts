@@ -90,9 +90,12 @@ function formatDiff(oldStr: string | null, newStr: string): string[] {
   const results: string[] = [];
   const { maxLines, maxLineLength } = DIFF_CONFIG;
 
+  // \n リテラルを実際の改行に変換
+  const unescapeNewlines = (str: string) => str.replace(/\\n/g, '\n');
+
   // 削除行（Edit の場合のみ）
   if (oldStr) {
-    const oldLines = oldStr.split('\n');
+    const oldLines = unescapeNewlines(oldStr).split('\n');
     const showOldLines = oldLines.slice(0, maxLines);
     for (const line of showOldLines) {
       const truncated = truncateLine(line, maxLineLength);
@@ -106,7 +109,7 @@ function formatDiff(oldStr: string | null, newStr: string): string[] {
   }
 
   // 追加行
-  const newLines = newStr.split('\n');
+  const newLines = unescapeNewlines(newStr).split('\n');
   const showNewLines = newLines.slice(0, maxLines);
   for (const line of showNewLines) {
     const truncated = truncateLine(line, maxLineLength);
@@ -209,11 +212,11 @@ export function formatStreamEvent(event: unknown): string[] {
       if (block.type === 'text') {
         const text = truncate((block as TextBlock).text, 200);
         if (text) {
-          return [`${COLORS.green}CLAUDE: ${text}${COLORS.reset}`];
+          return [`${COLORS.green}CLAUDE: ${text}${COLORS.reset}`, ''];
         }
       }
       if (block.type === 'tool_use') {
-        return formatToolUse(block as ToolUseBlock);
+        return [...formatToolUse(block as ToolUseBlock), ''];
       }
     }
   }
@@ -223,7 +226,7 @@ export function formatStreamEvent(event: unknown): string[] {
     for (const block of e.message.content) {
       if (block.type === 'tool_result') {
         const content = truncate((block as ToolResultBlock).content, 100);
-        return [`${COLORS.cyan}RESULT: ${content}${COLORS.reset}`];
+        return [`${COLORS.cyan}RESULT: ${content}${COLORS.reset}`, ''];
       }
     }
   }

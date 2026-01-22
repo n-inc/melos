@@ -20,6 +20,10 @@ export interface WatchOptions {
   engine: EngineType;
   maxIterations?: number;
   hitl?: boolean;
+  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など） */
+  model?: string;
+  /** Codex 推論努力レベル */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 export interface WatchLogger {
@@ -60,6 +64,8 @@ export async function watchPlanFile(
     planFile: dependencies.planFile ?? DEFAULT_PLAN_FILE,
     prdFile: dependencies.prdFile ?? DEFAULT_PRD_FILE,
     progressFile: dependencies.progressFile ?? DEFAULT_PROGRESS_FILE,
+    model: options.model,
+    reasoningEffort: options.reasoningEffort,
   });
 
   const planPath = join(config.cwd, config.planFile);

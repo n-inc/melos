@@ -17,6 +17,8 @@ export interface CodexEngineOptions extends EngineOptions {
 const DEFAULT_MODEL = 'gpt-5.2-codex';
 /** デフォルト推論努力レベル */
 const DEFAULT_REASONING_EFFORT = 'xhigh';
+/** Claude 専用モデル名（Codex では無視してデフォルトを使用） */
+const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
 
 /**
  * Codex エンジン
@@ -38,10 +40,14 @@ export class CodexEngine extends Engine {
     const {
       cwd = process.cwd(),
       timeout,
-      model = DEFAULT_MODEL,
+      model: rawModel,
       reasoningEffort = DEFAULT_REASONING_EFFORT,
       execMode = true,
     } = options;
+
+    // Claude 専用モデル名が渡された場合はデフォルトを使用
+    const model =
+      rawModel && !CLAUDE_ONLY_MODELS.includes(rawModel) ? rawModel : DEFAULT_MODEL;
 
     const args: string[] = [];
 
@@ -51,6 +57,7 @@ export class CodexEngine extends Engine {
 
     args.push('-m', model);
     args.push('-c', `model_reasoning_effort=${reasoningEffort}`);
+    args.push('--dangerously-bypass-approvals-and-sandbox');
     args.push(prompt);
 
     return new Promise((resolve) => {
@@ -73,14 +80,15 @@ export class CodexEngine extends Engine {
       child.stdout?.on('data', (data: Buffer) => {
         const chunk = data.toString();
         stdout += chunk;
-        // リアルタイムで stderr に出力（ターミナル表示用）
-        process.stderr.write(chunk);
+        // スピナー行をクリアしてからリアルタイムで stderr に出力
+        process.stderr.write('\x1b[2K\r' + chunk);
       });
 
       child.stderr?.on('data', (data: Buffer) => {
         const chunk = data.toString();
         stderr += chunk;
-        process.stderr.write(chunk);
+        // スピナー行をクリアしてから出力
+        process.stderr.write('\x1b[2K\r' + chunk);
       });
 
       child.on('close', (code) => {
@@ -132,8 +140,12 @@ export class CodexEngine extends Engine {
    * - 次の "codex" が出現するか EOF まで蓄積
    * - 最後のブロックを返す
    * - マーカーが見つからない場合は元の出力をそのまま返す（フォールバック）
+   * - Promise タグがフィルタで失われた場合は追加（無限ループ防止）
    */
   private filterCodexOutput(output: string): string {
+    // Promise タグを先に抽出（フィルタで失われる可能性があるため）
+    const promiseMatch = output.match(/<promise>(COMPLETE|TASK_DONE|ESCALATE)<\/promise>/);
+
     const lines = output.split('\n');
     let currentBlock: string[] = [];
     let lastBlock: string[] = [];
@@ -162,7 +174,14 @@ export class CodexEngine extends Engine {
       return output;
     }
 
-    return lastBlock.join('\n');
+    let result = lastBlock.join('\n');
+
+    // Promise タグがフィルタで失われた場合は追加
+    if (promiseMatch && !result.includes(promiseMatch[0])) {
+      result = result + '\n' + promiseMatch[0];
+    }
+
+    return result;
   }
 
   /**
