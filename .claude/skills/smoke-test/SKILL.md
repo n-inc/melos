@@ -34,7 +34,6 @@ if [ ! -f ".smoke-test/PRD.md" ]; then
 ## 受入基準
 
 - PLAN.json の passes を true に更新する
-- <promise>COMPLETE</promise> を出力する
 PRDEOF
   echo "Created .smoke-test/PRD.md"
 fi
@@ -45,7 +44,7 @@ if [ ! -f ".smoke-test/PLAN.json" ]; then
 [
   {
     "id": "1",
-    "description": "PLAN.jsonのpasses: trueに更新し、<promise>COMPLETE</promise>を出力する",
+    "description": "PLAN.json の passes を true に更新する",
     "passes": false
   }
 ]
@@ -79,7 +78,7 @@ cat > .smoke-test/PLAN.json << 'PLANEOF'
 [
   {
     "id": "1",
-    "description": "PLAN.jsonのpasses: trueに更新し、<promise>COMPLETE</promise>を出力する",
+    "description": "PLAN.json の passes を true に更新する",
     "passes": false
   }
 ]
