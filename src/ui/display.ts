@@ -446,11 +446,38 @@ export function printIterationSummary(
 }
 
 /**
+ * 引き継ぎレポートの内容
+ */
+export interface HandoffContent {
+  /** HANDOFF.md の全内容 */
+  content: string;
+  /** ファイルパス */
+  filePath: string;
+}
+
+/**
+ * 引き継ぎレポートを表示
+ */
+export function printHandoffContent(handoff: HandoffContent): void {
+  const separator = '────────────────────────────────────────';
+
+  process.stderr.write('\n');
+  process.stderr.write(`${Colors.DIM}${separator}${Colors.NC}\n`);
+  process.stderr.write(`${Colors.CYAN}📋 引き継ぎレポート${Colors.NC}\n`);
+  process.stderr.write(`${Colors.DIM}${separator}${Colors.NC}\n`);
+  process.stderr.write('\n');
+  process.stderr.write(`${handoff.content}\n`);
+  process.stderr.write('\n');
+  process.stderr.write(`${Colors.DIM}ファイル: ${handoff.filePath}${Colors.NC}\n`);
+}
+
+/**
  * 完了メッセージを表示
  */
 export function printCompletion(
   mode: ExecutionMode,
-  totalIterations: number
+  totalIterations: number,
+  handoff?: HandoffContent | null
 ): void {
   const separator = '========================================';
   const modeName = MODE_NAMES[mode];
@@ -463,6 +490,11 @@ export function printCompletion(
   process.stderr.write(
     `${Colors.NC}合計イテレーション: ${totalIterations}${Colors.NC}\n`
   );
+
+  // 引き継ぎレポートがあれば表示
+  if (handoff) {
+    printHandoffContent(handoff);
+  }
 }
 
 /**
