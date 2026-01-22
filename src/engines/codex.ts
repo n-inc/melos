@@ -143,10 +143,13 @@ export class CodexEngine extends Engine {
    * - Promise タグがフィルタで失われた場合は追加（無限ループ防止）
    */
   private filterCodexOutput(output: string): string {
-    // Promise タグを先に抽出（フィルタで失われる可能性があるため）
-    const promiseMatch = output.match(/<promise>(COMPLETE|TASK_DONE|ESCALATE)<\/promise>/);
+    // ANSI エスケープコードを除去（カラー出力が Promise 検出を妨げる可能性があるため）
+    const cleanOutput = output.replace(/\x1b\[[0-9;]*m/g, '');
 
-    const lines = output.split('\n');
+    // Promise タグを先に抽出（フィルタで失われる可能性があるため）
+    const promiseMatch = cleanOutput.match(/<promise>(COMPLETE|TASK_DONE|ESCALATE)<\/promise>/);
+
+    const lines = cleanOutput.split('\n');
     let currentBlock: string[] = [];
     let lastBlock: string[] = [];
     let inBlock = false;
@@ -169,9 +172,9 @@ export class CodexEngine extends Engine {
       lastBlock = currentBlock;
     }
 
-    // マーカーが見つからない場合は元の出力をそのまま返す
+    // マーカーが見つからない場合は ANSI コード除去済みの出力を返す
     if (!inBlock) {
-      return output;
+      return cleanOutput;
     }
 
     let result = lastBlock.join('\n');
