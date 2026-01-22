@@ -10,6 +10,8 @@ export interface ClaudeEngineOptions extends EngineOptions {
   skipPermissions?: boolean;
   /** 出力モード: print(-p) or interactive */
   printMode?: boolean;
+  /** モデル名（haiku, sonnet, opus など） */
+  model?: string;
 }
 
 /**
@@ -33,18 +35,24 @@ export class ClaudeEngine extends Engine {
       timeout,
       skipPermissions = true,
       printMode = true,
+      model,
     } = options;
 
     const args: string[] = [];
 
     if (printMode) {
       args.push('-p');
-      // ストリーミングJSON形式で出力を取得
+      // ストリーミングJSON形式で出力を取得（--verbose が必須）
+      args.push('--verbose');
       args.push('--output-format', 'stream-json');
     }
 
     if (skipPermissions) {
       args.push('--dangerously-skip-permissions');
+    }
+
+    if (model) {
+      args.push('--model', model);
     }
 
     args.push(prompt);
@@ -75,7 +83,8 @@ export class ClaudeEngine extends Engine {
         if (jsonlBuffer) {
           const formatted = jsonlBuffer.processChunk(chunk);
           for (const line of formatted) {
-            process.stderr.write(line + '\n');
+            // スピナー行をクリアしてから出力
+            process.stderr.write('\x1b[2K\r' + line + '\n');
           }
         } else {
           // 非 printMode はそのまま出力
@@ -98,7 +107,8 @@ export class ClaudeEngine extends Engine {
         if (jsonlBuffer) {
           const remaining = jsonlBuffer.flush();
           for (const line of remaining) {
-            process.stderr.write(line + '\n');
+            // スピナー行をクリアしてから出力
+            process.stderr.write('\x1b[2K\r' + line + '\n');
           }
         }
 

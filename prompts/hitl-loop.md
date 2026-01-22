@@ -77,19 +77,15 @@ This prevents you from re-doing work or re-exploring the codebase unnecessarily.
    - Follow existing patterns in the codebase
    - Write tests for new functionality
 
-3. **Run feedback loops before committing**
-{FEEDBACK_INSTRUCTIONS}
-   - Fix ALL issues before proceeding
-
-4. **Update the plan file**
+3. **Update the plan file**
    - Set `passes: true` for the completed task
 
-5. **Append your progress to {PROGRESS_FILE}**
+4. **Append your progress to {PROGRESS_FILE}**
    - What task you completed
    - Key decisions made
    - Any blockers or notes for next iteration
 
-6. **Make a git commit**
+5. **Make a git commit**
    - Use the `git-commit` skill
 
 ---

@@ -20,6 +20,10 @@ export interface EngineOptions {
   cwd?: string;
   /** タイムアウト（ミリ秒） */
   timeout?: number;
+  /** モデル名 */
+  model?: string;
+  /** 推論努力レベル（Codex用） */
+  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 /**

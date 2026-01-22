@@ -21,7 +21,6 @@ describe('loader.ts', () => {
     maxIterations: 30,
     progressFile: 'PROGRESS.md',
     planFile: 'PLAN.json',
-    feedbackInstructions: '   - Frontend: `cd frontend && yarn typecheck`',
   };
 
   describe('substituteVariables', () => {
@@ -47,14 +46,6 @@ describe('loader.ts', () => {
       const template = 'Plan: {PLAN_FILE}';
       const result = substituteVariables(template, testVariables);
       expect(result).toBe('Plan: PLAN.json');
-    });
-
-    it('replaces {FEEDBACK_INSTRUCTIONS} placeholder', () => {
-      const template = 'Feedback:{FEEDBACK_INSTRUCTIONS}';
-      const result = substituteVariables(template, testVariables);
-      expect(result).toBe(
-        'Feedback:   - Frontend: `cd frontend && yarn typecheck`'
-      );
     });
 
     it('replaces multiple placeholders in one template', () => {
@@ -83,16 +74,6 @@ describe('loader.ts', () => {
       const template = '';
       const result = substituteVariables(template, testVariables);
       expect(result).toBe('');
-    });
-
-    it('handles empty feedback instructions', () => {
-      const variables: PromptVariables = {
-        ...testVariables,
-        feedbackInstructions: '',
-      };
-      const template = 'Feedback:{FEEDBACK_INSTRUCTIONS}';
-      const result = substituteVariables(template, variables);
-      expect(result).toBe('Feedback:');
     });
   });
 
