@@ -1,6 +1,6 @@
 {
   "name": "@n-inc/marathon",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Autonomous agent loop system",
   "license": "MIT",
   "type": "module",
@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "build": "tsc"
+    "build": "tsc",
+    "smoke-test:reset": "./scripts/smoke-test-reset.sh"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
