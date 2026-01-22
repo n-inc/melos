@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { Engine, EngineOptions, EngineResult } from './base.js';
+import { JsonlBuffer } from '../utils/jsonl-formatter.js';
 
 /**
  * Claude Code 固有のオプション
@@ -38,6 +39,8 @@ export class ClaudeEngine extends Engine {
 
     if (printMode) {
       args.push('-p');
+      // ストリーミングJSON形式で出力を取得
+      args.push('--output-format', 'stream-json');
     }
 
     if (skipPermissions) {
@@ -56,6 +59,7 @@ export class ClaudeEngine extends Engine {
       let stdout = '';
       let stderr = '';
       let timeoutId: NodeJS.Timeout | undefined;
+      const jsonlBuffer = printMode ? new JsonlBuffer() : null;
 
       if (timeout) {
         timeoutId = setTimeout(() => {
@@ -66,8 +70,17 @@ export class ClaudeEngine extends Engine {
       child.stdout?.on('data', (data: Buffer) => {
         const chunk = data.toString();
         stdout += chunk;
-        // リアルタイムで stderr に出力（ターミナル表示用）
-        process.stderr.write(chunk);
+
+        // printMode の場合は JSONL をパースしてフォーマット表示
+        if (jsonlBuffer) {
+          const formatted = jsonlBuffer.processChunk(chunk);
+          for (const line of formatted) {
+            process.stderr.write(line + '\n');
+          }
+        } else {
+          // 非 printMode はそのまま出力
+          process.stderr.write(chunk);
+        }
       });
 
       child.stderr?.on('data', (data: Buffer) => {
@@ -79,6 +92,14 @@ export class ClaudeEngine extends Engine {
       child.on('close', (code) => {
         if (timeoutId) {
           clearTimeout(timeoutId);
+        }
+
+        // バッファに残っているデータを処理
+        if (jsonlBuffer) {
+          const remaining = jsonlBuffer.flush();
+          for (const line of remaining) {
+            process.stderr.write(line + '\n');
+          }
         }
 
         const exitCode = code ?? 1;
