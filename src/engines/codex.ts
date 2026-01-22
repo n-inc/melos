@@ -73,11 +73,14 @@ export class CodexEngine extends Engine {
       child.stdout?.on('data', (data: Buffer) => {
         const chunk = data.toString();
         stdout += chunk;
+        // リアルタイムで stderr に出力（ターミナル表示用）
+        process.stderr.write(chunk);
       });
 
       child.stderr?.on('data', (data: Buffer) => {
         const chunk = data.toString();
         stderr += chunk;
+        process.stderr.write(chunk);
       });
 
       child.on('close', (code) => {

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 
 import { Engine, EngineResult } from './engines/base.js';
@@ -40,9 +41,11 @@ import {
   printCompletion,
   printNextIteration,
   printWarning,
+  printHandoffContent,
   createSpinner,
   formatElapsed,
   type Spinner,
+  type HandoffContent,
 } from './ui/display.js';
 
 /**
@@ -280,6 +283,27 @@ export class Orchestrator {
   }
 
   /**
+   * HANDOFF.md を読み込む
+   */
+  private async readHandoff(): Promise<HandoffContent | null> {
+    const handoffPath = join(this.config.cwd, 'HANDOFF.md');
+
+    if (!existsSync(handoffPath)) {
+      return null;
+    }
+
+    try {
+      const content = await readFile(handoffPath, 'utf-8');
+      return {
+        content,
+        filePath: handoffPath,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 設定を検証する
    */
   private validateConfig(): void {
@@ -379,20 +403,22 @@ export class Orchestrator {
       // Promise タイプに応じた処理
       switch (result.promiseType) {
         case 'ESCALATE':
-          this.printEscalation();
+          await this.printEscalation();
           return {
             success: false,
             completedIterations: this.currentIteration,
             reason: 'escalation',
           };
 
-        case 'COMPLETE':
-          printCompletion(this.config.mode, this.currentIteration);
+        case 'COMPLETE': {
+          const handoff = await this.readHandoff();
+          printCompletion(this.config.mode, this.currentIteration, handoff);
           return {
             success: true,
             completedIterations: this.currentIteration,
             reason: 'complete',
           };
+        }
 
         case 'TASK_DONE':
           printNextIteration();
@@ -433,6 +459,12 @@ export class Orchestrator {
     log('YELLOW', '');
     log('NC', 'イテレーション上限でループが停止しました。');
     log('NC', `進捗は保存されています: ${this.config.progressFile}`);
+
+    // HANDOFF.md の内容を表示
+    const handoff = await this.readHandoff();
+    if (handoff) {
+      printHandoffContent(handoff);
+    }
 
     return {
       success: false,
@@ -530,17 +562,24 @@ export class Orchestrator {
   /**
    * エスカレーション時のメッセージを出力
    */
-  private printEscalation(): void {
+  private async printEscalation(): Promise<void> {
     log('RED', '');
     log('RED', '========================================');
     log('RED', '⚠️  エスカレーション');
     log('RED', '========================================');
     log('RED', '');
     log('YELLOW', '人間の介入が必要な状況が発生しました。');
-    log('YELLOW', 'HANDOFF.md に詳細が記載されています。');
     log('NC', '');
     log('NC', '確認後、npx marathon で再開できます。');
     log('NC', `進捗: ${this.config.progressFile}`);
+
+    // HANDOFF.md の内容を表示
+    const handoff = await this.readHandoff();
+    if (handoff) {
+      printHandoffContent(handoff);
+    } else {
+      log('YELLOW', 'HANDOFF.md が見つかりませんでした。');
+    }
   }
 
   /**

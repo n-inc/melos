@@ -5,6 +5,8 @@ import {
   createProgressBar,
   createColoredProgressBar,
   createSpinner,
+  printHandoffContent,
+  printCompletion,
 } from '../display.js';
 
 describe('display.ts', () => {
@@ -166,6 +168,103 @@ describe('display.ts', () => {
       const output = stderrOutput.join('');
       expect(output).toContain('✗');
       expect(output).toContain('失敗しました');
+    });
+  });
+
+  describe('printHandoffContent', () => {
+    let stderrOutput: string[];
+    let originalWrite: typeof process.stderr.write;
+
+    beforeEach(() => {
+      stderrOutput = [];
+      originalWrite = process.stderr.write;
+      process.stderr.write = ((chunk: string) => {
+        stderrOutput.push(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+    });
+
+    afterEach(() => {
+      process.stderr.write = originalWrite;
+    });
+
+    test('HANDOFF.md の内容とファイルパスを表示', () => {
+      const handoff = {
+        content: '# Marathon 引き継ぎレポート\n\n**生成日時**: 2026-01-19T10:30:00Z',
+        filePath: '/Users/kmagai/project/HANDOFF.md',
+      };
+
+      printHandoffContent(handoff);
+
+      const output = stderrOutput.join('');
+      expect(output).toContain('📋 引き継ぎレポート');
+      expect(output).toContain('# Marathon 引き継ぎレポート');
+      expect(output).toContain('2026-01-19T10:30:00Z');
+      expect(output).toContain('/Users/kmagai/project/HANDOFF.md');
+    });
+
+    test('長い内容も切り捨てなしで全文表示', () => {
+      const longContent = 'A'.repeat(1000);
+      const handoff = {
+        content: longContent,
+        filePath: '/path/to/HANDOFF.md',
+      };
+
+      printHandoffContent(handoff);
+
+      const output = stderrOutput.join('');
+      expect(output).toContain(longContent);
+    });
+  });
+
+  describe('printCompletion', () => {
+    let stderrOutput: string[];
+    let originalWrite: typeof process.stderr.write;
+
+    beforeEach(() => {
+      stderrOutput = [];
+      originalWrite = process.stderr.write;
+      process.stderr.write = ((chunk: string) => {
+        stderrOutput.push(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+    });
+
+    afterEach(() => {
+      process.stderr.write = originalWrite;
+    });
+
+    test('handoff なしの場合は完了メッセージのみ表示', () => {
+      printCompletion('default', 10);
+
+      const output = stderrOutput.join('');
+      expect(output).toContain('✓ Marathon デフォルト 完了！');
+      expect(output).toContain('合計イテレーション: 10');
+      expect(output).not.toContain('引き継ぎレポート');
+    });
+
+    test('handoff がある場合は引き継ぎレポートも表示', () => {
+      const handoff = {
+        content: '# 引き継ぎ内容',
+        filePath: '/path/to/HANDOFF.md',
+      };
+
+      printCompletion('default', 10, handoff);
+
+      const output = stderrOutput.join('');
+      expect(output).toContain('✓ Marathon デフォルト 完了！');
+      expect(output).toContain('合計イテレーション: 10');
+      expect(output).toContain('📋 引き継ぎレポート');
+      expect(output).toContain('# 引き継ぎ内容');
+      expect(output).toContain('/path/to/HANDOFF.md');
+    });
+
+    test('handoff が null の場合は完了メッセージのみ表示', () => {
+      printCompletion('default', 10, null);
+
+      const output = stderrOutput.join('');
+      expect(output).toContain('✓ Marathon デフォルト 完了！');
+      expect(output).not.toContain('引き継ぎレポート');
     });
   });
 });
