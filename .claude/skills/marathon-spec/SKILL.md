@@ -28,6 +28,7 @@ Spec作成開始前に現在の状況を確認する。
 1. `PRD.md` の存在確認（worktreeルート）
 2. `PLAN.json` の存在確認（worktreeルート）
 3. `PROGRESS.md` の存在確認（worktreeルート）
+4. `HANDOFF.md` の存在確認（worktreeルート）
 
 **既存ファイルが存在する場合**:
 - 内容を読み込み、概要を抽出
@@ -35,6 +36,10 @@ Spec作成開始前に現在の状況を確認する。
   1. 既存内容に追加・拡張（既存PRDと新機能を統合した新しいPRDを生成、PLANも再生成）
   2. 既存を破棄して完全に新規作成
   3. 作業を中止（誤って実行した場合）
+
+**選択肢2「既存を破棄して完全に新規作成」の場合**:
+- `PROGRESS.md` をリセット（`# Marathon Progress\n\n**Status**: Not started` に置き換え）
+- `HANDOFF.md` が存在する場合は削除
 
 **何も存在しない場合**:
 - 「新規Spec作成を開始します」と報告
@@ -178,9 +183,9 @@ Spec作成開始前に現在の状況を確認する。
   {
     "id": "1",
     "description": "タスクの説明（必須要件のみ）",
-    "stepsToVerify": [
-      "[auto:typecheck] 型エラーがない",
-      "[browser] UIが正しく表示される"
+    "checks": [
+      { "text": "型エラーがない", "type": "auto:typecheck", "passed": false },
+      { "text": "UIが正しく表示される", "type": "browser", "passed": false, "screenshot": "" }
     ],
     "passes": false
   }
@@ -193,24 +198,46 @@ Spec作成開始前に現在の状況を確認する。
 |-----------|------|------|
 | `id` | ○ | タスク識別子（連番またはセマンティック） |
 | `description` | ○ | タスクの説明（必須要件のみ、実装詳細は含めない） |
-| `stepsToVerify` | ○ | 検証ステップ（プレフィックス付き） |
-| `passes` | ○ | 完了フラグ（初期値: `false`） |
+| `checks` | ○ | 検証項目の配列 |
+| `passes` | ○ | タスク完了フラグ（初期値: `false`） |
 
 **重要**: `description` には必須要件のみを記載。実装詳細（approach, files, hooks等）は含めない。実装時はPRD.mdを理想像として参照し、柔軟に調整する。
 
-### stepsToVerify プレフィックス
+### Check Item フィールド
 
-検証方法を明示するプレフィックスを使用：
+| フィールド | 必須 | 説明 |
+|-----------|------|------|
+| `text` | ○ | 検証内容の説明 |
+| `type` | ○ | チェックタイプ（下記参照） |
+| `passed` | ○ | 完了フラグ（初期値: `false`） |
+| `screenshot` | △ | スクリーンショット証拠のR2 URL（`browser` タイプ用） |
+| `video` | △ | 動画証拠のR2 URL（`browser` タイプ用） |
 
-| プレフィックス | 説明 | 例 |
-|---------------|------|-----|
-| `[auto:rspec]` | RSpec で自動検証 | `[auto:rspec] POST /api/auth/login が200を返す` |
-| `[auto:jest]` | Jest で自動検証 | `[auto:jest] フォームバリデーションが動作する` |
-| `[auto:typecheck]` | 型チェックで自動検証 | `[auto:typecheck] 型エラーがない` |
-| `[browser]` | agent-browser でブラウザ確認 | `[browser] ログインフォームが正しく表示される` |
-| `[manual]` | 手動確認が必要 | `[manual] ログインフローが正常に完了する` |
+### Check Types
 
-プレフィックスなしの場合は `[manual]` として扱う。
+| type | 説明 | 証拠 |
+|------|------|------|
+| `auto:rspec` | RSpec で自動検証 | 不要 |
+| `auto:jest` | Jest で自動検証 | 不要 |
+| `auto:typecheck` | 型チェックで自動検証 | 不要 |
+| `browser` | ブラウザで確認 | **必須**（`screenshot` または `video`） |
+| `manual` | 手動確認 | 不要 |
+
+### Browser Check の証拠
+
+`type: "browser"` のチェック項目は、完了時に証拠（R2 URL）が必須:
+
+```json
+{
+  "text": "ログインフォームが正しく表示される",
+  "type": "browser",
+  "passed": true,
+  "screenshot": "https://r2.example.com/evidence/login-form.png"
+}
+```
+
+- プラン作成時: `screenshot: ""` または `video: ""` を指定（どちらの証拠が必要か）
+- 検証完了時: URLを設定してから `passed: true` に
 
 ## 完了後
 

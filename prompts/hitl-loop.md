@@ -7,15 +7,55 @@
 
 ## Plan File Format
 
-プランファイルはJSON形式で `passes` フィールドを持つ:
+プランファイルはJSON形式で `passes` フィールドと `checks` フィールドを持つ:
+
 ```json
 [
-  {"id": "1", "description": "Task description", "passes": false},
-  {"id": "2", "description": "Another task", "passes": false}
+  {
+    "id": "1",
+    "description": "Task description",
+    "checks": [
+      { "text": "APIが200を返す", "type": "auto:jest", "passed": false },
+      { "text": "UIが正しく表示される", "type": "browser", "passed": false, "screenshot": "" }
+    ],
+    "passes": false
+  }
 ]
 ```
 
-- タスク完了時に `passes: false` → `passes: true` に更新
+### Check Types
+
+| type | 説明 | 証拠 |
+|------|------|------|
+| `auto:jest` | Jest で自動検証 | 不要 |
+| `auto:rspec` | RSpec で自動検証 | 不要 |
+| `auto:typecheck` | 型チェックで自動検証 | 不要 |
+| `browser` | ブラウザで確認 | **必須**（screenshot または video） |
+| `manual` | 手動確認 | 不要 |
+
+### Browser Check の証拠
+
+`type: "browser"` のチェック項目は、完了時に証拠（R2 URL）が必須:
+
+```json
+{
+  "text": "ログインフォームが表示される",
+  "type": "browser",
+  "passed": true,
+  "screenshot": "https://r2.example.com/evidence/login-form.png"
+}
+```
+
+- `screenshot`: スクリーンショットのR2 URL
+- `video`: 動画のR2 URL
+- どちらか一方が必須（空文字は無効）
+- キーがない場合は `screenshot: ""` を追加してデフォルトとする
+
+### 検証フロー
+
+- 各検証項目を順番に検証し、完了したら `passed: true` に更新
+- `browser` タイプは証拠URLを設定してから `passed: true` に
+- 全チェック完了後に `passes: true` に更新
 
 ---
 
@@ -77,15 +117,21 @@ This prevents you from re-doing work or re-exploring the codebase unnecessarily.
    - Follow existing patterns in the codebase
    - Write tests for new functionality
 
-3. **Update the plan file**
+3. **Verify checks** (if `checks` exists):
+   - 各チェック項目を順番に検証
+   - `browser` タイプは証拠（screenshot/video URL）を必ず設定
+   - 検証完了した項目は `passed: true` に更新
+   - 全チェック完了後に `passes: true` に設定
+
+4. **Update the plan file**
    - Set `passes: true` for the completed task
 
-4. **Append your progress to {PROGRESS_FILE}**
+5. **Append your progress to {PROGRESS_FILE}**
    - What task you completed
    - Key decisions made
    - Any blockers or notes for next iteration
 
-5. **Make a git commit**
+6. **Make a git commit**
    - Use the `git-commit` skill
 
 ---

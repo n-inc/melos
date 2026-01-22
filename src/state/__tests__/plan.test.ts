@@ -6,12 +6,19 @@ import {
   savePlan,
   planExists,
   updateTaskStatus,
+  updateCheckStatus,
+  updateCheckWithEvidence,
   getPendingTasks,
   getNextTask,
   isAllTasksCompleted,
+  isAllChecksPassed,
+  hasValidEvidence,
   addTasks,
+  VALID_CHECK_TYPES,
   type Plan,
   type PlanTask,
+  type CheckItem,
+  type CheckType,
 } from '../plan.js';
 
 describe('plan.ts', () => {
@@ -63,7 +70,10 @@ describe('plan.ts', () => {
         {
           id: '1',
           description: 'Task 1',
-          stepsToVerify: ['step 1', 'step 2'],
+          checks: [
+            { text: 'step 1', type: 'manual', passed: false },
+            { text: 'step 2', type: 'auto:jest', passed: false },
+          ],
           passes: false,
         },
         {
@@ -209,6 +219,384 @@ describe('plan.ts', () => {
       const updated = await addTasks(planPath, newTasks);
       expect(updated).toHaveLength(2);
       expect(updated[1].id).toBe('review-1');
+    });
+  });
+
+  describe('checks with type field', () => {
+    it('loads plan with checks correctly', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task with checks',
+          checks: [
+            { text: 'Test passes', type: 'auto:jest', passed: false },
+            { text: 'UI displays correctly', type: 'browser', passed: true, screenshot: '' },
+          ],
+          passes: false,
+        },
+      ];
+      await writeFile(planPath, JSON.stringify(plan));
+
+      const loaded = await loadPlan(planPath);
+      expect(loaded[0].checks).toHaveLength(2);
+      expect(loaded[0].checks![0].text).toBe('Test passes');
+      expect(loaded[0].checks![0].type).toBe('auto:jest');
+      expect(loaded[0].checks![0].passed).toBe(false);
+      expect(loaded[0].checks![1].type).toBe('browser');
+      expect(loaded[0].checks![1].passed).toBe(true);
+    });
+
+    it('validates checks structure', async () => {
+      // Invalid: checks item missing text
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ type: 'manual', passed: false }],
+          passes: false,
+        },
+      ]));
+      await expect(loadPlan(planPath)).rejects.toThrow(
+        'Task.checks[0].text must be a string'
+      );
+
+      // Invalid: checks item missing type
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'test', passed: false }],
+          passes: false,
+        },
+      ]));
+      await expect(loadPlan(planPath)).rejects.toThrow(
+        'Task.checks[0].type must be one of'
+      );
+
+      // Invalid: checks item invalid type
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'test', type: 'invalid', passed: false }],
+          passes: false,
+        },
+      ]));
+      await expect(loadPlan(planPath)).rejects.toThrow(
+        'Task.checks[0].type must be one of'
+      );
+
+      // Invalid: checks item missing passed
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'test', type: 'manual' }],
+          passes: false,
+        },
+      ]));
+      await expect(loadPlan(planPath)).rejects.toThrow(
+        'Task.checks[0].passed must be a boolean'
+      );
+    });
+
+    it('validates all check types', () => {
+      expect(VALID_CHECK_TYPES).toContain('auto:jest');
+      expect(VALID_CHECK_TYPES).toContain('auto:rspec');
+      expect(VALID_CHECK_TYPES).toContain('auto:typecheck');
+      expect(VALID_CHECK_TYPES).toContain('browser');
+      expect(VALID_CHECK_TYPES).toContain('manual');
+    });
+
+    it('accepts evidence fields for browser checks', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task with browser check',
+          checks: [
+            {
+              text: 'UI check',
+              type: 'browser',
+              passed: true,
+              screenshot: 'https://r2.example.com/screenshot.png',
+            },
+          ],
+          passes: false,
+        },
+      ];
+      await writeFile(planPath, JSON.stringify(plan));
+
+      const loaded = await loadPlan(planPath);
+      expect(loaded[0].checks![0].screenshot).toBe('https://r2.example.com/screenshot.png');
+    });
+
+    it('accepts video evidence field', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task with video check',
+          checks: [
+            {
+              text: 'Flow check',
+              type: 'browser',
+              passed: true,
+              video: 'https://r2.example.com/flow.mp4',
+            },
+          ],
+          passes: false,
+        },
+      ];
+      await writeFile(planPath, JSON.stringify(plan));
+
+      const loaded = await loadPlan(planPath);
+      expect(loaded[0].checks![0].video).toBe('https://r2.example.com/flow.mp4');
+    });
+
+    it('rejects non-string evidence fields', async () => {
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'test', type: 'browser', passed: false, screenshot: 123 }],
+          passes: false,
+        },
+      ]));
+      await expect(loadPlan(planPath)).rejects.toThrow(
+        'Task.checks[0].screenshot must be a string if present'
+      );
+    });
+  });
+
+  describe('updateCheckStatus', () => {
+    it('updates specific check passed status', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [
+            { text: 'check 1', type: 'manual', passed: false },
+            { text: 'check 2', type: 'manual', passed: false },
+          ],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      const updated = await updateCheckStatus(planPath, '1', 0, true);
+      expect(updated[0].checks![0].passed).toBe(true);
+      expect(updated[0].checks![1].passed).toBe(false);
+    });
+
+    it('throws error when task not found', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'check', type: 'manual', passed: false }],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      await expect(updateCheckStatus(planPath, '999', 0, true)).rejects.toThrow(
+        'Task not found: 999'
+      );
+    });
+
+    it('throws error when task has no checks', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      await expect(updateCheckStatus(planPath, '1', 0, true)).rejects.toThrow(
+        'Task 1 has no checks'
+      );
+    });
+
+    it('throws error when check index out of range', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'check', type: 'manual', passed: false }],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      await expect(updateCheckStatus(planPath, '1', 5, true)).rejects.toThrow(
+        'Check index 5 out of range for task 1'
+      );
+    });
+  });
+
+  describe('isAllChecksPassed', () => {
+    it('returns true when all checks passed', () => {
+      const task: PlanTask = {
+        id: '1',
+        description: 'Task',
+        checks: [
+          { text: 'check 1', type: 'manual', passed: true },
+          { text: 'check 2', type: 'manual', passed: true },
+        ],
+        passes: false,
+      };
+
+      expect(isAllChecksPassed(task)).toBe(true);
+    });
+
+    it('returns false when any check not passed', () => {
+      const task: PlanTask = {
+        id: '1',
+        description: 'Task',
+        checks: [
+          { text: 'check 1', type: 'manual', passed: true },
+          { text: 'check 2', type: 'manual', passed: false },
+        ],
+        passes: false,
+      };
+
+      expect(isAllChecksPassed(task)).toBe(false);
+    });
+
+    it('returns true when no checks defined', () => {
+      const task: PlanTask = {
+        id: '1',
+        description: 'Task',
+        passes: false,
+      };
+
+      expect(isAllChecksPassed(task)).toBe(true);
+    });
+
+    it('returns true when checks array is empty', () => {
+      const task: PlanTask = {
+        id: '1',
+        description: 'Task',
+        checks: [],
+        passes: false,
+      };
+
+      expect(isAllChecksPassed(task)).toBe(true);
+    });
+  });
+
+  describe('hasValidEvidence', () => {
+    it('returns true for non-browser checks', () => {
+      const check: CheckItem = { text: 'test', type: 'manual', passed: false };
+      expect(hasValidEvidence(check)).toBe(true);
+
+      const jestCheck: CheckItem = { text: 'test', type: 'auto:jest', passed: false };
+      expect(hasValidEvidence(jestCheck)).toBe(true);
+    });
+
+    it('returns false for browser check without evidence', () => {
+      const check: CheckItem = { text: 'UI check', type: 'browser', passed: false };
+      expect(hasValidEvidence(check)).toBe(false);
+    });
+
+    it('returns false for browser check with empty evidence', () => {
+      const check: CheckItem = { text: 'UI check', type: 'browser', passed: false, screenshot: '' };
+      expect(hasValidEvidence(check)).toBe(false);
+    });
+
+    it('returns true for browser check with screenshot', () => {
+      const check: CheckItem = {
+        text: 'UI check',
+        type: 'browser',
+        passed: true,
+        screenshot: 'https://r2.example.com/screenshot.png',
+      };
+      expect(hasValidEvidence(check)).toBe(true);
+    });
+
+    it('returns true for browser check with video', () => {
+      const check: CheckItem = {
+        text: 'Flow check',
+        type: 'browser',
+        passed: true,
+        video: 'https://r2.example.com/flow.mp4',
+      };
+      expect(hasValidEvidence(check)).toBe(true);
+    });
+  });
+
+  describe('updateCheckWithEvidence', () => {
+    it('updates check with screenshot evidence', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [
+            { text: 'UI check', type: 'browser', passed: false, screenshot: '' },
+          ],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      const updated = await updateCheckWithEvidence(planPath, '1', 0, {
+        screenshot: 'https://r2.example.com/screenshot.png',
+      });
+      expect(updated[0].checks![0].screenshot).toBe('https://r2.example.com/screenshot.png');
+      expect(updated[0].checks![0].passed).toBe(true);
+    });
+
+    it('updates check with video evidence', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [
+            { text: 'Flow check', type: 'browser', passed: false, video: '' },
+          ],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      const updated = await updateCheckWithEvidence(planPath, '1', 0, {
+        video: 'https://r2.example.com/flow.mp4',
+      });
+      expect(updated[0].checks![0].video).toBe('https://r2.example.com/flow.mp4');
+      expect(updated[0].checks![0].passed).toBe(true);
+    });
+
+    it('throws error when task not found', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'check', type: 'browser', passed: false }],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      await expect(
+        updateCheckWithEvidence(planPath, '999', 0, { screenshot: 'url' })
+      ).rejects.toThrow('Task not found: 999');
+    });
+
+    it('throws error when check index out of range', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'check', type: 'browser', passed: false }],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      await expect(
+        updateCheckWithEvidence(planPath, '1', 5, { screenshot: 'url' })
+      ).rejects.toThrow('Check index 5 out of range for task 1');
     });
   });
 });

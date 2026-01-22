@@ -64,19 +64,27 @@ WORKTREE_ROOT=$(git rev-parse --show-toplevel)
 {
   "id": "自動採番",
   "description": "タスクの説明",
-  "stepsToVerify": ["検証ステップ"],
+  "checks": [
+    { "text": "検証項目", "type": "manual", "passed": false }
+  ],
   "passes": false
 }
 ```
 
-**stepsToVerifyプレフィックス**:
-| プレフィックス | 用途 |
-|---------------|------|
-| `[auto:rspec]` | RSpecで自動検証 |
-| `[auto:jest]` | Jestで自動検証 |
-| `[auto:typecheck]` | 型チェック |
-| `[browser]` | ブラウザ確認 |
-| `[manual]` | 手動確認 |
+**Check Types**:
+| type | 用途 | 証拠 |
+|------|------|------|
+| `auto:rspec` | RSpecで自動検証 | 不要 |
+| `auto:jest` | Jestで自動検証 | 不要 |
+| `auto:typecheck` | 型チェック | 不要 |
+| `browser` | ブラウザ確認 | **必須**（screenshot/video） |
+| `manual` | 手動確認 | 不要 |
+
+**Browser Check の証拠**:
+`type: "browser"` の場合、`screenshot` または `video` フィールドを追加:
+```json
+{ "text": "UIが表示される", "type": "browser", "passed": false, "screenshot": "" }
+```
 </step>
 
 <step number="5" name="append_plan">
@@ -139,10 +147,10 @@ PRD.mdにも受入基準を追記しました。
 {
   "id": "5",
   "description": "ログインに2FA（TOTP）を追加。リカバリーコード機能も含む",
-  "stepsToVerify": [
-    "[auto:rspec] 2FA有効化・無効化のAPIが動作する",
-    "[auto:jest] 2FA設定UIが正しく動作する",
-    "[browser] 2FA設定フローが完了できる"
+  "checks": [
+    { "text": "2FA有効化・無効化のAPIが動作する", "type": "auto:rspec", "passed": false },
+    { "text": "2FA設定UIが正しく動作する", "type": "auto:jest", "passed": false },
+    { "text": "2FA設定フローが完了できる", "type": "browser", "passed": false, "screenshot": "" }
   ],
   "passes": false
 }
@@ -161,10 +169,10 @@ PRD.mdにも受入基準を追記しました。
 {
   "id": "3",
   "description": "検索結果のキャッシュ実装。Redis使用、TTL設定可能",
-  "stepsToVerify": [
-    "[auto:rspec] キャッシュが正しく保存・取得される",
-    "[auto:rspec] TTL経過後にキャッシュが無効化される",
-    "[manual] 検索レスポンスタイムが改善される"
+  "checks": [
+    { "text": "キャッシュが正しく保存・取得される", "type": "auto:rspec", "passed": false },
+    { "text": "TTL経過後にキャッシュが無効化される", "type": "auto:rspec", "passed": false },
+    { "text": "検索レスポンスタイムが改善される", "type": "manual", "passed": false }
   ],
   "passes": false
 }
@@ -179,7 +187,8 @@ PRD.mdにも受入基準を追記しました。
 - 自然言語入力からPLAN.jsonフォーマットへ正しく変換される
 - 既存PLAN.jsonの内容が保持され、新タスクが追記される
 - 新タスクのIDが既存最大ID + 1で自動採番される
-- stepsToVerifyに適切なプレフィックスが付与される
+- checksに適切なtypeが設定される
+- browserタイプにはscreenshot/videoフィールドが設定される
 - PRD.mdの受入基準に該当項目が追記される
 - 不明点がある場合はインタビューで確認される
 </success_criteria>

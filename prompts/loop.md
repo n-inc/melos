@@ -8,16 +8,55 @@
 
 ## Plan File Format
 
-プランファイルはJSON形式で `passes` フィールドを持つ:
+プランファイルはJSON形式で `passes` フィールドと `checks` フィールドを持つ:
 
 ```json
 [
-  {"id": "1", "description": "Task description", "passes": false},
-  {"id": "2", "description": "Another task", "passes": false}
+  {
+    "id": "1",
+    "description": "Task description",
+    "checks": [
+      { "text": "APIが200を返す", "type": "auto:jest", "passed": false },
+      { "text": "UIが正しく表示される", "type": "browser", "passed": false, "screenshot": "" }
+    ],
+    "passes": false
+  }
 ]
 ```
 
-- タスク完了時に `passes: false` → `passes: true` に更新
+### Check Types
+
+| type | 説明 | 証拠 |
+|------|------|------|
+| `auto:jest` | Jest で自動検証 | 不要 |
+| `auto:rspec` | RSpec で自動検証 | 不要 |
+| `auto:typecheck` | 型チェックで自動検証 | 不要 |
+| `browser` | ブラウザで確認 | **必須**（screenshot または video） |
+| `manual` | 手動確認 | 不要 |
+
+### Browser Check の証拠
+
+`type: "browser"` のチェック項目は、完了時に証拠（R2 URL）が必須:
+
+```json
+{
+  "text": "ログインフォームが表示される",
+  "type": "browser",
+  "passed": true,
+  "screenshot": "https://r2.example.com/evidence/login-form.png"
+}
+```
+
+- `screenshot`: スクリーンショットのR2 URL
+- `video`: 動画のR2 URL
+- どちらか一方が必須（空文字は無効）
+- キーがない場合は `screenshot: ""` を追加してデフォルトとする
+
+### 検証フロー
+
+- 各検証項目を順番に検証し、完了したら `passed: true` に更新
+- `browser` タイプは証拠URLを設定してから `passed: true` に
+- 全チェック完了後に `passes: true` に更新
 
 ---
 
@@ -72,13 +111,19 @@
    - 変更は小さく、焦点を絞る
    - 既存パターンに従う
 
-3. **Update plan file**: `passes: true` に設定
+3. **Verify checks** (if `checks` exists):
+   - 各チェック項目を順番に検証
+   - `browser` タイプは証拠（screenshot/video URL）を必ず設定
+   - 検証完了した項目は `passed: true` に更新
+   - 全チェック完了後に `passes: true` に設定
 
-4. **Record in {PROGRESS_FILE}**: 何をしたか、重要な判断
+4. **Update plan file**: `passes: true` に設定
 
-5. **Commit**: `git-commit` スキルを使用
+5. **Record in {PROGRESS_FILE}**: 何をしたか、重要な判断
 
-6. **Output `<promise>TASK_DONE</promise>`**
+6. **Commit**: `git-commit` スキルを使用
+
+7. **Output `<promise>TASK_DONE</promise>`**
 
 ---
 

@@ -335,7 +335,8 @@ function mergeOptions(cliOptions: CLIOptions, fileConfig: MarathonConfig): CLIOp
 
 /**
  * スモークテスト用リセット処理
- * PLAN.json の passes を false にリセットし、PROGRESS.md と STATUS.json を削除
+ * PLAN.json の passes と checks.passed を false にリセットし、証拠URLも空にする
+ * PROGRESS.md と STATUS.json を削除
  */
 function resetForSmokeTest(): void {
   const cwd = process.cwd();
@@ -350,9 +351,28 @@ function resetForSmokeTest(): void {
     try {
       const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
       if (Array.isArray(plan)) {
-        const resetPlan = plan.map((task: { passes?: boolean }) => ({
+        const resetPlan = plan.map((task: {
+          passes?: boolean;
+          checks?: Array<{
+            text: string;
+            type: string;
+            passed: boolean;
+            screenshot?: string;
+            video?: string;
+          }>;
+        }) => ({
           ...task,
           passes: false,
+          // checks が存在する場合は各項目の passed も false にリセット、証拠URLも空に
+          ...(task.checks && {
+            checks: task.checks.map((check) => ({
+              ...check,
+              passed: false,
+              // 証拠フィールドが存在する場合は空にリセット
+              ...(check.screenshot !== undefined && { screenshot: '' }),
+              ...(check.video !== undefined && { video: '' }),
+            })),
+          }),
         }));
         writeFileSync(planPath, JSON.stringify(resetPlan, null, 2) + '\n');
         console.log('  Reset PLAN.json');

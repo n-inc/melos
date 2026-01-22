@@ -7,6 +7,43 @@ import { existsSync } from 'node:fs';
 export type TaskEngine = 'claude' | 'codex';
 
 /**
+ * チェック項目のタイプ
+ */
+export type CheckType =
+  | 'auto:jest'      // Jest で自動検証
+  | 'auto:rspec'     // RSpec で自動検証
+  | 'auto:typecheck' // 型チェックで自動検証
+  | 'browser'        // ブラウザで確認（証拠必須）
+  | 'manual';        // 手動確認
+
+/**
+ * 有効なチェックタイプのリスト
+ */
+export const VALID_CHECK_TYPES: CheckType[] = [
+  'auto:jest',
+  'auto:rspec',
+  'auto:typecheck',
+  'browser',
+  'manual',
+];
+
+/**
+ * 検証項目
+ */
+export interface CheckItem {
+  /** 検証項目の説明 */
+  text: string;
+  /** チェックタイプ */
+  type: CheckType;
+  /** 完了フラグ */
+  passed: boolean;
+  /** スクリーンショット証拠のR2 URL（browser タイプ用） */
+  screenshot?: string;
+  /** 動画証拠のR2 URL（browser タイプ用） */
+  video?: string;
+}
+
+/**
  * PLAN.json の個別タスク
  */
 export interface PlanTask {
@@ -14,8 +51,8 @@ export interface PlanTask {
   id: string;
   /** タスクの説明 */
   description: string;
-  /** 検証ステップ */
-  stepsToVerify?: string[];
+  /** 検証項目 */
+  checks?: CheckItem[];
   /** タスク完了フラグ */
   passes: boolean;
   /** タスク実行エンジン（省略時はデフォルトエンジンを使用） */
@@ -137,13 +174,31 @@ function validateTask(task: unknown): asserts task is PlanTask {
     throw new Error('Task.description must be a string');
   }
 
-  if (t.stepsToVerify !== undefined) {
-    if (!Array.isArray(t.stepsToVerify)) {
-      throw new Error('Task.stepsToVerify must be an array if present');
+  // checks の検証
+  if (t.checks !== undefined) {
+    if (!Array.isArray(t.checks)) {
+      throw new Error('Task.checks must be an array if present');
     }
-    for (let i = 0; i < t.stepsToVerify.length; i++) {
-      if (typeof t.stepsToVerify[i] !== 'string') {
-        throw new Error(`Task.stepsToVerify[${i}] must be a string`);
+    for (let i = 0; i < t.checks.length; i++) {
+      const check = t.checks[i] as Record<string, unknown>;
+      if (typeof check !== 'object' || check === null) {
+        throw new Error(`Task.checks[${i}] must be an object`);
+      }
+      if (typeof check.text !== 'string') {
+        throw new Error(`Task.checks[${i}].text must be a string`);
+      }
+      if (typeof check.type !== 'string' || !VALID_CHECK_TYPES.includes(check.type as CheckType)) {
+        throw new Error(`Task.checks[${i}].type must be one of: ${VALID_CHECK_TYPES.join(', ')}`);
+      }
+      if (typeof check.passed !== 'boolean') {
+        throw new Error(`Task.checks[${i}].passed must be a boolean`);
+      }
+      // 証拠フィールドの検証（オプショナル）
+      if (check.screenshot !== undefined && typeof check.screenshot !== 'string') {
+        throw new Error(`Task.checks[${i}].screenshot must be a string if present`);
+      }
+      if (check.video !== undefined && typeof check.video !== 'string') {
+        throw new Error(`Task.checks[${i}].video must be a string if present`);
       }
     }
   }
@@ -158,4 +213,90 @@ function validateTask(task: unknown): asserts task is PlanTask {
   ) {
     throw new Error('Task.model must be "claude" or "codex" if present');
   }
+}
+
+/**
+ * 特定のチェック項目の状態を更新する
+ */
+export async function updateCheckStatus(
+  path: string,
+  taskId: string,
+  checkIndex: number,
+  passed: boolean
+): Promise<Plan> {
+  const plan = await loadPlan(path);
+  const task = plan.find((t) => t.id === taskId);
+
+  if (!task) {
+    throw new Error(`Task not found: ${taskId}`);
+  }
+
+  if (!task.checks) {
+    throw new Error(`Task ${taskId} has no checks`);
+  }
+
+  if (checkIndex < 0 || checkIndex >= task.checks.length) {
+    throw new Error(`Check index ${checkIndex} out of range for task ${taskId}`);
+  }
+
+  task.checks[checkIndex].passed = passed;
+  await savePlan(path, plan);
+  return plan;
+}
+
+/**
+ * タスクのすべてのチェック項目が完了しているか確認
+ */
+export function isAllChecksPassed(task: PlanTask): boolean {
+  if (!task.checks || task.checks.length === 0) {
+    return true;
+  }
+  return task.checks.every((check) => check.passed);
+}
+
+/**
+ * browser タイプのチェックが有効な証拠を持っているか判定
+ */
+export function hasValidEvidence(check: CheckItem): boolean {
+  if (check.type !== 'browser') {
+    return true; // browser 以外は証拠不要
+  }
+  return !!(check.screenshot || check.video);
+}
+
+/**
+ * チェック項目を証拠付きで更新
+ */
+export async function updateCheckWithEvidence(
+  path: string,
+  taskId: string,
+  checkIndex: number,
+  evidence: { screenshot?: string; video?: string }
+): Promise<Plan> {
+  const plan = await loadPlan(path);
+  const task = plan.find((t) => t.id === taskId);
+
+  if (!task) {
+    throw new Error(`Task not found: ${taskId}`);
+  }
+
+  if (!task.checks) {
+    throw new Error(`Task ${taskId} has no checks`);
+  }
+
+  if (checkIndex < 0 || checkIndex >= task.checks.length) {
+    throw new Error(`Check index ${checkIndex} out of range for task ${taskId}`);
+  }
+
+  const check = task.checks[checkIndex];
+  if (evidence.screenshot) {
+    check.screenshot = evidence.screenshot;
+  }
+  if (evidence.video) {
+    check.video = evidence.video;
+  }
+  check.passed = true;
+
+  await savePlan(path, plan);
+  return plan;
 }
