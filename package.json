@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "build": "tsc"
+    "build": "tsc",
+    "smoke-test:reset": "./scripts/smoke-test-reset.sh"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
