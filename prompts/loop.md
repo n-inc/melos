@@ -6,23 +6,6 @@
 
 ---
 
-## 品質ゲート（コミット前必須）
-
-タスクを完了（`passes: true`）としてマークする前に、以下を必ず実行:
-
-1. **型チェック**: `cd frontend && bun run typecheck` / `cd api && bundle exec srb tc`
-2. **テスト**: 関連するテストが全てパス
-3. **Lint**: `cd frontend && bun run lint` / `cd api && bundle exec rubocop --format simple`
-4. **UI変更時**: `browser-test` スキルでスクリーンショット確認
-
-**重要**: 品質ゲートが失敗した場合:
-- ❌ コミットしない
-- ❌ `passes: true` にしない
-- ✅ {PROGRESS_FILE} に失敗内容と試行した修正を記録
-- ✅ `<promise>TASK_DONE</promise>` を出力して次のイテレーションで再試行
-
----
-
 ## Plan File Format
 
 プランファイルはJSON形式で `passes` フィールドを持つ:
@@ -89,17 +72,13 @@
    - 変更は小さく、焦点を絞る
    - 既存パターンに従う
 
-3. **Run feedback loops**
-{FEEDBACK_INSTRUCTIONS}
-   - 次に進む前にすべての問題を修正
+3. **Update plan file**: `passes: true` に設定
 
-4. **Update plan file**: `passes: true` に設定
+4. **Record in {PROGRESS_FILE}**: 何をしたか、重要な判断
 
-5. **Record in {PROGRESS_FILE}**: 何をしたか、重要な判断
+5. **Commit**: `git-commit` スキルを使用
 
-6. **Commit**: `git-commit` スキルを使用
-
-7. **Output `<promise>TASK_DONE</promise>`**
+6. **Output `<promise>TASK_DONE</promise>`**
 
 ---
 

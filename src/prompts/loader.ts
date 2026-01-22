@@ -15,8 +15,6 @@ export interface PromptVariables {
   progressFile: string;
   /** プランファイルパス */
   planFile: string;
-  /** フィードバック命令 */
-  feedbackInstructions: string;
 }
 
 /**
@@ -67,7 +65,6 @@ export function getPromptPath(promptType: PromptType): string {
  * - {MAX_ITERATIONS} -> variables.maxIterations
  * - {PROGRESS_FILE} -> variables.progressFile
  * - {PLAN_FILE} -> variables.planFile
- * - {FEEDBACK_INSTRUCTIONS} -> variables.feedbackInstructions
  */
 export function substituteVariables(
   template: string,
@@ -82,10 +79,6 @@ export function substituteVariables(
   );
   result = result.replaceAll('{PROGRESS_FILE}', variables.progressFile);
   result = result.replaceAll('{PLAN_FILE}', variables.planFile);
-  result = result.replaceAll(
-    '{FEEDBACK_INSTRUCTIONS}',
-    variables.feedbackInstructions
-  );
 
   return result;
 }

@@ -33,10 +33,6 @@ import {
   type PromptVariables,
   type PromptType,
 } from './prompts/loader.js';
-import {
-  detectFeedbackLoops,
-  buildFeedbackInstructions,
-} from './utils/feedback.js';
 import { detectPromise, type PromiseType } from './utils/promise.js';
 import {
   printIterationHeader,
@@ -186,19 +182,11 @@ export class Orchestrator {
       this.prdTitle = await extractPrdTitle(prdPath);
     }
 
-    // フィードバックループを検出
-    const feedbackLoops = await detectFeedbackLoops(
-      this.config.planFile,
-      'main',
-      this.config.cwd
-    );
-    const feedbackInstructions = buildFeedbackInstructions(feedbackLoops);
-
-    this.printConfig(feedbackInstructions);
+    this.printConfig();
     await this.logPlannedWork();
 
     // 統一ループを実行
-    const result = await this.runUnifiedLoop(feedbackInstructions);
+    const result = await this.runUnifiedLoop();
 
     if (result.success && result.reason === 'complete') {
       this.notifyCompletion();
@@ -328,7 +316,7 @@ export class Orchestrator {
   /**
    * 設定を出力する
    */
-  private printConfig(feedbackInstructions: string): void {
+  private printConfig(): void {
     // PRD タイトルを優先的に表示
     if (this.prdTitle) {
       log('CYAN', `PRD: ${this.prdTitle}`);
@@ -341,7 +329,6 @@ export class Orchestrator {
     log('GREEN', `進捗ファイル: ${this.config.progressFile}`);
     log('YELLOW', `最大イテレーション: ${this.config.maxIterations}`);
     log('CYAN', `デフォルトエンジン: ${this.config.engine}`);
-    log('YELLOW', `フィードバック: ${feedbackInstructions ? '検出済み' : 'なし'}`);
     if (this.config.hitl) {
       log('CYAN', 'HITL モード: 有効');
     }
@@ -362,7 +349,7 @@ export class Orchestrator {
    *    - 問題あり → タスク追加して続行
    *    - 問題なし → 完了
    */
-  private async runUnifiedLoop(feedbackInstructions: string): Promise<LoopResult> {
+  private async runUnifiedLoop(): Promise<LoopResult> {
     const max = this.config.maxIterations;
     const sessionIterations = () => this.currentIteration - this.startIteration;
 
@@ -387,11 +374,7 @@ export class Orchestrator {
       }
 
       // イテレーション実行
-      const result = await this.runIteration(
-        promptType,
-        feedbackInstructions,
-        max
-      );
+      const result = await this.runIteration(promptType, max);
 
       // Promise タイプに応じた処理
       switch (result.promiseType) {
@@ -565,7 +548,6 @@ export class Orchestrator {
    */
   private async runIteration(
     promptType: PromptType,
-    feedbackInstructions: string,
     maxIterations: number
   ): Promise<IterationResult> {
     const iterationStartTime = new Date();
@@ -617,11 +599,7 @@ export class Orchestrator {
     await this.saveCurrentStatus();
 
     // プロンプトを生成
-    const prompt = await this.buildPrompt(
-      promptType,
-      feedbackInstructions,
-      maxIterations
-    );
+    const prompt = await this.buildPrompt(promptType, maxIterations);
 
     // エンジンを実行
     const engineResult = await engine.execute(prompt, {
@@ -751,7 +729,6 @@ export class Orchestrator {
    */
   private async buildPrompt(
     promptType: PromptType,
-    feedbackInstructions: string,
     maxIterations: number
   ): Promise<string> {
     const variables: PromptVariables = {
@@ -759,7 +736,6 @@ export class Orchestrator {
       maxIterations,
       progressFile: this.config.progressFile,
       planFile: this.config.planFile,
-      feedbackInstructions,
     };
 
     return loadPrompt(promptType, variables);
