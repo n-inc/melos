@@ -5,5 +5,5 @@ export {
   loadConfig,
   loadConfigSync,
   CONFIG_FILE_NAME,
-  type MarathonConfig,
+  type MelosConfig,
 } from './loader.js';

@@ -1,4 +1,4 @@
-## Marathon 統一ループ - イテレーション {ITERATION} / {MAX_ITERATIONS}
+## Melos 統一ループ - イテレーション {ITERATION} / {MAX_ITERATIONS}
 
 **PRD**: @PRD.md
 **Plan file**: @{PLAN_FILE}
@@ -198,7 +198,7 @@
 ```markdown
 ## Current Objective
 
-- Marathon v0.2.2 の安定化と機能拡張
+- Melos v0.2.2 の安定化と機能拡張
 ```
 
 ### Codebase Patterns
@@ -285,7 +285,7 @@
 **HANDOFF.mdの構成**:
 
 ```markdown
-# Marathon 引き継ぎレポート
+# Melos 引き継ぎレポート
 
 **生成日時**: {現在日時}
 **終了理由**: {正常完了 | エスカレーション | 上限到達}

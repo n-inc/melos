@@ -1,13 +1,13 @@
 ---
 name: smoke-test
-description: リリース前にMarathonが実際に動作することを確認する最小動作確認テスト。実際のClaude CLIを使用して約$0.02-0.03のコストで30-70秒で完了。
+description: リリース前にMelosが実際に動作することを確認する最小動作確認テスト。実際のClaude CLIを使用して約$0.02-0.03のコストで30-70秒で完了。
 ---
 
 # Smoke Test
 
 ## 概要
 
-このスキルは、リリース前に Marathon が実際に動作することを確認するための最小動作確認テストを実行する。
+このスキルは、リリース前に Melos が実際に動作することを確認するための最小動作確認テストを実行する。
 
 実際の Claude CLI を呼び出すため、API コスト（約 $0.02-0.03）が発生する。
 
@@ -86,13 +86,13 @@ PLANEOF
 echo "Reset PLAN.json passes to false"
 ```
 
-### 4. Marathon 実行
+### 4. Melos 実行
 
-最小イテレーション（2回）で Marathon を実行する。
+最小イテレーション（2回）で Melos を実行する。
 
 ```bash
-# .smoke-test/.marathon.json で model: haiku, maxIterations: 2 がデフォルト設定済み
-cd .smoke-test && npx marathon
+# .smoke-test/.melos.json で model: haiku, maxIterations: 2 がデフォルト設定済み
+cd .smoke-test && npx melos
 ```
 
 ### 5. 結果の確認
@@ -115,7 +115,7 @@ cat .smoke-test/PLAN.json | jq '.[0].passes'
 ```
 ✅ Smoke Test 成功
 
-Marathon は正常に動作しています。
+Melos は正常に動作しています。
 - 終了理由: COMPLETE
 - PLAN.json passes: true
 - 所要時間: 約45秒
@@ -129,7 +129,7 @@ Marathon は正常に動作しています。
 ```
 ❌ Smoke Test 失敗
 
-Marathon の動作に問題があります。
+Melos の動作に問題があります。
 - 終了理由: max_iterations
 - PLAN.json passes: false
 

@@ -23,7 +23,7 @@ describe('progress', () => {
   let progressPath: string;
 
   beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), 'marathon-progress-test-'));
+    tempDir = await mkdtemp(join(tmpdir(), 'melos-progress-test-'));
     progressPath = join(tempDir, 'PROGRESS.md');
   });
 
@@ -44,7 +44,7 @@ describe('progress', () => {
 
   describe('parseProgress', () => {
     it('parses header correctly', () => {
-      const content = `# Marathon Progress: DEFAULT
+      const content = `# Melos Progress: DEFAULT
 
 **Mode**: Default (Task → Review → PR)
 **Started**: 2026-01-17 16:15
@@ -61,7 +61,7 @@ describe('progress', () => {
     });
 
     it('parses CI fix only mode correctly', () => {
-      const content = `# Marathon Progress: CI-FIX-ONLY
+      const content = `# Melos Progress: CI-FIX-ONLY
 
 **Mode**: CI Fix Only
 **Started**: 2026-01-17 10:00
@@ -75,7 +75,7 @@ describe('progress', () => {
     });
 
     it('parses task only mode correctly', () => {
-      const content = `# Marathon Progress: TASK-ONLY
+      const content = `# Melos Progress: TASK-ONLY
 
 **Mode**: Task Only
 **Started**: 2026-01-17 10:00
@@ -89,7 +89,7 @@ describe('progress', () => {
     });
 
     it('parses review only mode correctly', () => {
-      const content = `# Marathon Progress: REVIEW-ONLY
+      const content = `# Melos Progress: REVIEW-ONLY
 
 **Mode**: Review Only
 **Started**: 2026-01-17 10:00
@@ -103,7 +103,7 @@ describe('progress', () => {
     });
 
     it('parses iteration entries correctly', () => {
-      const content = `# Marathon Progress: DEFAULT
+      const content = `# Melos Progress: DEFAULT
 
 **Mode**: Default (Task → Review → PR)
 **Started**: 2026-01-17 16:15
@@ -136,7 +136,7 @@ describe('progress', () => {
     });
 
     it('parses codebase patterns correctly', () => {
-      const content = `# Marathon Progress: DEFAULT
+      const content = `# Melos Progress: DEFAULT
 
 **Mode**: Default (Task → Review → PR)
 **Started**: 2026-01-17 16:15
@@ -164,7 +164,7 @@ describe('progress', () => {
     });
 
     it('handles missing codebase patterns section', () => {
-      const content = `# Marathon Progress: DEFAULT
+      const content = `# Melos Progress: DEFAULT
 
 **Mode**: Default (Task → Review → PR)
 **Started**: 2026-01-17 16:15
@@ -182,7 +182,7 @@ describe('progress', () => {
     });
 
     it('parses current objective correctly', () => {
-      const content = `# Marathon Progress: DEFAULT
+      const content = `# Melos Progress: DEFAULT
 
 **Mode**: Default (Task → Review → PR)
 **Started**: 2026-01-17 16:15
@@ -190,7 +190,7 @@ describe('progress', () => {
 
 ## Current Objective
 
-- Marathon v0.2.2 の安定化と機能拡張
+- Melos v0.2.2 の安定化と機能拡張
 
 ## Progress Log
 
@@ -201,12 +201,12 @@ describe('progress', () => {
 
       const progress = parseProgress(content);
       expect(progress.currentObjective).toBe(
-        '- Marathon v0.2.2 の安定化と機能拡張'
+        '- Melos v0.2.2 の安定化と機能拡張'
       );
     });
 
     it('parses learnings correctly', () => {
-      const content = `# Marathon Progress: DEFAULT
+      const content = `# Melos Progress: DEFAULT
 
 **Mode**: Default (Task → Review → PR)
 **Started**: 2026-01-17 16:15
@@ -230,7 +230,7 @@ describe('progress', () => {
     });
 
     it('parses open questions / risks correctly', () => {
-      const content = `# Marathon Progress: DEFAULT
+      const content = `# Melos Progress: DEFAULT
 
 **Mode**: Default (Task → Review → PR)
 **Started**: 2026-01-17 16:15
@@ -254,7 +254,7 @@ describe('progress', () => {
     });
 
     it('parses all new sections together', () => {
-      const content = `# Marathon Progress: DEFAULT
+      const content = `# Melos Progress: DEFAULT
 
 **Mode**: Default (Task → Review → PR)
 **Started**: 2026-01-17 16:15
@@ -262,7 +262,7 @@ describe('progress', () => {
 
 ## Current Objective
 
-- Marathon v0.2.2 の安定化
+- Melos v0.2.2 の安定化
 
 ## Progress Log
 
@@ -285,7 +285,7 @@ describe('progress', () => {
 
       const progress = parseProgress(content);
 
-      expect(progress.currentObjective).toBe('- Marathon v0.2.2 の安定化');
+      expect(progress.currentObjective).toBe('- Melos v0.2.2 の安定化');
       expect(progress.codebasePatterns).toContain('エントリーポイント');
       expect(progress.learnings).toBe('- 学んだこと1');
       expect(progress.openQuestionsRisks).toBe('- リスク1');
@@ -312,7 +312,7 @@ describe('progress', () => {
 
       const content = serializeProgress(progress);
 
-      expect(content).toContain('# Marathon Progress: DEFAULT');
+      expect(content).toContain('# Melos Progress: DEFAULT');
       expect(content).toContain('**Mode**: Default');
       expect(content).toContain('**Started**: 2026-01-17 16:15');
       expect(content).toContain('**Max iterations**: 30');
@@ -334,7 +334,7 @@ describe('progress', () => {
 
       const content = serializeProgress(progress);
 
-      expect(content).toContain('# Marathon Progress: CI-FIX-ONLY');
+      expect(content).toContain('# Melos Progress: CI-FIX-ONLY');
       expect(content).toContain('## Progress Log');
       expect(content).not.toContain('## Codebase Patterns');
     });
@@ -347,13 +347,13 @@ describe('progress', () => {
           maxIterations: 30,
         },
         entries: [],
-        currentObjective: '- Marathon v0.2.2 の安定化',
+        currentObjective: '- Melos v0.2.2 の安定化',
       };
 
       const content = serializeProgress(progress);
 
       expect(content).toContain('## Current Objective');
-      expect(content).toContain('- Marathon v0.2.2 の安定化');
+      expect(content).toContain('- Melos v0.2.2 の安定化');
       // Current Objective should appear before Progress Log
       const objectiveIndex = content.indexOf('## Current Objective');
       const progressLogIndex = content.indexOf('## Progress Log');
@@ -475,7 +475,7 @@ describe('progress', () => {
 
       // ファイルが作成されていることを確認
       const content = await readFile(progressPath, 'utf-8');
-      expect(content).toContain('# Marathon Progress: DEFAULT');
+      expect(content).toContain('# Melos Progress: DEFAULT');
     });
 
     it('creates ci-fix-only mode correctly', async () => {
@@ -582,9 +582,9 @@ describe('progress', () => {
     it('sets current objective', async () => {
       await initializeProgress(progressPath, 'default', 30);
 
-      const progress = await updateObjective(progressPath, '- Marathon v0.2.2 の安定化');
+      const progress = await updateObjective(progressPath, '- Melos v0.2.2 の安定化');
 
-      expect(progress.currentObjective).toBe('- Marathon v0.2.2 の安定化');
+      expect(progress.currentObjective).toBe('- Melos v0.2.2 の安定化');
     });
 
     it('updates existing objective', async () => {

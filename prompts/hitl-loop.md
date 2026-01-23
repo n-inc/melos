@@ -1,4 +1,4 @@
-## Marathon 統一ループ（HITL）
+## Melos 統一ループ（HITL）
 
 **Plan file**: @{PLAN_FILE}
 **Progress file**: @{PROGRESS_FILE}
@@ -183,7 +183,7 @@ This prevents you from re-doing work or re-exploring the codebase unnecessarily.
 
 次のステップ:
   - 変更内容を確認
-  - 問題なければ再実行: marathon --hitl
+  - 問題なければ再実行: melos --hitl
 ```
 
 ### If ALL tasks complete AND review passes AND PR OK:
@@ -231,7 +231,7 @@ This prevents you from re-doing work or re-exploring the codebase unnecessarily.
 ```markdown
 ## Current Objective
 
-- Marathon v0.2.2 の安定化と機能拡張
+- Melos v0.2.2 の安定化と機能拡張
 ```
 
 ### Codebase Patterns
@@ -294,7 +294,7 @@ This prevents you from re-doing work or re-exploring the codebase unnecessarily.
 **HANDOFF.mdの構成**:
 
 ```markdown
-# Marathon 引き継ぎレポート
+# Melos 引き継ぎレポート
 
 **生成日時**: {現在日時}
 **終了理由**: {正常完了 | エスカレーション | 上限到達}

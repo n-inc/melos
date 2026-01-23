@@ -16,7 +16,7 @@ import {
   updateGitState,
   updateTaskProgress,
   clearStatus,
-  type MarathonStatus,
+  type MelosStatus,
   type GitState,
 } from '../status.js';
 
@@ -25,7 +25,7 @@ describe('status.ts', () => {
   let statusPath: string;
 
   beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), 'marathon-status-test-'));
+    tempDir = await mkdtemp(join(tmpdir(), 'melos-status-test-'));
     statusPath = join(tempDir, 'STATUS.json');
   });
 
@@ -84,7 +84,7 @@ describe('status.ts', () => {
         fetchedAt: new Date().toISOString(),
       };
 
-      const status: MarathonStatus = {
+      const status: MelosStatus = {
         ...createDefaultStatus(),
         iteration: 5,
         maxIterations: 10,

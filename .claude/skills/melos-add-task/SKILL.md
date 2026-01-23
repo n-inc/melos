@@ -1,6 +1,6 @@
 ---
-name: marathon-add-task
-description: 自然言語でMarathonタスクを追加。PLAN.jsonへの変換・追記とPRD.md受入基準の自動追記を行う。タスク追加、新機能リクエスト時に使用。
+name: melos-add-task
+description: 自然言語でMelosタスクを追加。PLAN.jsonへの変換・追記とPRD.md受入基準の自動追記を行う。タスク追加、新機能リクエスト時に使用。
 ---
 
 <objective>
@@ -131,7 +131,7 @@ PRD.mdにも受入基準を追記しました。
 
 <examples>
 <example number="1">
-<input>/marathon-add-task ログインに2FAを追加したい</input>
+<input>/melos-add-task ログインに2FAを追加したい</input>
 <interview>
 ```
 2FA追加について確認させてください：
@@ -161,7 +161,7 @@ PRD.mdにも受入基準を追記しました。
 </example>
 
 <example number="2">
-<input>/marathon-add-task 検索結果のキャッシュを実装</input>
+<input>/melos-add-task 検索結果のキャッシュを実装</input>
 <output>
 ```
 以下のタスクをPLAN.jsonに追加しました：

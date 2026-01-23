@@ -340,7 +340,7 @@ export function serializeProgress(progress: Progress): string {
   const lines: string[] = [];
 
   // タイトル
-  lines.push(`# Marathon Progress: ${progress.header.mode.toUpperCase()}`);
+  lines.push(`# Melos Progress: ${progress.header.mode.toUpperCase()}`);
   lines.push('');
 
   // ヘッダー情報

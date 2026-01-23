@@ -1,30 +1,30 @@
 ---
-name: marathon-review-loop
-description: Marathonを使用してコードレビュー→修正のサイクルを自動実行。PRレビュー指摘への対応時に使用。
+name: melos-review-loop
+description: Melosを使用してコードレビュー→修正のサイクルを自動実行。PRレビュー指摘への対応時に使用。
 allowed-tools: Bash
 ---
 
 <objective>
-Marathon CLIの `--review-only` モードを実行し、コードレビュー→修正のサイクルを自動化する。
+Melos CLIの `--review-only` モードを実行し、コードレビュー→修正のサイクルを自動化する。
 複数のレビューエージェントによる指摘検出と修正を繰り返し、コード品質を向上させる。
 </objective>
 
 <quick_start>
 ```bash
 # 基本実行（5イテレーション）
-npx marathon --review-only
+npx melos --review-only
 
 # イテレーション数を指定
-npx marathon --review-only --max-iterations 10
+npx melos --review-only --max-iterations 10
 ```
 </quick_start>
 
 <workflow>
 <step number="1" name="execute">
-Bashツールを使用してMarathonを実行する。
+Bashツールを使用してMelosを実行する。
 
 ```bash
-cd "$(git rev-parse --show-toplevel)" && npx marathon --review-only --max-iterations 5
+cd "$(git rev-parse --show-toplevel)" && npx melos --review-only --max-iterations 5
 ```
 
 長時間実行となるため、`run_in_background: true` で実行し、定期的に結果を確認する。
@@ -60,7 +60,7 @@ cat "$(git rev-parse --show-toplevel)/STATUS.json"
 </options>
 
 <success_criteria>
-- Marathonが正常に完了
+- Melosが正常に完了
 - レビュー指摘が解消される
 - PROGRESS.mdに実行結果が記録される
 </success_criteria>

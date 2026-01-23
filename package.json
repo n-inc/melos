@@ -1,11 +1,11 @@
 {
-  "name": "@n-inc/marathon",
+  "name": "@n-inc/melos",
   "version": "0.3.0",
   "description": "Autonomous agent loop system",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "marathon": "./bin/marathon.js"
+    "melos": "./bin/melos.js"
   },
   "files": [
     "bin",
@@ -14,7 +14,7 @@
     "src"
   ],
   "scripts": {
-    "marathon": "bun src/index.ts",
+    "melos": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
@@ -25,7 +25,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/n-inc/marathon.git"
+    "url": "git+https://github.com/n-inc/melos.git"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",

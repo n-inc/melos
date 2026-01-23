@@ -60,7 +60,7 @@ describe('watchPlanFile', () => {
     const watchPromise = watchPlanFile(
       { engine: 'claude', maxIterations: 30 },
       {
-        cwd: '/tmp/marathon',
+        cwd: '/tmp/melos',
         loadPlan,
         createWatcher,
         createOrchestrator,
@@ -156,7 +156,7 @@ describe('watchPlanFile', () => {
     const watchPromise = watchPlanFile(
       { engine: 'claude', maxIterations: 30 },
       {
-        cwd: '/tmp/marathon',
+        cwd: '/tmp/melos',
         loadPlan,
         createWatcher,
         createOrchestrator,

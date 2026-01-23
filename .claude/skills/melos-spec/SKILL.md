@@ -1,12 +1,12 @@
 ---
-name: marathon-spec
-description: 対話的なインタビューを通じてPRD.mdとPLAN.jsonを作成。Marathon自動実行（npx marathon）前提の要件定義スキル。
+name: melos-spec
+description: 対話的なインタビューを通じてPRD.mdとPLAN.jsonを作成。Melos自動実行（npx melos）前提の要件定義スキル。
 argument-hint: "[feature description or idea]"
 ---
 
-# /marathon-spec
+# /melos-spec
 
-対話的なインタビューを通じて、最良のプロダクトマネージャーが作るような要件定義Specを作成する。Marathon自動実行（`npx marathon`）を前提とした成果物を生成する。
+対話的なインタビューを通じて、最良のプロダクトマネージャーが作るような要件定義Specを作成する。Melos自動実行（`npx melos`）を前提とした成果物を生成する。
 
 ## 入力
 
@@ -38,7 +38,7 @@ Spec作成開始前に現在の状況を確認する。
   3. 作業を中止（誤って実行した場合）
 
 **選択肢2「既存を破棄して完全に新規作成」の場合**:
-- `PROGRESS.md` をリセット（`# Marathon Progress\n\n**Status**: Not started` に置き換え）
+- `PROGRESS.md` をリセット（`# Melos Progress\n\n**Status**: Not started` に置き換え）
 - `HANDOFF.md` が存在する場合は削除
 
 **何も存在しない場合**:
@@ -53,7 +53,7 @@ Spec作成開始前に現在の状況を確認する。
 4. **終了判断**: 十分な情報が揃ったとAIが判断したらSpec作成に移行
 5. **PRD作成**: 収集した情報を最も適切な形式で構造化
 6. **保存**: `$(git rev-parse --show-toplevel)/PRD.md` と `$(git rev-parse --show-toplevel)/PLAN.json` に書き込む（絶対パスを使用）
-7. **次へ**: `npx marathon` での自動実行を案内
+7. **次へ**: `npx melos` での自動実行を案内
 
 ## 調査エージェント
 
@@ -174,7 +174,7 @@ Spec作成開始前に現在の状況を確認する。
 - 忘れそう → まとめる（コンテキストを保つ）
 - 忘れない＆大きすぎる → 分割する
 
-## MARATHONループ用JSONプラン形式
+## MELOSループ用JSONプラン形式
 
 ### 基本構造
 
@@ -245,12 +245,12 @@ Spec作成開始前に現在の状況を確認する。
 
 worktreeルートに絶対パスで保存：
 - `PRD.md` - PRD（理想像・ゴール）
-- `PLAN.json` - MARATHONループ用JSONプラン
+- `PLAN.json` - MELOSループ用JSONプラン
 
 ### 2. 次のステップを案内
 
 PRD・PLAN作成後、以下を案内：
-- `npx marathon` を実行してMarathon自動実行を開始
+- `npx melos` を実行してMelos自動実行を開始
 
 ### 3. 出力形式
 
@@ -262,7 +262,7 @@ PRDとPLANが完成しました。
 - JSONプラン: PLAN.json
 
 次のステップ:
-Marathon自動実行を開始する場合は `npx marathon` を実行してください。
+Melos自動実行を開始する場合は `npx melos` を実行してください。
 ```
 
 ## 制約

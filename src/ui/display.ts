@@ -1,4 +1,4 @@
-import type { MarathonStatus } from '../state/status.js';
+import type { MelosStatus } from '../state/status.js';
 import type { ExecutionMode } from '../state/progress.js';
 
 /**
@@ -302,9 +302,9 @@ export function printIterationHeader(
 
 /**
  * イテレーション開始時のヘッダーを表示（ステータスオブジェクトから）
- * NOTE: MarathonStatusにはmodeが含まれないため、デフォルトモードを使用
+ * NOTE: MelosStatusにはmodeが含まれないため、デフォルトモードを使用
  */
-export function printIterationHeaderFromStatus(status: MarathonStatus): void {
+export function printIterationHeaderFromStatus(status: MelosStatus): void {
   printIterationHeader(
     status.iteration,
     status.maxIterations,
@@ -524,7 +524,7 @@ export function printCompletion(
 
   process.stderr.write('\n');
   process.stderr.write(`${Colors.GREEN}${separator}${Colors.NC}\n`);
-  process.stderr.write(`${Colors.GREEN}✓ Marathon ${modeName} 完了！${Colors.NC}\n`);
+  process.stderr.write(`${Colors.GREEN}✓ Melos ${modeName} 完了！${Colors.NC}\n`);
   process.stderr.write(`${Colors.GREEN}${separator}${Colors.NC}\n`);
   process.stderr.write('\n');
   process.stderr.write(

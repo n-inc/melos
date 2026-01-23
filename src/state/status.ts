@@ -33,9 +33,9 @@ export interface GitState {
 }
 
 /**
- * Marathon 実行状態
+ * Melos 実行状態
  */
-export interface MarathonStatus {
+export interface MelosStatus {
   /** 現在のイテレーション番号 */
   iteration: number;
   /** 最大イテレーション数 */
@@ -76,7 +76,7 @@ export function createDefaultGitState(): GitState {
 /**
  * デフォルトのステータスを生成
  */
-export function createDefaultStatus(): MarathonStatus {
+export function createDefaultStatus(): MelosStatus {
   const now = new Date().toISOString();
   return {
     iteration: 0,
@@ -103,14 +103,14 @@ export function statusExists(path: string): boolean {
 /**
  * ステータスファイルを読み込む
  */
-export async function loadStatus(path: string): Promise<MarathonStatus> {
+export async function loadStatus(path: string): Promise<MelosStatus> {
   if (!statusExists(path)) {
     return createDefaultStatus();
   }
 
   try {
     const content = await readFile(path, 'utf-8');
-    const data = JSON.parse(content) as Partial<MarathonStatus>;
+    const data = JSON.parse(content) as Partial<MelosStatus>;
 
     // デフォルト値とマージ
     return {
@@ -127,9 +127,9 @@ export async function loadStatus(path: string): Promise<MarathonStatus> {
  */
 export async function saveStatus(
   path: string,
-  status: MarathonStatus
+  status: MelosStatus
 ): Promise<void> {
-  const updated: MarathonStatus = {
+  const updated: MelosStatus = {
     ...status,
     updatedAt: new Date().toISOString(),
   };
@@ -141,10 +141,10 @@ export async function saveStatus(
  */
 export async function updateStatus(
   path: string,
-  updates: Partial<MarathonStatus>
-): Promise<MarathonStatus> {
+  updates: Partial<MelosStatus>
+): Promise<MelosStatus> {
   const current = await loadStatus(path);
-  const updated: MarathonStatus = {
+  const updated: MelosStatus = {
     ...current,
     ...updates,
     updatedAt: new Date().toISOString(),
@@ -159,7 +159,7 @@ export async function updateStatus(
 export async function markEngineStarted(
   path: string,
   engine: 'claude' | 'codex'
-): Promise<MarathonStatus> {
+): Promise<MelosStatus> {
   return updateStatus(path, {
     engineStartedAt: new Date().toISOString(),
     engine,
@@ -173,7 +173,7 @@ export async function markEngineStarted(
 export async function markEngineCompleted(
   path: string,
   success: boolean
-): Promise<MarathonStatus> {
+): Promise<MelosStatus> {
   return updateStatus(path, {
     engineStartedAt: null,
     status: success ? 'completed' : 'error',
@@ -188,7 +188,7 @@ export async function markIterationStarted(
   iteration: number,
   maxIterations: number,
   currentTask: CurrentTask | null
-): Promise<MarathonStatus> {
+): Promise<MelosStatus> {
   return updateStatus(path, {
     iteration,
     maxIterations,
@@ -203,7 +203,7 @@ export async function markIterationStarted(
 export async function updateGitState(
   path: string,
   gitState: GitState
-): Promise<MarathonStatus> {
+): Promise<MelosStatus> {
   return updateStatus(path, {
     gitState,
   });
@@ -216,7 +216,7 @@ export async function updateTaskProgress(
   path: string,
   completedTasks: number,
   totalTasks: number
-): Promise<MarathonStatus> {
+): Promise<MelosStatus> {
   return updateStatus(path, {
     completedTasks,
     totalTasks,

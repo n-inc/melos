@@ -32,7 +32,7 @@ export {
   type RunStatus,
   type CurrentTask,
   type GitState,
-  type MarathonStatus,
+  type MelosStatus,
   createDefaultStatus,
   createDefaultGitState,
   statusExists,

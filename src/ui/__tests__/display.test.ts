@@ -190,7 +190,7 @@ describe('display.ts', () => {
 
     test('HANDOFF.md の内容とファイルパスを表示', () => {
       const handoff = {
-        content: '# Marathon 引き継ぎレポート\n\n**生成日時**: 2026-01-19T10:30:00Z',
+        content: '# Melos 引き継ぎレポート\n\n**生成日時**: 2026-01-19T10:30:00Z',
         filePath: '/Users/kmagai/project/HANDOFF.md',
       };
 
@@ -198,7 +198,7 @@ describe('display.ts', () => {
 
       const output = stderrOutput.join('');
       expect(output).toContain('📋 引き継ぎレポート');
-      expect(output).toContain('# Marathon 引き継ぎレポート');
+      expect(output).toContain('# Melos 引き継ぎレポート');
       expect(output).toContain('2026-01-19T10:30:00Z');
       expect(output).toContain('/Users/kmagai/project/HANDOFF.md');
     });
@@ -238,7 +238,7 @@ describe('display.ts', () => {
       printCompletion('default', 10);
 
       const output = stderrOutput.join('');
-      expect(output).toContain('✓ Marathon デフォルト 完了！');
+      expect(output).toContain('✓ Melos デフォルト 完了！');
       expect(output).toContain('合計イテレーション: 10');
       expect(output).not.toContain('引き継ぎレポート');
     });
@@ -252,7 +252,7 @@ describe('display.ts', () => {
       printCompletion('default', 10, handoff);
 
       const output = stderrOutput.join('');
-      expect(output).toContain('✓ Marathon デフォルト 完了！');
+      expect(output).toContain('✓ Melos デフォルト 完了！');
       expect(output).toContain('合計イテレーション: 10');
       expect(output).toContain('📋 引き継ぎレポート');
       expect(output).toContain('# 引き継ぎ内容');
@@ -263,7 +263,7 @@ describe('display.ts', () => {
       printCompletion('default', 10, null);
 
       const output = stderrOutput.join('');
-      expect(output).toContain('✓ Marathon デフォルト 完了！');
+      expect(output).toContain('✓ Melos デフォルト 完了！');
       expect(output).not.toContain('引き継ぎレポート');
     });
   });

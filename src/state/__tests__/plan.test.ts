@@ -18,7 +18,6 @@ import {
   type Plan,
   type PlanTask,
   type CheckItem,
-  type CheckType,
 } from '../plan.js';
 
 describe('plan.ts', () => {
@@ -26,7 +25,7 @@ describe('plan.ts', () => {
   let planPath: string;
 
   beforeEach(async () => {
-    testDir = join(tmpdir(), `marathon-test-${Date.now()}`);
+    testDir = join(tmpdir(), `melos-test-${Date.now()}`);
     await mkdir(testDir, { recursive: true });
     planPath = join(testDir, 'PLAN.json');
   });

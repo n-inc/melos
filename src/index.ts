@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Marathon CLI エントリーポイント
+ * Melos CLI エントリーポイント
  *
  * @module index
  */

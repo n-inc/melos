@@ -12,7 +12,7 @@ describe('Orchestrator Integration Tests', () => {
   let testDir: string;
 
   beforeEach(async () => {
-    testDir = join(tmpdir(), `marathon-integration-test-${Date.now()}`);
+    testDir = join(tmpdir(), `melos-integration-test-${Date.now()}`);
     await mkdir(testDir, { recursive: true });
 
     // Initialize as git repository (required for git state fetch)

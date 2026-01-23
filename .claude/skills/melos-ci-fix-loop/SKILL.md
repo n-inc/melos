@@ -1,30 +1,30 @@
 ---
-name: marathon-ci-fix-loop
-description: Marathonを使用してCI失敗とPRコメントの修正を自動実行。CI修正、レビュー対応時に使用。
+name: melos-ci-fix-loop
+description: Melosを使用してCI失敗とPRコメントの修正を自動実行。CI修正、レビュー対応時に使用。
 allowed-tools: Bash
 ---
 
 <objective>
-Marathon CLIの `--ci-fix-only` モードを実行し、CI失敗とPRレビューコメントへの対応を自動化する。
+Melos CLIの `--ci-fix-only` モードを実行し、CI失敗とPRレビューコメントへの対応を自動化する。
 GitHub CLIを使用してCI状態とコメントを取得し、修正を繰り返す。
 </objective>
 
 <quick_start>
 ```bash
 # 基本実行（5イテレーション）
-npx marathon --ci-fix-only
+npx melos --ci-fix-only
 
 # イテレーション数を指定
-npx marathon --ci-fix-only --max-iterations 10
+npx melos --ci-fix-only --max-iterations 10
 ```
 </quick_start>
 
 <workflow>
 <step number="1" name="execute">
-Bashツールを使用してMarathonを実行する。
+Bashツールを使用してMelosを実行する。
 
 ```bash
-cd "$(git rev-parse --show-toplevel)" && npx marathon --ci-fix-only --max-iterations 5
+cd "$(git rev-parse --show-toplevel)" && npx melos --ci-fix-only --max-iterations 5
 ```
 
 長時間実行となるため、`run_in_background: true` で実行し、定期的に結果を確認する。

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Marathon CLI ラッパー
+ * Melos CLI ラッパー
  *
  * bun を使用して TypeScript を直接実行することで、
  * 事前のビルドステップ（npx tsc）を不要にする。
@@ -25,6 +25,6 @@ child.on('close', (code) => {
 });
 
 child.on('error', (err) => {
-  console.error('Failed to start Marathon:', err.message);
+  console.error('Failed to start Melos:', err.message);
   process.exit(1);
 });

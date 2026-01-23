@@ -176,7 +176,7 @@ describe('loader.ts', () => {
     let promptPath: string;
 
     beforeEach(async () => {
-      testDir = join(tmpdir(), `marathon-prompt-test-${Date.now()}`);
+      testDir = join(tmpdir(), `melos-prompt-test-${Date.now()}`);
       await mkdir(testDir, { recursive: true });
       promptPath = join(testDir, 'test-prompt.md');
     });

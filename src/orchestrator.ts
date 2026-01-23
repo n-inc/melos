@@ -25,7 +25,7 @@ import {
 import {
   saveStatus,
   createDefaultStatus,
-  type MarathonStatus,
+  type MelosStatus,
 } from './state/status.js';
 import { fetchGitState, waitForCI } from './state/git.js';
 import { extractPrdTitle } from './state/prd.js';
@@ -141,7 +141,7 @@ function log(color: keyof typeof Colors, message: string): void {
 /**
  * メインオーケストレーター
  *
- * Marathon AFK/HITL ループを制御する。
+ * Melos AFK/HITL ループを制御する。
  * 単一ループで タスク実行 → レビュー → PR対応 を統合。
  */
 export class Orchestrator {
@@ -150,7 +150,7 @@ export class Orchestrator {
   private currentIteration: number = 1;
   private startIteration: number = 1;
   private aborted: boolean = false;
-  private status: MarathonStatus;
+  private status: MelosStatus;
   private loopStartTime: Date = new Date();
   private currentSpinner: Spinner | null = null;
   private prdTitle: string | null = null;
@@ -187,7 +187,7 @@ export class Orchestrator {
 
     log('BLUE', '');
     log('BLUE', '========================================');
-    log('BLUE', 'Marathon AFK - 自律ループ');
+    log('BLUE', 'Melos AFK - 自律ループ');
     log('BLUE', '========================================');
     log('BLUE', '');
 
@@ -459,7 +459,7 @@ export class Orchestrator {
         log('GREEN', 'HITL モード: 1イテレーション完了');
         log('GREEN', '========================================');
         log('NC', '');
-        log('NC', '続行する場合は再度 marathon --hitl を実行してください。');
+        log('NC', '続行する場合は再度 melos --hitl を実行してください。');
         log('NC', `進捗: ${this.config.progressFile}`);
         this.status.status = 'paused';
         await this.saveCurrentStatus();
@@ -543,13 +543,13 @@ export class Orchestrator {
       return;
     }
 
-    const message = `Marathon ${MODE_NAMES[this.config.mode]} 完了`;
+    const message = `Melos ${MODE_NAMES[this.config.mode]} 完了`;
     const escapedMessage = message.replace(/"/g, '\\"');
     spawnSync(
       'osascript',
       [
         '-e',
-        `display notification "${escapedMessage}" with title "Marathon"`,
+        `display notification "${escapedMessage}" with title "Melos"`,
       ],
       {
         stdio: ['ignore', 'ignore', 'ignore'],
@@ -574,7 +574,7 @@ export class Orchestrator {
       'osascript',
       [
         '-e',
-        `display notification "${escapedMessage}" with title "Marathon - エスカレーション" sound name "Basso"`,
+        `display notification "${escapedMessage}" with title "Melos - エスカレーション" sound name "Basso"`,
       ],
       {
         stdio: ['ignore', 'ignore', 'ignore'],
@@ -593,7 +593,7 @@ export class Orchestrator {
     log('RED', '');
     log('YELLOW', '人間の介入が必要な状況が発生しました。');
     log('NC', '');
-    log('NC', '確認後、npx marathon で再開できます。');
+    log('NC', '確認後、npx melos で再開できます。');
     log('NC', `進捗: ${this.config.progressFile}`);
 
     // HANDOFF.md の内容を表示

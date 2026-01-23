@@ -14,7 +14,7 @@ const DEFAULT_PLAN_FILE = 'PLAN.json';
 const DEFAULT_PRD_FILE = 'PRD.md';
 const DEFAULT_PROGRESS_FILE = 'PROGRESS.md';
 const DEFAULT_DEBOUNCE_MS = 200;
-const LOG_PREFIX = '[Marathon]';
+const LOG_PREFIX = '[Melos]';
 
 export interface WatchOptions {
   engine: EngineType;
@@ -117,7 +117,7 @@ export async function watchPlanFile(
 
     running = true;
     activeOrchestrator = createOrchestrator(config);
-    logger.info(`${LOG_PREFIX} Marathonループを開始します...`);
+    logger.info(`${LOG_PREFIX} Melosループを開始します...`);
 
     try {
       await activeOrchestrator.run();

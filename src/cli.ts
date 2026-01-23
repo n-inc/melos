@@ -1,5 +1,5 @@
 /**
- * Marathon CLI - コマンドライン引数の解析と実行
+ * Melos CLI - コマンドライン引数の解析と実行
  *
  * @module cli
  */
@@ -17,7 +17,7 @@ import {
 } from './orchestrator.js';
 import type { ExecutionMode } from './state/progress.js';
 import { watchPlanFile } from './watch.js';
-import { loadConfig, type MarathonConfig } from './config/index.js';
+import { loadConfig, type MelosConfig } from './config/index.js';
 
 /**
  * CLI オプション
@@ -96,8 +96,8 @@ export function createProgram(): Command {
   const program = new Command();
 
   program
-    .name('marathon')
-    .description('Marathon - 自律的エージェントループシステム')
+    .name('melos')
+    .description('Melos - 自律的エージェントループシステム')
     .version(getVersion(), '-v, --version', 'バージョンを表示')
     .option('--task-only', 'タスク実行のみ（レビュー・CI修正なし）')
     .option('--review-only', 'レビュー→修正のサイクルのみ実行（5イテレーション）')
@@ -132,7 +132,7 @@ export function createProgram(): Command {
 
   program
     .command('watch')
-    .description('PLAN.json を監視して Marathon ループを自動起動')
+    .description('PLAN.json を監視して Melos ループを自動起動')
     .option(
       '--max-iterations <number>',
       '最大イテレーション数',
@@ -320,7 +320,7 @@ function validateReasoningEffort(level: string): 'low' | 'medium' | 'high' | 'xh
 /**
  * CLI オプションと設定ファイルをマージ（CLI が優先）
  */
-function mergeOptions(cliOptions: CLIOptions, fileConfig: MarathonConfig): CLIOptions {
+function mergeOptions(cliOptions: CLIOptions, fileConfig: MelosConfig): CLIOptions {
   return {
     ...cliOptions,
     // CLI で明示的に指定されていない場合のみ設定ファイルの値を使用
