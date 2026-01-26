@@ -43,6 +43,8 @@ export interface CLIOptions {
   thinkingBudget?: number;
   /** 開始前にリセット（スモークテスト用） */
   dangerouslyResetBeforeStart?: boolean;
+  /** プレーン出力モード（スピナー無効） */
+  plain?: boolean;
 }
 
 /**
@@ -125,6 +127,10 @@ export function createProgram(): Command {
       'Claude thinking budget（1024〜31999、デフォルト: 31999）',
       parseThinkingBudget
     )
+    .option(
+      '--plain',
+      'プレーン出力モード（スピナー無効）'
+    )
     .addOption(
       new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
     )
@@ -156,6 +162,10 @@ export function createProgram(): Command {
       'Claude thinking budget（1024〜31999、デフォルト: 31999）',
       parseThinkingBudget
     )
+    .option(
+      '--plain',
+      'プレーン出力モード（スピナー無効）'
+    )
     .action(async (options: CLIOptions) => {
       await handleCommandAction(() => executeWatch(options));
     });
@@ -180,6 +190,11 @@ export async function run(argv?: string[]): Promise<void> {
  * オプションを使用して実行
  */
 export async function executeWithOptions(options: CLIOptions): Promise<void> {
+  // --plain オプションが指定された場合、環境変数を設定
+  if (options.plain) {
+    process.env.MELOS_NO_SPINNER = '1';
+  }
+
   // 設定ファイルを読み込み
   const fileConfig = await loadConfig();
 
@@ -248,6 +263,11 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
  * watch モードを実行
  */
 export async function executeWatch(options: CLIOptions): Promise<void> {
+  // --plain オプションが指定された場合、環境変数を設定
+  if (options.plain) {
+    process.env.MELOS_NO_SPINNER = '1';
+  }
+
   // 設定ファイルを読み込み
   const fileConfig = await loadConfig();
 

@@ -53,6 +53,30 @@ const Box = {
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /**
+ * スピナーを有効にするかどうかを判定
+ * - MELOS_NO_SPINNER=1: 強制無効
+ * - CLAUDECODE=1: Claude Code環境では自動無効
+ * - MELOS_SPINNER=1: 強制有効
+ * - それ以外: TTY検出（stderr.isTTY）
+ */
+function shouldEnableSpinner(): boolean {
+  // 環境変数で明示的に無効化
+  if (process.env.MELOS_NO_SPINNER === '1') {
+    return false;
+  }
+  // Claude Code環境では自動的に無効化（ptyを使うためisTTYでは検出できない）
+  if (process.env.CLAUDECODE === '1') {
+    return false;
+  }
+  // 環境変数で明示的に有効化
+  if (process.env.MELOS_SPINNER === '1') {
+    return true;
+  }
+  // TTY検出（デフォルト動作）
+  return process.stderr.isTTY === true;
+}
+
+/**
  * モード表示名
  */
 const MODE_NAMES: Record<ExecutionMode, string> = {
@@ -333,11 +357,42 @@ export interface Spinner {
 
 /**
  * スピナーを作成
+ * TTYでない場合やMELOS_NO_SPINNER=1の場合は、シンプルな行出力に切り替わる
  */
 export function createSpinner(
   message: string,
   startTime: Date = new Date()
 ): Spinner {
+  // スピナー無効時はシンプルな出力モード
+  if (!shouldEnableSpinner()) {
+    // 開始メッセージを1行出力
+    process.stderr.write(`${message}...\n`);
+
+    return {
+      update: () => {
+        // 何もしない
+      },
+      stop: () => {
+        // 何もしない
+      },
+      succeed: (msg?: string) => {
+        const elapsed = formatElapsed(startTime);
+        const finalMessage = msg || message;
+        process.stderr.write(
+          `${Colors.GREEN}✓${Colors.NC} ${finalMessage} ${Colors.DIM}${elapsed}${Colors.NC}\n`
+        );
+      },
+      fail: (msg?: string) => {
+        const elapsed = formatElapsed(startTime);
+        const finalMessage = msg || message;
+        process.stderr.write(
+          `${Colors.RED}✗${Colors.NC} ${finalMessage} ${Colors.DIM}${elapsed}${Colors.NC}\n`
+        );
+      },
+    };
+  }
+
+  // TTY時は通常のスピナー表示
   let frameIndex = 0;
   let intervalId: NodeJS.Timeout | null = null;
   let lastLineLength = 0;
