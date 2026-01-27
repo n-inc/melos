@@ -105,6 +105,41 @@ export function getPullRequest(
 }
 
 /**
+ * PRのCIステータスを取得
+ */
+export function getCIStatus(cwd: string): 'passing' | 'failing' | 'pending' | 'unknown' {
+  if (!getPullRequest(cwd)) {
+    return 'unknown';
+  }
+
+  try {
+    const output = execSync('gh pr checks --json bucket', {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+
+    const checks = JSON.parse(output) as Array<{ bucket: string }>;
+
+    if (checks.length === 0) {
+      return 'unknown';
+    }
+
+    const hasFail = checks.some(c => c.bucket === 'fail' || c.bucket === 'cancel');
+    const hasPending = checks.some(c => c.bucket === 'pending');
+    const allPass = checks.every(c => c.bucket === 'pass' || c.bucket === 'skipping');
+
+    if (hasFail) return 'failing';
+    if (hasPending) return 'pending';
+    if (allPass) return 'passing';
+
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
  * Git状態を取得
  */
 export function fetchGitState(cwd: string): GitState {

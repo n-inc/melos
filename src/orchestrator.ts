@@ -26,8 +26,13 @@ import {
   saveStatus,
   createDefaultStatus,
   type MelosStatus,
+  getFilesChangedCount,
+  calculateEscalationRisk,
+  addToRecentHistory,
+  mapPromiseToOutcome,
+  type HistoryEntry,
 } from './state/status.js';
-import { fetchGitState, waitForCI } from './state/git.js';
+import { fetchGitState, waitForCI, getCIStatus } from './state/git.js';
 import { extractPrdTitle } from './state/prd.js';
 import {
   loadPrompt,
@@ -625,6 +630,13 @@ export class Orchestrator {
       : null;
     this.status.completedTasks = completedTasks;
     this.status.totalTasks = totalTasks;
+
+    // エスカレーションリスクを計算
+    this.status.escalationRisk = calculateEscalationRisk(
+      this.status.recentHistory ?? [],
+      nextTask?.id ?? null
+    );
+
     await this.saveCurrentStatus();
 
     // エンジンを決定（タスクの model フィールド > デフォルト）
@@ -699,6 +711,43 @@ export class Orchestrator {
 
     // Promise タグを検出
     const promiseResult = detectPromise(engineResult.output);
+
+    // 新フィールドを更新
+    const iterationEndTime = new Date();
+    const durationSeconds = Math.round(
+      (iterationEndTime.getTime() - iterationStartTime.getTime()) / 1000
+    );
+    const filesChanged = getFilesChangedCount(this.config.cwd);
+    const outcome = mapPromiseToOutcome(promiseResult.type, engineResult.success);
+
+    this.status.lastIterationSummary = {
+      outcome,
+      taskId: this.status.currentTask?.id ?? null,
+      durationSeconds,
+      filesChanged,
+      keyActions: [], // Future: extract from engine output
+      error: engineResult.error ?? null,
+    };
+
+    const historyEntry: HistoryEntry = {
+      iteration: this.currentIteration,
+      outcome,
+      taskId: this.status.currentTask?.id ?? null,
+    };
+    this.status.recentHistory = addToRecentHistory(
+      this.status.recentHistory ?? [],
+      historyEntry
+    );
+
+    // stateSignals を更新
+    const ciStatus = getCIStatus(this.config.cwd);
+    this.status.stateSignals = {
+      ciStatus,
+      reviewPending: false, // Future: detect from gh pr comments
+      blockedBy: null,
+    };
+
+    await this.saveCurrentStatus();
 
     // イテレーション完了サマリーを表示
     const duration = formatElapsed(iterationStartTime);

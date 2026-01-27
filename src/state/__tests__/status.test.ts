@@ -16,8 +16,13 @@ import {
   updateGitState,
   updateTaskProgress,
   clearStatus,
+  calculateEscalationRisk,
+  addToRecentHistory,
+  mapPromiseToOutcome,
   type MelosStatus,
   type GitState,
+  type RecentHistory,
+  type HistoryEntry,
 } from '../status.js';
 
 describe('status.ts', () => {
@@ -225,6 +230,145 @@ describe('status.ts', () => {
 
     test('ファイルが存在しなくてもエラーにならない', async () => {
       await clearStatus(statusPath); // エラーが発生しないことを確認
+    });
+  });
+
+  describe('calculateEscalationRisk', () => {
+    test('currentTaskId が null の場合は低リスク', () => {
+      const history: RecentHistory = [
+        { iteration: 1, outcome: 'TASK_DONE', taskId: 'task-1' },
+      ];
+
+      const result = calculateEscalationRisk(history, null);
+
+      expect(result.sameTaskAttempts).toBe(0);
+      expect(result.riskLevel).toBe('low');
+      expect(result.reason).toBeNull();
+    });
+
+    test('履歴が空の場合は低リスク', () => {
+      const result = calculateEscalationRisk([], 'task-1');
+
+      expect(result.sameTaskAttempts).toBe(0);
+      expect(result.riskLevel).toBe('low');
+      expect(result.reason).toBeNull();
+    });
+
+    test('同一タスクが1回の場合は低リスク', () => {
+      const history: RecentHistory = [
+        { iteration: 1, outcome: 'TASK_RETRY', taskId: 'task-1' },
+      ];
+
+      const result = calculateEscalationRisk(history, 'task-1');
+
+      expect(result.sameTaskAttempts).toBe(1);
+      expect(result.riskLevel).toBe('low');
+      expect(result.reason).toBeNull();
+    });
+
+    test('同一タスクが2回連続の場合は中リスク', () => {
+      const history: RecentHistory = [
+        { iteration: 1, outcome: 'TASK_RETRY', taskId: 'task-1' },
+        { iteration: 2, outcome: 'TASK_RETRY', taskId: 'task-1' },
+      ];
+
+      const result = calculateEscalationRisk(history, 'task-1');
+
+      expect(result.sameTaskAttempts).toBe(2);
+      expect(result.riskLevel).toBe('medium');
+      expect(result.reason).toBe('同一タスクで2回目の試行');
+    });
+
+    test('同一タスクが3回以上連続の場合は高リスク', () => {
+      const history: RecentHistory = [
+        { iteration: 1, outcome: 'TASK_RETRY', taskId: 'task-1' },
+        { iteration: 2, outcome: 'TASK_RETRY', taskId: 'task-1' },
+        { iteration: 3, outcome: 'TASK_RETRY', taskId: 'task-1' },
+      ];
+
+      const result = calculateEscalationRisk(history, 'task-1');
+
+      expect(result.sameTaskAttempts).toBe(3);
+      expect(result.riskLevel).toBe('high');
+      expect(result.reason).toContain('3回連続失敗');
+    });
+
+    test('途中で別のタスクが入った場合はカウントをリセット', () => {
+      const history: RecentHistory = [
+        { iteration: 1, outcome: 'TASK_RETRY', taskId: 'task-1' },
+        { iteration: 2, outcome: 'TASK_DONE', taskId: 'task-2' },
+        { iteration: 3, outcome: 'TASK_RETRY', taskId: 'task-1' },
+      ];
+
+      const result = calculateEscalationRisk(history, 'task-1');
+
+      expect(result.sameTaskAttempts).toBe(1);
+      expect(result.riskLevel).toBe('low');
+    });
+  });
+
+  describe('addToRecentHistory', () => {
+    test('履歴にエントリを追加する', () => {
+      const history: RecentHistory = [];
+      const entry: HistoryEntry = { iteration: 1, outcome: 'TASK_DONE', taskId: 'task-1' };
+
+      const result = addToRecentHistory(history, entry);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toEqual(entry);
+    });
+
+    test('5件を超えた場合は古いエントリを削除', () => {
+      const history: RecentHistory = [
+        { iteration: 1, outcome: 'TASK_DONE', taskId: 'task-1' },
+        { iteration: 2, outcome: 'TASK_DONE', taskId: 'task-2' },
+        { iteration: 3, outcome: 'TASK_DONE', taskId: 'task-3' },
+        { iteration: 4, outcome: 'TASK_DONE', taskId: 'task-4' },
+        { iteration: 5, outcome: 'TASK_DONE', taskId: 'task-5' },
+      ];
+      const entry: HistoryEntry = { iteration: 6, outcome: 'TASK_DONE', taskId: 'task-6' };
+
+      const result = addToRecentHistory(history, entry);
+
+      expect(result).toHaveLength(5);
+      expect(result[0].iteration).toBe(2);
+      expect(result[4].iteration).toBe(6);
+    });
+
+    test('元の配列を変更しない', () => {
+      const history: RecentHistory = [
+        { iteration: 1, outcome: 'TASK_DONE', taskId: 'task-1' },
+      ];
+      const entry: HistoryEntry = { iteration: 2, outcome: 'TASK_DONE', taskId: 'task-2' };
+
+      const result = addToRecentHistory(history, entry);
+
+      expect(history).toHaveLength(1);
+      expect(result).toHaveLength(2);
+    });
+  });
+
+  describe('mapPromiseToOutcome', () => {
+    test('エンジン失敗時は ERROR を返す', () => {
+      expect(mapPromiseToOutcome('COMPLETE', false)).toBe('ERROR');
+      expect(mapPromiseToOutcome('TASK_DONE', false)).toBe('ERROR');
+      expect(mapPromiseToOutcome(null, false)).toBe('ERROR');
+    });
+
+    test('COMPLETE は TASK_DONE にマッピング', () => {
+      expect(mapPromiseToOutcome('COMPLETE', true)).toBe('TASK_DONE');
+    });
+
+    test('TASK_DONE は TASK_DONE にマッピング', () => {
+      expect(mapPromiseToOutcome('TASK_DONE', true)).toBe('TASK_DONE');
+    });
+
+    test('ESCALATE は ERROR にマッピング', () => {
+      expect(mapPromiseToOutcome('ESCALATE', true)).toBe('ERROR');
+    });
+
+    test('null は TASK_RETRY にマッピング', () => {
+      expect(mapPromiseToOutcome(null, true)).toBe('TASK_RETRY');
     });
   });
 });

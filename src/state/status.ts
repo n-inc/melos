@@ -1,5 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import type { PromiseType } from '../utils/promise.js';
 
 /**
  * 実行ステータス
@@ -33,6 +35,73 @@ export interface GitState {
 }
 
 /**
+ * イテレーション結果の種類
+ */
+export type IterationOutcome =
+  | 'TASK_DONE'
+  | 'TASK_RETRY'
+  | 'TASK_SKIP'
+  | 'REVIEW_PASS'
+  | 'REVIEW_FINDINGS'
+  | 'CI_PASS'
+  | 'CI_FAIL'
+  | 'ERROR';
+
+/**
+ * 直前イテレーションのサマリー
+ */
+export interface LastIterationSummary {
+  outcome: IterationOutcome;
+  taskId: string | null;
+  durationSeconds: number;
+  filesChanged: number;
+  keyActions: string[];
+  error: string | null;
+}
+
+/**
+ * エスカレーションリスクレベル
+ */
+export type RiskLevel = 'low' | 'medium' | 'high';
+
+/**
+ * エスカレーションリスク情報
+ */
+export interface EscalationRisk {
+  sameTaskAttempts: number;
+  riskLevel: RiskLevel;
+  reason: string | null;
+}
+
+/**
+ * CIステータス
+ */
+export type CIStatus = 'passing' | 'failing' | 'pending' | 'unknown';
+
+/**
+ * 状態シグナル
+ */
+export interface StateSignals {
+  ciStatus: CIStatus;
+  reviewPending: boolean;
+  blockedBy: string | null;
+}
+
+/**
+ * 履歴エントリ
+ */
+export interface HistoryEntry {
+  iteration: number;
+  outcome: string;
+  taskId: string | null;
+}
+
+/**
+ * 直近履歴（最大5件）
+ */
+export type RecentHistory = HistoryEntry[];
+
+/**
  * Melos 実行状態
  */
 export interface MelosStatus {
@@ -58,6 +127,14 @@ export interface MelosStatus {
   gitState: GitState;
   /** 最後の更新時刻（ISO 8601） */
   updatedAt: string;
+  /** 直前イテレーションのサマリー */
+  lastIterationSummary?: LastIterationSummary;
+  /** エスカレーションリスク情報 */
+  escalationRisk?: EscalationRisk;
+  /** 状態シグナル */
+  stateSignals?: StateSignals;
+  /** 直近履歴 */
+  recentHistory?: RecentHistory;
 }
 
 /**
@@ -230,5 +307,89 @@ export async function clearStatus(path: string): Promise<void> {
   if (statusExists(path)) {
     const { unlink } = await import('node:fs/promises');
     await unlink(path);
+  }
+}
+
+/**
+ * 変更されたファイル数を取得
+ */
+export function getFilesChangedCount(cwd: string): number {
+  const result = spawnSync('git', ['diff', '--name-only'], {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  if (result.status !== 0 || !result.stdout.trim()) {
+    return 0;
+  }
+
+  return result.stdout.trim().split('\n').filter(Boolean).length;
+}
+
+/**
+ * エスカレーションリスクを計算
+ */
+export function calculateEscalationRisk(
+  recentHistory: RecentHistory,
+  currentTaskId: string | null
+): EscalationRisk {
+  if (!currentTaskId) {
+    return { sameTaskAttempts: 0, riskLevel: 'low', reason: null };
+  }
+
+  let sameTaskAttempts = 0;
+  for (const entry of [...recentHistory].reverse()) {
+    if (entry.taskId === currentTaskId) {
+      sameTaskAttempts++;
+    } else {
+      break;
+    }
+  }
+
+  let riskLevel: RiskLevel = 'low';
+  let reason: string | null = null;
+
+  if (sameTaskAttempts >= 3) {
+    riskLevel = 'high';
+    reason = `同一タスクで${sameTaskAttempts}回連続失敗。エスカレーション寸前`;
+  } else if (sameTaskAttempts >= 2) {
+    riskLevel = 'medium';
+    reason = '同一タスクで2回目の試行';
+  }
+
+  return { sameTaskAttempts, riskLevel, reason };
+}
+
+/**
+ * 履歴に新規エントリを追加（最大5件を維持）
+ */
+export function addToRecentHistory(
+  history: RecentHistory,
+  entry: HistoryEntry
+): RecentHistory {
+  const newHistory = [...history, entry];
+  return newHistory.slice(-5);
+}
+
+/**
+ * PromiseType を IterationOutcome に変換
+ */
+export function mapPromiseToOutcome(
+  promiseType: PromiseType | null,
+  engineSuccess: boolean
+): IterationOutcome {
+  if (!engineSuccess) {
+    return 'ERROR';
+  }
+
+  switch (promiseType) {
+    case 'COMPLETE':
+    case 'TASK_DONE':
+      return 'TASK_DONE';
+    case 'ESCALATE':
+      return 'ERROR';
+    default:
+      return 'TASK_RETRY';
   }
 }
