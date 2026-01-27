@@ -80,8 +80,8 @@ export class CodexEngine extends Engine {
       child.stdout?.on('data', (data: Buffer) => {
         const chunk = data.toString();
         stdout += chunk;
-        // スピナー行をクリアしてからリアルタイムで stderr に出力
-        process.stderr.write('\x1b[2K\r' + chunk);
+        // スピナー行をクリアしてからリアルタイムで stdout に出力
+        process.stdout.write('\x1b[2K\r' + chunk);
       });
 
       child.stderr?.on('data', (data: Buffer) => {

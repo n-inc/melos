@@ -90,11 +90,11 @@ export class ClaudeEngine extends Engine {
           const formatted = jsonlBuffer.processChunk(chunk);
           for (const line of formatted) {
             // スピナー行をクリアしてから出力
-            process.stderr.write('\x1b[2K\r' + line + '\n');
+            process.stdout.write('\x1b[2K\r' + line + '\n');
           }
         } else {
           // 非 printMode はそのまま出力
-          process.stderr.write(chunk);
+          process.stdout.write(chunk);
         }
       });
 
@@ -114,7 +114,7 @@ export class ClaudeEngine extends Engine {
           const remaining = jsonlBuffer.flush();
           for (const line of remaining) {
             // スピナー行をクリアしてから出力
-            process.stderr.write('\x1b[2K\r' + line + '\n');
+            process.stdout.write('\x1b[2K\r' + line + '\n');
           }
         }
 
