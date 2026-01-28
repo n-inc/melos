@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 /**
  * 実行モード
  */
-export type ExecutionMode = 'default' | 'review-only' | 'ci-fix-only' | 'task-only';
+export type ExecutionMode = 'default' | 'review-only' | 'ci-fix-only' | 'task-only' | 'planless';
 
 /**
  * PROGRESS.md のヘッダー情報
@@ -56,6 +56,7 @@ const MODE_DISPLAY_NAMES: Record<ExecutionMode, string> = {
   'review-only': 'Review Only',
   'ci-fix-only': 'CI Fix Only',
   'task-only': 'Task Only',
+  planless: 'Planless (Ralph-style)',
 };
 
 /**
@@ -71,6 +72,9 @@ function parseModeFromDisplay(display: string): ExecutionMode {
   }
   if (lower.includes('task only') || lower.includes('task-only')) {
     return 'task-only';
+  }
+  if (lower.includes('planless') || lower.includes('ralph')) {
+    return 'planless';
   }
   return 'default';
 }

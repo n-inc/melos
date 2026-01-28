@@ -78,11 +78,14 @@ describe('loader.ts', () => {
   });
 
   describe('getAvailablePromptTypes', () => {
-    it('returns 2 prompt types', () => {
+    it('returns all prompt types', () => {
       const types = getAvailablePromptTypes();
-      expect(types).toHaveLength(2);
+      expect(types).toHaveLength(5);
       expect(types).toContain('loop');
       expect(types).toContain('hitl-loop');
+      expect(types).toContain('planless-loop');
+      expect(types).toContain('hitl-planless-loop');
+      expect(types).toContain('planless-completion-check');
     });
   });
 

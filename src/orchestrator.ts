@@ -19,6 +19,7 @@ import {
   initializeProgress,
   progressExists,
   getCurrentIteration,
+  saveProgress,
   type ExecutionMode,
   type Progress,
 } from './state/progress.js';
@@ -98,6 +99,7 @@ const MODE_NAMES: Record<ExecutionMode, string> = {
   'review-only': 'レビューのみ',
   'ci-fix-only': 'CI修正のみ',
   'task-only': 'タスクのみ',
+  planless: 'プランなし（Ralphスタイル）',
 };
 
 /**
@@ -334,6 +336,13 @@ export class Orchestrator {
         throw new Error(`プランファイルが見つかりません: ${this.config.planFile}`);
       }
     }
+
+    // planless モードでは PRD ファイルのみ必須（PLAN は不要）
+    if (this.config.mode === 'planless') {
+      if (!existsSync(join(this.config.cwd, this.config.prdFile))) {
+        throw new Error(`PRD ファイルが見つかりません: ${this.config.prdFile}`);
+      }
+    }
   }
 
   /**
@@ -402,6 +411,11 @@ export class Orchestrator {
    *    - 問題なし → 完了
    */
   private async runUnifiedLoop(): Promise<LoopResult> {
+    // planless モードは専用ループを使用
+    if (this.config.mode === 'planless') {
+      return this.runPlanlessLoop();
+    }
+
     const max = this.config.maxIterations;
     const sessionIterations = () => this.currentIteration - this.startIteration;
 
@@ -859,6 +873,415 @@ export class Orchestrator {
   }
 
   /**
+   * プランなしモード専用ループ
+   *
+   * PRD.md を読んで自律的にタスクを進め、完了申告時に Codex で検証する。
+   */
+  private async runPlanlessLoop(): Promise<LoopResult> {
+    const max = this.config.maxIterations;
+    const sessionIterations = () => this.currentIteration - this.startIteration;
+
+    while (sessionIterations() < max && !this.aborted) {
+      // Git状態を更新
+      this.updateGitState();
+
+      // イテレーション実行（planless-loop プロンプト使用）
+      const promptType: PromptType = this.config.hitl ? 'hitl-planless-loop' : 'planless-loop';
+      const result = await this.runIteration(promptType, max);
+
+      // 完了申告があるかチェック
+      const claim = this.detectCompletionClaim(result.engineResult.output);
+
+      if (claim.hasClaim) {
+        log('CYAN', '');
+        log('CYAN', '完了申告を検出しました。Codex で判定を実行します...');
+
+        // Codex で完了判定
+        const verdict = await this.runCompletionCheck(claim.claim!);
+
+        if (verdict.verdict === 'PASS') {
+          log('GREEN', '完了判定: PASS');
+          log('CYAN', '');
+          log('CYAN', 'Codex でコードレビューを実行します...');
+
+          // Codex でコードレビュー
+          const reviewResult = await this.runCodexReview();
+
+          if (reviewResult.hasIssues) {
+            log('YELLOW', `レビュー指摘あり（${reviewResult.issues.length}件）。Codex で修正します...`);
+
+            // Codex で修正
+            await this.runCodexFix(reviewResult.issues);
+
+            // ループ継続
+            this.currentIteration++;
+            continue;
+          }
+
+          // 全て完了
+          log('GREEN', 'コードレビュー: 指摘なし');
+          const handoff = await this.readHandoff();
+          printCompletion(this.config.mode, this.currentIteration, handoff);
+          return {
+            success: true,
+            completedIterations: this.currentIteration,
+            reason: 'complete',
+          };
+        } else {
+          // 完了判定 NG: PROGRESS.md に記録してループ継続
+          log('YELLOW', '完了判定: FAIL');
+          if (verdict.issues) {
+            for (const issue of verdict.issues) {
+              log('YELLOW', `  - ${issue}`);
+            }
+          }
+          await this.recordCompletionFeedback(verdict);
+        }
+      }
+
+      // Promise タイプに応じた処理
+      switch (result.promiseType) {
+        case 'ESCALATE':
+          await this.printEscalation();
+          return {
+            success: false,
+            completedIterations: this.currentIteration,
+            reason: 'escalation',
+          };
+
+        case 'COMPLETE': {
+          const handoff = await this.readHandoff();
+          printCompletion(this.config.mode, this.currentIteration, handoff);
+          return {
+            success: true,
+            completedIterations: this.currentIteration,
+            reason: 'complete',
+          };
+        }
+
+        case 'TASK_DONE':
+          printNextIteration();
+          break;
+
+        default:
+          printWarning('Promise が検出されませんでした。続行します...');
+          break;
+      }
+
+      // HITL モードでは1イテレーションで終了
+      if (this.config.hitl) {
+        log('GREEN', '');
+        log('GREEN', '========================================');
+        log('GREEN', 'HITL モード: 1イテレーション完了');
+        log('GREEN', '========================================');
+        log('NC', '');
+        log('NC', '続行する場合は再度 melos --hitl を実行してください。');
+        log('NC', `進捗: ${this.config.progressFile}`);
+        this.status.status = 'paused';
+        await this.saveCurrentStatus();
+        return {
+          success: true,
+          completedIterations: this.currentIteration,
+          reason: 'hitl_pause',
+        };
+      }
+
+      this.currentIteration++;
+    }
+
+    // 最大イテレーションに到達
+    const completedInSession = sessionIterations();
+    log('YELLOW', '');
+    log('YELLOW', '========================================');
+    log('YELLOW', `セッション内で ${completedInSession} 回実行しました（上限: ${max}）`);
+    log('YELLOW', '========================================');
+    log('YELLOW', '');
+    log('NC', 'イテレーション上限でループが停止しました。');
+    log('NC', `進捗は保存されています: ${this.config.progressFile}`);
+
+    const handoff = await this.readHandoff();
+    if (handoff) {
+      printHandoffContent(handoff);
+    }
+
+    return {
+      success: false,
+      completedIterations: this.currentIteration - 1,
+      reason: 'max_iterations',
+    };
+  }
+
+  /**
+   * 完了申告を検出する
+   */
+  private detectCompletionClaim(output: string): { hasClaim: boolean; claim: string | null } {
+    const match = output.match(/<planless_complete_claim>([\s\S]*?)<\/planless_complete_claim>/);
+    return { hasClaim: !!match, claim: match ? match[1].trim() : null };
+  }
+
+  /**
+   * Codex で完了判定を実行
+   */
+  private async runCompletionCheck(claim: string): Promise<{ verdict: 'PASS' | 'FAIL'; issues?: string[] }> {
+    const codexEngine = this.engines.get('codex');
+    if (!codexEngine) {
+      log('YELLOW', 'Codex エンジンが利用できません。PASS として扱います。');
+      return { verdict: 'PASS' };
+    }
+
+    // プロンプトを構築
+    const prdPath = join(this.config.cwd, this.config.prdFile);
+    const progressPath = join(this.config.cwd, this.config.progressFile);
+
+    let prdContent = '';
+    let progressContent = '';
+    try {
+      prdContent = await readFile(prdPath, 'utf-8');
+    } catch {
+      prdContent = '（PRD.md が見つかりません）';
+    }
+    try {
+      progressContent = await readFile(progressPath, 'utf-8');
+    } catch {
+      progressContent = '（PROGRESS.md が見つかりません）';
+    }
+
+    const prompt = `## Melos 完了判定チェック
+
+**PRD**:
+\`\`\`markdown
+${prdContent}
+\`\`\`
+
+**Progress file**:
+\`\`\`markdown
+${progressContent}
+\`\`\`
+
+---
+
+## エージェントの完了申告
+
+${claim}
+
+---
+
+## 判定基準
+
+PRD.md に記載された**仕様**が実現しているかを判定。
+
+**チェック項目**:
+1. PRD.md に明記された機能要件が全て実装されているか
+2. 基本的な動作が期待通りか
+
+**判定しないこと**（コード品質は厳しく見すぎない）:
+- コードスタイル
+- 最適化の余地
+- リファクタリングの可能性
+- テストカバレッジ
+
+---
+
+## 出力フォーマット
+
+### 完了の場合:
+<completion_verdict>PASS</completion_verdict>
+
+### 未完了の場合:
+<completion_verdict>FAIL</completion_verdict>
+<completion_issues>
+- [未実装要件1]: 説明
+- [未実装要件2]: 説明
+</completion_issues>
+`;
+
+    const result = await codexEngine.execute(prompt, {
+      cwd: this.config.cwd,
+      reasoningEffort: 'medium',
+    });
+
+    return this.parseCompletionVerdict(result.output);
+  }
+
+  /**
+   * 完了判定結果をパース
+   */
+  private parseCompletionVerdict(output: string): { verdict: 'PASS' | 'FAIL'; issues?: string[] } {
+    const verdictMatch = output.match(/<completion_verdict>(PASS|FAIL)<\/completion_verdict>/);
+    if (!verdictMatch) {
+      // デフォルトは FAIL
+      return { verdict: 'FAIL', issues: ['判定結果を解析できませんでした'] };
+    }
+
+    const verdict = verdictMatch[1] as 'PASS' | 'FAIL';
+    if (verdict === 'PASS') {
+      return { verdict: 'PASS' };
+    }
+
+    // FAIL の場合は issues を抽出
+    const issuesMatch = output.match(/<completion_issues>([\s\S]*?)<\/completion_issues>/);
+    const issues: string[] = [];
+    if (issuesMatch) {
+      const issuesContent = issuesMatch[1];
+      const lines = issuesContent.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('-')) {
+          issues.push(trimmed.slice(1).trim());
+        }
+      }
+    }
+
+    return { verdict: 'FAIL', issues: issues.length > 0 ? issues : ['未実装要件あり'] };
+  }
+
+  /**
+   * Codex でコードレビューを実行
+   */
+  private async runCodexReview(): Promise<{ hasIssues: boolean; issues: string[] }> {
+    const codexEngine = this.engines.get('codex');
+    if (!codexEngine) {
+      log('YELLOW', 'Codex エンジンが利用できません。レビューをスキップします。');
+      return { hasIssues: false, issues: [] };
+    }
+
+    // diff を取得
+    const diffResult = spawnSync('git', ['diff', 'main', '--name-only'], {
+      encoding: 'utf-8',
+      cwd: this.config.cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    if (diffResult.status !== 0 || !diffResult.stdout.trim()) {
+      log('YELLOW', '差分がありません。レビューをスキップします。');
+      return { hasIssues: false, issues: [] };
+    }
+
+    const prompt = `## コードレビュー
+
+以下の変更をレビューしてください。
+P1（必須修正）または P2（推奨修正）の指摘がある場合は報告してください。
+
+変更されたファイル:
+${diffResult.stdout}
+
+git diff main の内容を確認して、以下の観点でレビューしてください：
+1. バグの可能性
+2. セキュリティの問題
+3. パフォーマンスの問題
+4. 重大なロジックエラー
+
+**出力フォーマット**:
+
+指摘がない場合:
+<review_verdict>CLEAN</review_verdict>
+
+指摘がある場合:
+<review_verdict>ISSUES</review_verdict>
+<review_issues>
+- [P1] ファイル名: 問題の説明
+- [P2] ファイル名: 問題の説明
+</review_issues>
+`;
+
+    const result = await codexEngine.execute(prompt, {
+      cwd: this.config.cwd,
+      reasoningEffort: 'medium',
+    });
+
+    return this.parseReviewResult(result.output);
+  }
+
+  /**
+   * レビュー結果をパース
+   */
+  private parseReviewResult(output: string): { hasIssues: boolean; issues: string[] } {
+    const verdictMatch = output.match(/<review_verdict>(CLEAN|ISSUES)<\/review_verdict>/);
+    if (!verdictMatch || verdictMatch[1] === 'CLEAN') {
+      return { hasIssues: false, issues: [] };
+    }
+
+    const issuesMatch = output.match(/<review_issues>([\s\S]*?)<\/review_issues>/);
+    const issues: string[] = [];
+    if (issuesMatch) {
+      const issuesContent = issuesMatch[1];
+      const lines = issuesContent.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('-')) {
+          issues.push(trimmed.slice(1).trim());
+        }
+      }
+    }
+
+    return { hasIssues: issues.length > 0, issues };
+  }
+
+  /**
+   * Codex で修正を実行
+   */
+  private async runCodexFix(issues: string[]): Promise<void> {
+    const codexEngine = this.engines.get('codex');
+    if (!codexEngine) {
+      log('YELLOW', 'Codex エンジンが利用できません。修正をスキップします。');
+      return;
+    }
+
+    const prompt = `## コードレビュー指摘の修正
+
+以下のレビュー指摘を修正してください:
+
+${issues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}
+
+修正後、git-commit スキルでコミットしてください。
+`;
+
+    await codexEngine.execute(prompt, {
+      cwd: this.config.cwd,
+      reasoningEffort: 'medium',
+    });
+  }
+
+  /**
+   * PROGRESS.md に完了判定フィードバックを記録
+   */
+  private async recordCompletionFeedback(verdict: { verdict: 'PASS' | 'FAIL'; issues?: string[] }): Promise<void> {
+    const progressPath = join(this.config.cwd, this.config.progressFile);
+
+    if (!progressExists(progressPath)) {
+      return;
+    }
+
+    try {
+      const progress = await loadProgress(progressPath);
+      const now = new Date();
+      const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+      let content = `**完了判定**: ${verdict.verdict}`;
+      if (verdict.issues && verdict.issues.length > 0) {
+        content += '\n\n**未実装要件:**\n';
+        content += verdict.issues.map((i) => `- ${i}`).join('\n');
+      }
+
+      const entry = {
+        iteration: this.currentIteration,
+        date,
+        content,
+      };
+
+      progress.entries.push(entry);
+
+      // PROGRESS.md に保存
+      await saveProgress(progressPath, progress);
+
+      log('CYAN', `完了判定フィードバックを ${this.config.progressFile} に記録しました`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log('YELLOW', `完了判定フィードバックの記録に失敗: ${message}`);
+    }
+  }
+
+  /**
    * ループを中断する
    */
   abort(): void {
@@ -891,6 +1314,7 @@ export function getDefaultMaxIterations(mode: ExecutionMode): number {
   switch (mode) {
     case 'default':
     case 'task-only':
+    case 'planless':
       return 30;
     case 'review-only':
     case 'ci-fix-only':
