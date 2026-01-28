@@ -38,6 +38,8 @@ export interface Progress {
   header: ProgressHeader;
   /** イテレーションエントリのリスト */
   entries: IterationEntry[];
+  /** 次やること セクション（planlessモード用） */
+  nextTasks?: string;
   /** Codebase Patterns セクション（オプション） */
   codebasePatterns?: string;
   /** Current Objective セクション（オプション） */
@@ -112,6 +114,7 @@ export function parseProgress(content: string): Progress {
   const entries = parseIterations(lines);
 
   // 各セクションをパース
+  const nextTasks = parseNextTasks(lines);
   const codebasePatterns = parseCodebasePatterns(lines);
   const currentObjective = parseCurrentObjective(lines);
   const learnings = parseLearnings(lines);
@@ -120,6 +123,7 @@ export function parseProgress(content: string): Progress {
   return {
     header,
     entries,
+    nextTasks,
     codebasePatterns,
     currentObjective,
     learnings,
@@ -226,6 +230,29 @@ function parseIterations(lines: string[]): IterationEntry[] {
   }
 
   return entries;
+}
+
+/**
+ * 次やること セクションをパース
+ */
+function parseNextTasks(lines: string[]): string | undefined {
+  const startIndex = lines.findIndex((line) => line.startsWith('## 次やること'));
+  if (startIndex === -1) {
+    return undefined;
+  }
+
+  const contentLines: string[] = [];
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // 次の H2 セクションで終了
+    if (line.startsWith('## ')) {
+      break;
+    }
+    contentLines.push(line);
+  }
+
+  const content = contentLines.join('\n').trim();
+  return content || undefined;
 }
 
 /**
@@ -361,6 +388,14 @@ export function serializeProgress(progress: Progress): string {
     lines.push('');
   }
 
+  // 次やること セクション（planlessモード用）
+  if (progress.nextTasks) {
+    lines.push('## 次やること');
+    lines.push('');
+    lines.push(progress.nextTasks);
+    lines.push('');
+  }
+
   // Progress Log セクション
   lines.push('## Progress Log');
   lines.push('');
@@ -421,6 +456,11 @@ export async function initializeProgress(
     },
     entries: [],
   };
+
+  // planless モードの場合は「次やること」セクションを初期化
+  if (mode === 'planless') {
+    progress.nextTasks = '（PRD.md を読んで最初のステップを追加してください）';
+  }
 
   await saveProgress(path, progress);
   return progress;
