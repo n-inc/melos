@@ -440,24 +440,44 @@ export class Orchestrator {
     }
     log('GREEN', `進捗ファイル: ${this.config.progressFile}`);
     log('YELLOW', `最大イテレーション: ${this.config.maxIterations}`);
-    log('CYAN', `デフォルトエンジン: ${this.config.engine}`);
-    if (this.config.model) {
-      log('CYAN', `モデル: ${this.config.model}`);
+
+    // フェーズ別エンジン設定を表示
+    log('CYAN', 'フェーズ別エンジン設定:');
+    const phaseLabels: Array<{ phase: PhaseType; label: string }> = [
+      { phase: 'research', label: '研究:    ' },
+      { phase: 'task', label: 'タスク:  ' },
+      { phase: 'verification', label: '確認:    ' },
+      { phase: 'review', label: 'レビュー:' },
+    ];
+    for (const { phase, label } of phaseLabels) {
+      const { engine, options } = this.getEngineForPhase(phase);
+      const optionStr = this.formatEngineOptions(engine, options);
+      log('CYAN', `  ${label} ${optionStr}`);
     }
-    // Claude エンジン用: thinking budget（デフォルト: 31999）
-    if (this.config.engine === 'claude') {
-      log('CYAN', `Thinking Budget: ${this.config.thinkingBudget ?? 31999}`);
-    }
-    // Codex エンジン用: reasoning effort
-    if (this.config.engine === 'codex' && this.config.reasoningEffort) {
-      log('CYAN', `Reasoning Effort: ${this.config.reasoningEffort}`);
-    }
+
     if (this.config.hitl) {
       log('CYAN', 'HITL モード: 有効');
     }
     log('CYAN', '');
     log('CYAN', 'Ctrl+C でいつでも一時停止できます');
     log('BLUE', '');
+  }
+
+  /**
+   * エンジンオプションを表示用にフォーマット
+   */
+  private formatEngineOptions(
+    engine: EngineType,
+    options: { reasoningEffort?: 'low' | 'medium' | 'high'; model?: string; thinkingBudget?: number }
+  ): string {
+    if (engine === 'claude') {
+      const model = options.model ?? 'opus';
+      const thinking = options.thinkingBudget ?? 31999;
+      return `claude/${model} (thinking: ${thinking})`;
+    } else {
+      const reasoning = options.reasoningEffort ?? 'high';
+      return `codex (reasoning: ${reasoning})`;
+    }
   }
 
   /**
