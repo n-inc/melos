@@ -260,29 +260,8 @@ describe('Orchestrator Integration Tests', () => {
       await expect(orchestrator.run()).rejects.toThrow('PRD ファイルが見つかりません');
     });
 
-    it('should throw error when PLAN file is missing', async () => {
-      // Setup - create PRD but no PLAN
-      await createMinimalPrd();
-
-      const engines = createMockEngines();
-      const orchestrator = new Orchestrator({
-        cwd: testDir,
-        mode: 'default',
-        maxIterations: 5,
-        engine: 'claude',
-        hitl: false,
-        prdFile: 'PRD.md',
-        planFile: 'PLAN.json',
-        progressFile: 'PROGRESS.md',
-        statusFile: 'STATUS.json',
-        engines,
-      });
-
-      // Execute & Verify
-      await expect(orchestrator.run()).rejects.toThrow(
-        'プランファイルが見つかりません'
-      );
-    });
+    // Note: PLAN.json is no longer required in default mode
+    // as the research phase will generate it
   });
 
   describe('Mode-specific behavior', () => {
@@ -313,8 +292,9 @@ describe('Orchestrator Integration Tests', () => {
       expect(result.reason).toBe('complete');
     });
 
-    it('should work with review-only mode (no PRD/PLAN required)', async () => {
-      // Setup - no PRD/PLAN files needed for review-only
+    it('should work with review-only mode', async () => {
+      // Setup - PLAN.json is needed for task info
+      await createMinimalPlan();
       const engines = createMockEngines();
       const orchestrator = new Orchestrator({
         cwd: testDir,

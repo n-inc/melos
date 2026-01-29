@@ -78,7 +78,7 @@ async function handleCommandAction(action: () => Promise<void>): Promise<void> {
 /**
  * CLI オプションから実行モードを決定
  */
-export function getExecutionMode(options: CLIOptions, cwd: string = process.cwd()): ExecutionMode {
+export function getExecutionMode(options: CLIOptions, _cwd: string = process.cwd()): ExecutionMode {
   if (options.ciFixOnly) {
     return 'ci-fix-only';
   }
@@ -88,11 +88,8 @@ export function getExecutionMode(options: CLIOptions, cwd: string = process.cwd(
   if (options.taskOnly) {
     return 'task-only';
   }
-  // PLAN.json が存在しない場合は planless モード
-  const planPath = join(cwd, 'PLAN.json');
-  if (!existsSync(planPath)) {
-    return 'planless';
-  }
+  // PLAN.json の有無に関係なく default モード
+  // （PLAN.json がない場合は研究フェーズで生成）
   return 'default';
 }
 
@@ -210,10 +207,6 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   const cwd = process.cwd();
   const mode = getExecutionMode(merged, cwd);
 
-  // planless モード自動検出時にログ表示
-  if (mode === 'planless' && !merged.ciFixOnly && !merged.reviewOnly && !merged.taskOnly) {
-    console.log('\x1b[0;36mPLAN.json が見つかりません。プランなしモードで起動します。\x1b[0m');
-  }
 
   // デフォルトイテレーション数を取得
   const defaultIterations = getDefaultMaxIterations(mode);

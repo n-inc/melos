@@ -83,9 +83,9 @@ describe('loader.ts', () => {
       expect(types).toHaveLength(5);
       expect(types).toContain('loop');
       expect(types).toContain('hitl-loop');
-      expect(types).toContain('planless-loop');
-      expect(types).toContain('hitl-planless-loop');
-      expect(types).toContain('planless-completion-check');
+      expect(types).toContain('research');
+      expect(types).toContain('verification');
+      expect(types).toContain('review');
     });
   });
 

@@ -300,3 +300,72 @@ export async function updateCheckWithEvidence(
   await savePlan(path, plan);
   return plan;
 }
+
+/**
+ * PLAN修正の記録
+ */
+export interface PlanModification {
+  timestamp: string;
+  type: 'add' | 'update' | 'delete';
+  taskId: string;
+  reason: string;
+  previousState?: PlanTask;
+}
+
+/**
+ * PLAN.json を修正し、修正履歴を記録
+ */
+export async function modifyPlan(
+  path: string,
+  modification: {
+    type: 'add' | 'update' | 'delete';
+    taskId: string;
+    reason: string;
+    task?: PlanTask;
+  }
+): Promise<{ plan: Plan; modification: PlanModification }> {
+  const plan = await loadPlan(path);
+  const timestamp = new Date().toISOString();
+
+  const record: PlanModification = {
+    timestamp,
+    type: modification.type,
+    taskId: modification.taskId,
+    reason: modification.reason,
+  };
+
+  switch (modification.type) {
+    case 'add':
+      if (!modification.task) {
+        throw new Error('追加するタスクが指定されていません');
+      }
+      plan.push(modification.task);
+      break;
+
+    case 'update': {
+      const index = plan.findIndex((t) => t.id === modification.taskId);
+      if (index === -1) {
+        throw new Error(`タスクが見つかりません: ${modification.taskId}`);
+      }
+      record.previousState = { ...plan[index] };
+      if (modification.task) {
+        plan[index] = modification.task;
+      }
+      break;
+    }
+
+    case 'delete': {
+      const index = plan.findIndex((t) => t.id === modification.taskId);
+      if (index === -1) {
+        throw new Error(`タスクが見つかりません: ${modification.taskId}`);
+      }
+      record.previousState = { ...plan[index] };
+      plan.splice(index, 1);
+      break;
+    }
+  }
+
+  await savePlan(path, plan);
+
+  return { plan, modification: record };
+}

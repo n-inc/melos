@@ -20,7 +20,7 @@ export interface PromptVariables {
 /**
  * プロンプトタイプ
  */
-export type PromptType = 'loop' | 'hitl-loop' | 'planless-loop' | 'hitl-planless-loop' | 'planless-completion-check';
+export type PromptType = 'loop' | 'hitl-loop' | 'research' | 'verification' | 'review';
 
 /**
  * プロンプトファイルのパスを取得
@@ -137,7 +137,7 @@ export async function loadPromptFromPathWithVariables(
  * 利用可能なすべてのプロンプトタイプを取得
  */
 export function getAvailablePromptTypes(): PromptType[] {
-  return ['loop', 'hitl-loop', 'planless-loop', 'hitl-planless-loop', 'planless-completion-check'];
+  return ['loop', 'hitl-loop', 'research', 'verification', 'review'];
 }
 
 /**

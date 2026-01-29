@@ -84,7 +84,6 @@ const MODE_NAMES: Record<ExecutionMode, string> = {
   'review-only': 'レビューのみ',
   'ci-fix-only': 'CI修正のみ',
   'task-only': 'タスクのみ',
-  planless: 'プランなし',
 };
 
 /**

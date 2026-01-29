@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 /**
  * 実行モード
  */
-export type ExecutionMode = 'default' | 'review-only' | 'ci-fix-only' | 'task-only' | 'planless';
+export type ExecutionMode = 'default' | 'review-only' | 'ci-fix-only' | 'task-only';
 
 /**
  * PROGRESS.md のヘッダー情報
@@ -38,8 +38,6 @@ export interface Progress {
   header: ProgressHeader;
   /** イテレーションエントリのリスト */
   entries: IterationEntry[];
-  /** 次やること セクション（planlessモード用） */
-  nextTasks?: string;
   /** Codebase Patterns セクション（オプション） */
   codebasePatterns?: string;
   /** Current Objective セクション（オプション） */
@@ -48,17 +46,18 @@ export interface Progress {
   learnings?: string;
   /** Open Questions / Risks セクション（オプション） */
   openQuestionsRisks?: string;
+  /** Claude.md改善提案セクション（オプション） */
+  claudeMdImprovements?: string;
 }
 
 /**
  * モード表示名のマッピング
  */
 const MODE_DISPLAY_NAMES: Record<ExecutionMode, string> = {
-  default: 'Default (Task → Review → CI)',
+  default: 'Default (Research → Task → Verification → Review)',
   'review-only': 'Review Only',
   'ci-fix-only': 'CI Fix Only',
   'task-only': 'Task Only',
-  planless: 'Planless (Ralph-style)',
 };
 
 /**
@@ -74,9 +73,6 @@ function parseModeFromDisplay(display: string): ExecutionMode {
   }
   if (lower.includes('task only') || lower.includes('task-only')) {
     return 'task-only';
-  }
-  if (lower.includes('planless') || lower.includes('ralph')) {
-    return 'planless';
   }
   return 'default';
 }
@@ -114,20 +110,20 @@ export function parseProgress(content: string): Progress {
   const entries = parseIterations(lines);
 
   // 各セクションをパース
-  const nextTasks = parseNextTasks(lines);
   const codebasePatterns = parseCodebasePatterns(lines);
   const currentObjective = parseCurrentObjective(lines);
   const learnings = parseLearnings(lines);
   const openQuestionsRisks = parseOpenQuestionsRisks(lines);
+  const claudeMdImprovements = parseClaudeMdImprovements(lines);
 
   return {
     header,
     entries,
-    nextTasks,
     codebasePatterns,
     currentObjective,
     learnings,
     openQuestionsRisks,
+    claudeMdImprovements,
   };
 }
 
@@ -233,29 +229,6 @@ function parseIterations(lines: string[]): IterationEntry[] {
 }
 
 /**
- * 次やること セクションをパース
- */
-function parseNextTasks(lines: string[]): string | undefined {
-  const startIndex = lines.findIndex((line) => line.startsWith('## 次やること'));
-  if (startIndex === -1) {
-    return undefined;
-  }
-
-  const contentLines: string[] = [];
-  for (let i = startIndex + 1; i < lines.length; i++) {
-    const line = lines[i];
-    // 次の H2 セクションで終了
-    if (line.startsWith('## ')) {
-      break;
-    }
-    contentLines.push(line);
-  }
-
-  const content = contentLines.join('\n').trim();
-  return content || undefined;
-}
-
-/**
  * Codebase Patterns セクションをパース
  */
 function parseCodebasePatterns(lines: string[]): string | undefined {
@@ -354,6 +327,31 @@ function parseOpenQuestionsRisks(lines: string[]): string | undefined {
 }
 
 /**
+ * Claude.md改善提案 セクションをパース
+ */
+function parseClaudeMdImprovements(lines: string[]): string | undefined {
+  const startIndex = lines.findIndex((line) =>
+    line.startsWith('## Claude.md改善提案')
+  );
+  if (startIndex === -1) {
+    return undefined;
+  }
+
+  const contentLines: string[] = [];
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // 次の H2 セクションで終了
+    if (line.startsWith('## ')) {
+      break;
+    }
+    contentLines.push(line);
+  }
+
+  const content = contentLines.join('\n').trim();
+  return content || undefined;
+}
+
+/**
  * PROGRESS.md を保存する
  */
 export async function saveProgress(
@@ -385,14 +383,6 @@ export function serializeProgress(progress: Progress): string {
     lines.push('## Current Objective');
     lines.push('');
     lines.push(progress.currentObjective);
-    lines.push('');
-  }
-
-  // 次やること セクション（planlessモード用）
-  if (progress.nextTasks) {
-    lines.push('## 次やること');
-    lines.push('');
-    lines.push(progress.nextTasks);
     lines.push('');
   }
 
@@ -434,6 +424,14 @@ export function serializeProgress(progress: Progress): string {
     lines.push('');
   }
 
+  // Claude.md改善提案 セクション
+  if (progress.claudeMdImprovements) {
+    lines.push('## Claude.md改善提案');
+    lines.push('');
+    lines.push(progress.claudeMdImprovements);
+    lines.push('');
+  }
+
   return lines.join('\n');
 }
 
@@ -456,11 +454,6 @@ export async function initializeProgress(
     },
     entries: [],
   };
-
-  // planless モードの場合は「次やること」セクションを初期化
-  if (mode === 'planless') {
-    progress.nextTasks = '（PRD.md を読んで最初のステップを追加してください）';
-  }
 
   await saveProgress(path, progress);
   return progress;
@@ -585,6 +578,40 @@ export async function addOpenQuestion(
     progress.openQuestionsRisks = questionLine;
   } else {
     progress.openQuestionsRisks += `\n${questionLine}`;
+  }
+
+  await saveProgress(path, progress);
+  return progress;
+}
+
+/**
+ * Claude.md改善提案を追加
+ * @param path PROGRESS.mdのパス
+ * @param improvement 改善提案
+ */
+export async function addClaudeMdImprovement(
+  path: string,
+  improvement: {
+    type: 'missing' | 'incorrect' | 'location' | 'pattern';
+    description: string;
+    suggestion: string;
+  }
+): Promise<Progress> {
+  const progress = await loadProgress(path);
+
+  const typeLabels = {
+    missing: '記載不足',
+    incorrect: '記載ミス',
+    location: '場所改善',
+    pattern: '新パターン',
+  };
+
+  const entry = `- [${typeLabels[improvement.type]}] ${improvement.description}\n  - 提案: ${improvement.suggestion}`;
+
+  if (!progress.claudeMdImprovements) {
+    progress.claudeMdImprovements = entry;
+  } else {
+    progress.claudeMdImprovements += '\n' + entry;
   }
 
   await saveProgress(path, progress);
