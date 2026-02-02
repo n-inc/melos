@@ -119,9 +119,8 @@ const DEFAULT_PHASE_ENGINES: Record<PhaseType, { engine: EngineType; reasoningEf
     reasoningEffort: 'high',
   },
   task: {
-    engine: 'claude',
-    model: 'opus',
-    thinkingBudget: 31999,
+    engine: 'codex',
+    reasoningEffort: 'high',
   },
   verification: {
     engine: 'codex',
