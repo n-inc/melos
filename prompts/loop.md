@@ -129,14 +129,27 @@
 
 ### Step 2: 全タスク完了 → Run Review
 
-1. **Launch 2 review agents in parallel**:
-   - comprehensive-reviewer（履歴分析、パターン認識、アーキテクチャ、セキュリティ、パフォーマンス、データ整合性、シンプル性の7観点を統合）
-   - general-purpose (run `Skill codex-review`)
+1. **差分を取得**:
+   ```bash
+   git diff origin/main
+   ```
 
-2. **Extract findings from agents**:
-   - 各エージェントが報告した重大度（P1/P2/P3+）を使用
+2. **レビュー観点に従って直接レビュー**（@prompts/review.md を参照）:
 
-3. **Filter by scope** (`git diff main --name-only` を実行):
+   **7つの観点でレビュー**:
+   - 履歴分析: 変更の意図と一貫性
+   - パターン認識: コードベースの慣例との整合性
+   - アーキテクチャ: 設計の適切さ
+   - セキュリティ: 脆弱性の有無
+   - パフォーマンス: 効率性の問題
+   - データ整合性: データの正確性と一貫性
+   - シンプル性: 不要な複雑さがないか
+
+   **重大度の分類**:
+   - **P1（必須修正）**: バグ、セキュリティ、データ損失、重大なロジックエラー
+   - **P2（推奨修正）**: パフォーマンス、可読性、保守性の問題
+
+3. **結果をスコープで分類**（`git diff main --name-only` を実行）:
    - IN_SCOPE = ファイルが差分に含まれる → 対象
    - OUT_OF_SCOPE = ファイルが差分に含まれない → 除外
 
@@ -149,7 +162,7 @@
 
 5. **Task format** (追加する場合):
    ```json
-   {"id": "review-1", "description": "[P1] agent-name: finding", "passes": false}
+   {"id": "review-1", "description": "[P1] finding description", "passes": false}
    ```
 
 6. **Record in {PROGRESS_FILE}**: すべての指摘事項と重大度、スコープ
