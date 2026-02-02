@@ -1041,13 +1041,21 @@ ${progress.claudeMdImprovements}
 
     await this.saveCurrentStatus();
 
-    // エンジンを決定（タスクの model フィールド > デフォルト）
+    // エンジンを決定（タスクの model フィールド > フェーズ設定 > デフォルト）
     const engineType = await this.getEngineForNextTask();
     const engine = this.engines.get(engineType);
+    const phaseConfig = this.getEngineForPhase('task');
 
     if (!engine) {
       throw new Error(`エンジンが見つかりません: ${engineType}`);
     }
+
+    // エンジンオプションを決定（CLI指定 > フェーズ設定）
+    const engineOptions = {
+      model: this.config.model ?? phaseConfig.options.model,
+      reasoningEffort: this.config.reasoningEffort ?? phaseConfig.options.reasoningEffort,
+      thinkingBudget: this.config.thinkingBudget ?? phaseConfig.options.thinkingBudget,
+    };
 
     // ヘッダーを表示（セッション内のイテレーション番号を使用）
     const sessionIteration = this.currentIteration - this.startIteration + 1;
@@ -1061,9 +1069,9 @@ ${progress.claudeMdImprovements}
       this.loopStartTime.toISOString(),
       engineType,
       this.prdTitle,
-      this.config.model,
-      this.config.thinkingBudget,
-      this.config.reasoningEffort
+      engineOptions.model,
+      engineOptions.thinkingBudget,
+      engineOptions.reasoningEffort
     );
 
     // スピナーを開始
@@ -1083,9 +1091,7 @@ ${progress.claudeMdImprovements}
     // エンジンを実行
     const engineResult = await engine.execute(prompt, {
       cwd: this.config.cwd,
-      model: this.config.model,
-      reasoningEffort: this.config.reasoningEffort,
-      thinkingBudget: this.config.thinkingBudget,
+      ...engineOptions,
     });
 
     // スピナーを停止
@@ -1224,7 +1230,7 @@ ${progress.claudeMdImprovements}
     const planPath = join(this.config.cwd, this.config.planFile);
 
     if (!planExists(planPath)) {
-      return this.config.engine;
+      return this.getEngineForPhase('task').engine;
     }
 
     try {
@@ -1240,7 +1246,7 @@ ${progress.claudeMdImprovements}
       log('YELLOW', `プランファイルの読み込みに失敗: ${errorMessage}`);
     }
 
-    return this.config.engine;
+    return this.getEngineForPhase('task').engine;
   }
 
   /**
