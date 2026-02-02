@@ -1,4 +1,4 @@
-## Melos 研究フェーズ
+## Melos 探索フェーズ
 
 **PRD**: @PRD.md
 **Progress file**: @{PROGRESS_FILE}

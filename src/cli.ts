@@ -89,7 +89,7 @@ export function getExecutionMode(options: CLIOptions, _cwd: string = process.cwd
     return 'task-only';
   }
   // PLAN.json の有無に関係なく default モード
-  // （PLAN.json がない場合は研究フェーズで生成）
+  // （PLAN.json がない場合は探索フェーズで生成）
   return 'default';
 }
 
@@ -137,6 +137,46 @@ export function createProgram(): Command {
       new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
     )
     .helpOption('-h, --help', 'ヘルプを表示');
+
+  program
+    .command('run')
+    .description('Melos ループを実行')
+    .option('--task-only', 'タスク実行のみ（レビュー・CI修正なし）')
+    .option('--review-only', 'レビュー→修正のサイクルのみ実行（5イテレーション）')
+    .option('--ci-fix-only', 'CI修正のみ実行（5イテレーション）')
+    .option(
+      '--max-iterations <number>',
+      '最大イテレーション数',
+      parseMaxIterations
+    )
+    .option('--hitl', '対話モード（1イテレーションずつ実行）')
+    .option(
+      '--engine <engine>',
+      'エンジン選択 (claude | codex)'
+    )
+    .option(
+      '--model <model>',
+      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など）'
+    )
+    .option(
+      '--reasoning-effort <level>',
+      'Codex 推論努力レベル (low | medium | high | xhigh)'
+    )
+    .option(
+      '--thinking-budget <number>',
+      'Claude thinking budget（1024〜31999、デフォルト: 31999）',
+      parseThinkingBudget
+    )
+    .option(
+      '--plain',
+      'プレーン出力モード（スピナー無効）'
+    )
+    .addOption(
+      new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
+    )
+    .action(async (options: CLIOptions) => {
+      await handleCommandAction(() => executeWithOptions(options));
+    });
 
   program
     .command('watch')

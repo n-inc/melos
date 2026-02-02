@@ -104,7 +104,7 @@ export interface OrchestratorConfig {
  * モード表示名
  */
 const MODE_NAMES: Record<ExecutionMode, string> = {
-  default: 'デフォルト（研究 → タスク → 確認 → レビュー）',
+  default: 'デフォルト（探索 → タスク → 確認 → レビュー）',
   'review-only': 'レビューのみ',
   'ci-fix-only': 'CI修正のみ',
   'task-only': 'タスクのみ',
@@ -375,7 +375,7 @@ export class Orchestrator {
    * 設定を検証する
    */
   private validateConfig(): void {
-    // デフォルトモードでは PRD ファイルのみ必須（PLAN は研究フェーズで生成）
+    // デフォルトモードでは PRD ファイルのみ必須（PLAN は探索フェーズで生成）
     if (this.config.mode === 'default') {
       if (!existsSync(join(this.config.cwd, this.config.prdFile))) {
         throw new Error(`PRD ファイルが見つかりません: ${this.config.prdFile}`);
@@ -444,7 +444,7 @@ export class Orchestrator {
     // フェーズ別エンジン設定を表示
     log('CYAN', 'フェーズ別エンジン設定:');
     const phaseLabels: Array<{ phase: PhaseType; label: string }> = [
-      { phase: 'research', label: '研究:    ' },
+      { phase: 'research', label: '探索:    ' },
       { phase: 'task', label: 'タスク:  ' },
       { phase: 'verification', label: '確認:    ' },
       { phase: 'review', label: 'レビュー:' },
@@ -550,12 +550,12 @@ export class Orchestrator {
   }
 
   /**
-   * 研究フェーズを実行
+   * 探索フェーズを実行
    */
   private async runResearchPhase(): Promise<{ success: boolean; error?: string }> {
     log('BLUE', '');
     log('BLUE', '========================================');
-    log('BLUE', '研究フェーズを開始します');
+    log('BLUE', '探索フェーズを開始します');
     log('BLUE', '========================================');
     log('BLUE', '');
 
@@ -572,13 +572,13 @@ export class Orchestrator {
 
     // RESEARCH_COMPLETE を検出
     if (result.output.includes('<promise>RESEARCH_COMPLETE</promise>')) {
-      log('GREEN', '研究フェーズが完了しました');
+      log('GREEN', '探索フェーズが完了しました');
       return { success: true };
     }
 
     // エラーまたは未完了
-    log('YELLOW', '研究フェーズが正常に完了しませんでした');
-    return { success: false, error: '研究フェーズが完了しませんでした' };
+    log('YELLOW', '探索フェーズが正常に完了しませんでした');
+    return { success: false, error: '探索フェーズが完了しませんでした' };
   }
 
   /**
@@ -766,14 +766,14 @@ ${progress.claudeMdImprovements}
    * 統一ループを実行
    *
    * 単一ループで以下を処理:
-   * 1. 研究フェーズ → PLAN.json 生成/更新
+   * 1. 探索フェーズ → PLAN.json 生成/更新
    * 2. タスク実行フェーズ
    * 3. 実装確認フェーズ
    * 4. レビューフェーズ
    * 5. 完了 → HANDOFF.md 生成
    */
   private async runUnifiedLoop(): Promise<LoopResult> {
-    // 研究フェーズを実行（PLAN.json がない場合、または調査が必要な場合）
+    // 探索フェーズを実行（PLAN.json がない場合、または調査が必要な場合）
     const planPath = join(this.config.cwd, this.config.planFile);
     if (!planExists(planPath)) {
       const researchResult = await this.runResearchPhase();
@@ -786,11 +786,11 @@ ${progress.claudeMdImprovements}
         };
       }
 
-      // HITL モードの場合、研究フェーズ完了後に一時停止
+      // HITL モードの場合、探索フェーズ完了後に一時停止
       if (this.config.hitl) {
         log('GREEN', '');
         log('GREEN', '========================================');
-        log('GREEN', 'HITL モード: 研究フェーズ完了');
+        log('GREEN', 'HITL モード: 探索フェーズ完了');
         log('GREEN', '========================================');
         log('NC', '');
         log('NC', 'PLAN.json が生成されました。');
