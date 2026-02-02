@@ -296,8 +296,10 @@ export function printIterationHeader(
   }
 
   // エンジン表示を構築
+  // codex エンジンの場合、Claude専用モデル名は表示しない（実際には使われないため）
+  const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
   let engineDisplay = engine;
-  if (model) {
+  if (model && !(engine === 'codex' && CLAUDE_ONLY_MODELS.includes(model))) {
     engineDisplay += ` (${model})`;
   }
 
