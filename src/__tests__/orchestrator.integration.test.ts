@@ -42,13 +42,13 @@ describe('Orchestrator Integration Tests', () => {
   /**
    * 最小 PLAN を作成
    */
-  async function createMinimalPlan(): Promise<void> {
+  async function createMinimalPlan(passes: boolean = false): Promise<void> {
     const plan: Plan = [
       {
         id: '1',
         description:
           'PLAN.jsonのpasses: trueに更新し、<promise>COMPLETE</promise>を出力する',
-        passes: false,
+        passes,
       },
     ];
     await writeFile(join(testDir, 'PLAN.json'), JSON.stringify(plan, null, 2));
@@ -299,6 +299,33 @@ describe('Orchestrator Integration Tests', () => {
       const orchestrator = new Orchestrator({
         cwd: testDir,
         mode: 'review-only',
+        maxIterations: 5,
+        engine: 'claude',
+        hitl: false,
+        prdFile: 'PRD.md',
+        planFile: 'PLAN.json',
+        progressFile: 'PROGRESS.md',
+        statusFile: 'STATUS.json',
+        engines,
+      });
+
+      // Execute
+      const result = await orchestrator.run();
+
+      // Verify
+      expect(result.success).toBe(true);
+      expect(result.reason).toBe('complete');
+    });
+
+    it('should complete via review when all tasks are already complete', async () => {
+      // Setup
+      await createMinimalPrd();
+      await createMinimalPlan(true);
+
+      const engines = createMockEngines();
+      const orchestrator = new Orchestrator({
+        cwd: testDir,
+        mode: 'default',
         maxIterations: 5,
         engine: 'claude',
         hitl: false,

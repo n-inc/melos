@@ -11,6 +11,8 @@ import {
   planExists,
   getPendingTasks,
   getNextTask,
+  isAllTasksCompleted,
+  addTasks,
   type Plan,
   type PlanTask,
 } from './state/plan.js';
@@ -714,6 +716,88 @@ git diff main の内容を確認して、以下の観点でレビューしてく
   }
 
   /**
+   * レビューフェーズを実行すべきか判定
+   */
+  private shouldRunReviewPhase(): boolean {
+    return this.config.mode !== 'task-only' && this.config.mode !== 'ci-fix-only';
+  }
+
+  /**
+   * review-* タスクの次番号を取得
+   */
+  private getNextReviewIndex(plan: Plan): number {
+    let max = 0;
+    for (const task of plan) {
+      const match = /^review-(\d+)$/.exec(task.id);
+      if (!match) continue;
+      const value = Number.parseInt(match[1], 10);
+      if (!Number.isNaN(value)) {
+        max = Math.max(max, value);
+      }
+    }
+    return max + 1;
+  }
+
+  /**
+   * レビュー指摘からタスクを生成（P1/P2 のみ）
+   */
+  private buildReviewTasks(plan: Plan, issues: string[]): PlanTask[] {
+    const actionable = issues.filter(
+      (issue) => issue.startsWith('[P1]') || issue.startsWith('[P2]')
+    );
+    if (actionable.length === 0) {
+      return [];
+    }
+    const start = this.getNextReviewIndex(plan);
+    return actionable.map((issue, index) => ({
+      id: `review-${start + index}`,
+      description: issue,
+      passes: false,
+    }));
+  }
+
+  /**
+   * 全タスク完了時にレビューを実行し、必要ならタスク追加/完了を確定
+   */
+  private async runReviewIfAllTasksCompleted(
+    planPath: string
+  ): Promise<'continue' | 'complete'> {
+    if (!planExists(planPath)) {
+      return 'continue';
+    }
+
+    let plan: Plan;
+    try {
+      plan = await loadPlan(planPath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log('YELLOW', `プランファイルの読み込みに失敗: ${message}`);
+      return 'continue';
+    }
+
+    if (!isAllTasksCompleted(plan)) {
+      return 'continue';
+    }
+
+    const reviewResult = await this.runReviewPhase();
+    const reviewTasks = this.buildReviewTasks(plan, reviewResult.issues);
+
+    if (reviewTasks.length > 0) {
+      await addTasks(planPath, reviewTasks);
+      log('YELLOW', `レビュー指摘を ${reviewTasks.length} 件タスクに追加しました。`);
+      return 'continue';
+    }
+
+    if (reviewResult.hasIssues) {
+      log('YELLOW', 'レビュー指摘は P1/P2 以外のため、タスク追加なし。');
+    }
+
+    const handoff = await this.readHandoff();
+    printCompletion(this.config.mode, this.currentIteration, handoff);
+    return 'complete';
+  }
+
+  /**
    * HANDOFF.md を生成
    */
   private async generateHandoff(): Promise<void> {
@@ -810,6 +894,18 @@ ${progress.claudeMdImprovements}
     while (sessionIterations() < max && !this.aborted) {
       // Git状態を更新
       this.updateGitState();
+
+      // 全タスク完了時はレビューに移行（task-only / ci-fix-only は除外）
+      if (this.shouldRunReviewPhase()) {
+        const reviewOutcome = await this.runReviewIfAllTasksCompleted(planPath);
+        if (reviewOutcome === 'complete') {
+          return {
+            success: true,
+            completedIterations: this.currentIteration,
+            reason: 'complete',
+          };
+        }
+      }
 
       // モードに応じた処理
       let promptType: PromptType;
