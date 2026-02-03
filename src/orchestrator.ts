@@ -585,7 +585,7 @@ export class Orchestrator {
   /**
    * 実装確認フェーズを実行
    */
-  private async runVerificationPhase(): Promise<{ success: boolean; error?: string }> {
+  private async runVerificationPhase(): Promise<{ success: boolean; issues: string[] }> {
     log('BLUE', '');
     log('BLUE', '========================================');
     log('BLUE', '実装確認フェーズを開始します');
@@ -650,13 +650,9 @@ PRD.md に記載された要件が全て実装されているかを確認する�
       cwd: this.config.cwd,
     });
 
-    if (result.output.includes('<promise>VERIFICATION_PASS</promise>')) {
-      log('GREEN', '実装確認フェーズ: PASS');
-      return { success: true };
-    }
-
-    log('YELLOW', '実装確認フェーズ: FAIL - 未実装要件あり');
-    return { success: false, error: '未実装要件があります' };
+    const parsed = this.parseVerificationResult(result.output);
+    log(parsed.success ? 'GREEN' : 'YELLOW', `実装確認フェーズ: ${parsed.success ? 'PASS' : 'FAIL'}`);
+    return parsed;
   }
 
   /**
@@ -716,10 +712,46 @@ git diff main の内容を確認して、以下の観点でレビューしてく
   }
 
   /**
+   * 実装確認フェーズを実行すべきか判定
+   */
+  private shouldRunVerificationPhase(): boolean {
+    return this.config.mode === 'default';
+  }
+
+  /**
    * レビューフェーズを実行すべきか判定
    */
   private shouldRunReviewPhase(): boolean {
     return this.config.mode !== 'task-only' && this.config.mode !== 'ci-fix-only';
+  }
+
+  /**
+   * verify-* タスクの次番号を取得
+   */
+  private getNextVerificationIndex(plan: Plan): number {
+    let max = 0;
+    for (const task of plan) {
+      const match = /^verify-(\d+)$/.exec(task.id);
+      if (!match) continue;
+      const value = Number.parseInt(match[1], 10);
+      if (!Number.isNaN(value)) {
+        max = Math.max(max, value);
+      }
+    }
+    return max + 1;
+  }
+
+  /**
+   * 実装確認の指摘からタスクを生成
+   */
+  private buildVerificationTasks(plan: Plan, issues: string[]): PlanTask[] {
+    const normalized = issues.length > 0 ? issues : ['実装確認が失敗しました（詳細なし）'];
+    const start = this.getNextVerificationIndex(plan);
+    return normalized.map((issue, index) => ({
+      id: `verify-${start + index}`,
+      description: `[VERIFY] ${issue}`,
+      passes: false,
+    }));
   }
 
   /**
@@ -777,6 +809,19 @@ git diff main の内容を確認して、以下の観点でレビューしてく
 
     if (!isAllTasksCompleted(plan)) {
       return 'continue';
+    }
+
+    if (this.shouldRunVerificationPhase()) {
+      const verification = await this.runVerificationPhase();
+      if (!verification.success) {
+        const verificationTasks = this.buildVerificationTasks(
+          plan,
+          verification.issues
+        );
+        await addTasks(planPath, verificationTasks);
+        log('YELLOW', `実装確認の指摘を ${verificationTasks.length} 件タスクに追加しました。`);
+        return 'continue';
+      }
     }
 
     const reviewResult = await this.runReviewPhase();
@@ -1360,6 +1405,33 @@ ${progress.claudeMdImprovements}
     };
 
     return loadPrompt(promptType, variables);
+  }
+
+  /**
+   * 実装確認結果をパース
+   */
+  private parseVerificationResult(
+    output: string
+  ): { success: boolean; issues: string[] } {
+    if (output.includes('<promise>VERIFICATION_PASS</promise>')) {
+      return { success: true, issues: [] };
+    }
+
+    const issuesMatch = output.match(
+      /<verification_issues>([\s\S]*?)<\/verification_issues>/
+    );
+    const issues: string[] = [];
+    if (issuesMatch) {
+      const lines = issuesMatch[1].split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('-')) {
+          issues.push(trimmed.slice(1).trim());
+        }
+      }
+    }
+
+    return { success: false, issues };
   }
 
   /**

@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -26,6 +26,37 @@ describe('Orchestrator Integration Tests', () => {
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
   });
+
+  async function createMainBranchWithDiff(): Promise<void> {
+    const target = join(testDir, 'dummy.txt');
+    await writeFile(target, 'base\n');
+    spawnSync('git', ['add', 'dummy.txt'], { cwd: testDir });
+    spawnSync('git', ['commit', '-m', 'init'], { cwd: testDir });
+    spawnSync('git', ['branch', '-M', 'main'], { cwd: testDir });
+    await writeFile(target, 'changed\n');
+  }
+
+  function createPromptAwareEngine(outputs: {
+    verification?: string;
+    review?: string;
+    default?: string;
+  }): MockEngine {
+    const engine = new MockEngine();
+    engine.execute = async (prompt) => {
+      if (outputs.verification && prompt.includes('実装確認フェーズ')) {
+        return { success: true, output: outputs.verification, exitCode: 0 };
+      }
+      if (outputs.review && prompt.includes('コードレビュー')) {
+        return { success: true, output: outputs.review, exitCode: 0 };
+      }
+      return {
+        success: true,
+        output: outputs.default ?? 'Task done.\n<promise>TASK_DONE</promise>',
+        exitCode: 0,
+      };
+    };
+    return engine;
+  }
 
   /**
    * 最小 PRD を作成
@@ -322,7 +353,14 @@ describe('Orchestrator Integration Tests', () => {
       await createMinimalPrd();
       await createMinimalPlan(true);
 
-      const engines = createMockEngines();
+      const engine = createPromptAwareEngine({
+        verification: '<promise>VERIFICATION_PASS</promise>',
+        review: '<review_verdict>CLEAN</review_verdict>',
+        default: 'Task done.\n<promise>TASK_DONE</promise>',
+      });
+      const engines = new Map<EngineType, Engine>();
+      engines.set('claude', engine);
+      engines.set('codex', engine);
       const orchestrator = new Orchestrator({
         cwd: testDir,
         mode: 'default',
@@ -342,6 +380,91 @@ describe('Orchestrator Integration Tests', () => {
       // Verify
       expect(result.success).toBe(true);
       expect(result.reason).toBe('complete');
+    });
+
+    it('should add review tasks when review reports P1/P2 issues', async () => {
+      // Setup
+      await createMinimalPrd();
+      await createMinimalPlan(true);
+      await createMainBranchWithDiff();
+
+      const engine = createPromptAwareEngine({
+        verification: '<promise>VERIFICATION_PASS</promise>',
+        review: `<review_verdict>ISSUES</review_verdict>
+<review_issues>
+- [P1] src/foo.ts: bug
+- [P3] src/bar.ts: nit
+</review_issues>`,
+        default: 'Task done.\n<promise>TASK_DONE</promise>',
+      });
+
+      const engines = new Map<EngineType, Engine>();
+      engines.set('claude', engine);
+      engines.set('codex', engine);
+
+      const orchestrator = new Orchestrator({
+        cwd: testDir,
+        mode: 'default',
+        maxIterations: 2,
+        engine: 'claude',
+        hitl: false,
+        prdFile: 'PRD.md',
+        planFile: 'PLAN.json',
+        progressFile: 'PROGRESS.md',
+        statusFile: 'STATUS.json',
+        engines,
+      });
+
+      // Execute
+      await orchestrator.run();
+
+      // Verify
+      const content = await readFile(join(testDir, 'PLAN.json'), 'utf-8');
+      const plan = JSON.parse(content) as Plan;
+      const reviewTasks = plan.filter((task) => task.id.startsWith('review-'));
+      expect(reviewTasks.length).toBe(1);
+      expect(reviewTasks[0].description).toContain('[P1]');
+    });
+
+    it('should add verification tasks when verification fails', async () => {
+      // Setup
+      await createMinimalPrd();
+      await createMinimalPlan(true);
+
+      const engine = createPromptAwareEngine({
+        verification: `<promise>VERIFICATION_FAIL</promise>
+<verification_issues>
+- [未実装要件] サンプル
+</verification_issues>`,
+        default: 'Task done.\n<promise>TASK_DONE</promise>',
+      });
+
+      const engines = new Map<EngineType, Engine>();
+      engines.set('claude', engine);
+      engines.set('codex', engine);
+
+      const orchestrator = new Orchestrator({
+        cwd: testDir,
+        mode: 'default',
+        maxIterations: 1,
+        engine: 'claude',
+        hitl: false,
+        prdFile: 'PRD.md',
+        planFile: 'PLAN.json',
+        progressFile: 'PROGRESS.md',
+        statusFile: 'STATUS.json',
+        engines,
+      });
+
+      // Execute
+      await orchestrator.run();
+
+      // Verify
+      const content = await readFile(join(testDir, 'PLAN.json'), 'utf-8');
+      const plan = JSON.parse(content) as Plan;
+      const verifyTasks = plan.filter((task) => task.id.startsWith('verify-'));
+      expect(verifyTasks.length).toBe(1);
+      expect(verifyTasks[0].description).toContain('[VERIFY]');
     });
   });
 });
