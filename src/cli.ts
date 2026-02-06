@@ -35,11 +35,13 @@ export interface CLIOptions {
   hitl?: boolean;
   /** エンジン選択 */
   engine?: EngineType;
-  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など） */
+  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** Codex 推論努力レベル */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
-  /** Claude thinking budget */
+  /** Claude effort レベル（Opus 4.6+） */
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Claude thinking budget（旧モデル向け） */
   thinkingBudget?: number;
   /** 開始前にリセット（スモークテスト用） */
   dangerouslyResetBeforeStart?: boolean;
@@ -118,15 +120,19 @@ export function createProgram(): Command {
     )
     .option(
       '--model <model>',
-      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など）'
+      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など）'
     )
     .option(
       '--reasoning-effort <level>',
       'Codex 推論努力レベル (low | medium | high | xhigh)'
     )
     .option(
+      '--effort <level>',
+      'Claude effort レベル (low | medium | high | max、デフォルト: max)'
+    )
+    .option(
       '--thinking-budget <number>',
-      'Claude thinking budget（1024〜31999、デフォルト: 31999）',
+      'Claude thinking budget（旧モデル向け、1024〜31999）',
       parseThinkingBudget
     )
     .option(
@@ -156,15 +162,19 @@ export function createProgram(): Command {
     )
     .option(
       '--model <model>',
-      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など）'
+      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など）'
     )
     .option(
       '--reasoning-effort <level>',
       'Codex 推論努力レベル (low | medium | high | xhigh)'
     )
     .option(
+      '--effort <level>',
+      'Claude effort レベル (low | medium | high | max、デフォルト: max)'
+    )
+    .option(
       '--thinking-budget <number>',
-      'Claude thinking budget（1024〜31999、デフォルト: 31999）',
+      'Claude thinking budget（旧モデル向け、1024〜31999）',
       parseThinkingBudget
     )
     .option(
@@ -193,15 +203,19 @@ export function createProgram(): Command {
     )
     .option(
       '--model <model>',
-      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など）'
+      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など）'
     )
     .option(
       '--reasoning-effort <level>',
       'Codex 推論努力レベル (low | medium | high | xhigh)'
     )
     .option(
+      '--effort <level>',
+      'Claude effort レベル (low | medium | high | max、デフォルト: max)'
+    )
+    .option(
       '--thinking-budget <number>',
-      'Claude thinking budget（1024〜31999、デフォルト: 31999）',
+      'Claude thinking budget（旧モデル向け、1024〜31999）',
       parseThinkingBudget
     )
     .option(
@@ -249,7 +263,8 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
 
 
   // デフォルトイテレーション数を取得
-  const defaultIterations = getDefaultMaxIterations(mode);
+  const planPath = join(process.cwd(), 'PLAN.json');
+  const defaultIterations = await getDefaultMaxIterations(mode, planPath);
 
   // エンジンを検証
   const engine = validateEngine(merged.engine ?? 'claude');
@@ -257,6 +272,11 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   // 推論努力レベルを検証
   const reasoningEffort = merged.reasoningEffort
     ? validateReasoningEffort(merged.reasoningEffort)
+    : undefined;
+
+  // effort レベルを検証
+  const effort = merged.effort
+    ? validateEffort(merged.effort)
     : undefined;
 
   // デフォルトモデルを決定（スモークテストは haiku、それ以外は opus）
@@ -270,6 +290,7 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     engine,
     model: merged.model ?? defaultModel,
     reasoningEffort,
+    effort,
     thinkingBudget: merged.thinkingBudget,
   });
 
@@ -319,10 +340,15 @@ export async function executeWatch(options: CLIOptions): Promise<void> {
   const merged = mergeOptions(options, fileConfig);
 
   const engine = validateEngine(merged.engine ?? 'claude');
+  const planPath = join(process.cwd(), 'PLAN.json');
   const maxIterations =
-    merged.maxIterations ?? getDefaultMaxIterations('default');
+    merged.maxIterations ?? await getDefaultMaxIterations('default', planPath);
   const reasoningEffort = merged.reasoningEffort
     ? validateReasoningEffort(merged.reasoningEffort)
+    : undefined;
+
+  const watchEffort = merged.effort
+    ? validateEffort(merged.effort)
     : undefined;
 
   await watchPlanFile({
@@ -331,6 +357,7 @@ export async function executeWatch(options: CLIOptions): Promise<void> {
     hitl: merged.hitl ?? false,
     model: merged.model ?? 'opus',
     reasoningEffort,
+    effort: watchEffort,
     thinkingBudget: merged.thinkingBudget,
   });
 }
@@ -382,6 +409,16 @@ function validateReasoningEffort(level: string): 'low' | 'medium' | 'high' | 'xh
 }
 
 /**
+ * Claude effort レベルを検証
+ */
+function validateEffort(level: string): 'low' | 'medium' | 'high' | 'max' {
+  if (level === 'low' || level === 'medium' || level === 'high' || level === 'max') {
+    return level;
+  }
+  throw new Error(`無効な effort レベル: ${level}（low, medium, high, max のいずれかを指定してください）`);
+}
+
+/**
  * CLI オプションと設定ファイルをマージ（CLI が優先）
  */
 function mergeOptions(cliOptions: CLIOptions, fileConfig: MelosConfig): CLIOptions {
@@ -391,6 +428,7 @@ function mergeOptions(cliOptions: CLIOptions, fileConfig: MelosConfig): CLIOptio
     engine: cliOptions.engine ?? fileConfig.engine,
     model: cliOptions.model ?? fileConfig.model,
     reasoningEffort: cliOptions.reasoningEffort ?? fileConfig.reasoningEffort,
+    effort: cliOptions.effort ?? fileConfig.effort,
     thinkingBudget: cliOptions.thinkingBudget ?? fileConfig.thinkingBudget,
     maxIterations: cliOptions.maxIterations ?? fileConfig.maxIterations,
     hitl: cliOptions.hitl ?? fileConfig.hitl,

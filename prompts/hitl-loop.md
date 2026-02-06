@@ -103,14 +103,7 @@ This prevents you from re-doing work or re-exploring the codebase unnecessarily.
 
 ### Step 1: 未完了タスクがある場合 → Implement ONE task
 
-1. **Decide which task to work on next**
-   - Look for tasks with `passes: false`
-   - Prioritize by RISK, not by list order:
-     1. Architectural decisions
-     2. Integration points
-     3. Unknown unknowns / spikes
-     4. Standard features
-     5. Polish and quick wins
+1. **タスク {CURRENT_TASK_ID}** を実行する
 
 2. **Implement ONE task only**
    - Keep changes small and focused

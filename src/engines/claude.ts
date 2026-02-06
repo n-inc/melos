@@ -12,7 +12,9 @@ export interface ClaudeEngineOptions extends EngineOptions {
   printMode?: boolean;
   /** モデル名（haiku, sonnet, opus など） */
   model?: string;
-  /** Claude thinking budget（デフォルト: 31999） */
+  /** Claude effort レベル（Opus 4.6+: adaptive thinking 制御、デフォルト: max） */
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Claude thinking budget（旧モデル向け、1024〜31999） */
   thinkingBudget?: number;
 }
 
@@ -38,6 +40,7 @@ export class ClaudeEngine extends Engine {
       skipPermissions = true,
       printMode = true,
       model,
+      effort,
       thinkingBudget,
     } = options;
 
@@ -66,7 +69,12 @@ export class ClaudeEngine extends Engine {
         stdio: ['inherit', 'pipe', 'pipe'],
         env: {
           ...process.env,
-          MAX_THINKING_TOKENS: String(thinkingBudget ?? 31999),
+          ...(effort
+            ? { CLAUDE_CODE_EFFORT_LEVEL: effort }
+            : thinkingBudget != null
+              ? { MAX_THINKING_TOKENS: String(thinkingBudget) }
+              : { CLAUDE_CODE_EFFORT_LEVEL: 'max' }
+          ),
         },
       });
 

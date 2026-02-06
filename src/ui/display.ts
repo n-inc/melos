@@ -251,7 +251,8 @@ export function printIterationHeader(
   prdTitle?: string | null,
   model?: string | null,
   thinkingBudget?: number | null,
-  reasoningEffort?: string | null
+  reasoningEffort?: string | null,
+  effort?: string | null
 ): void {
   const modeName = MODE_NAMES[mode];
   const progressBar = createColoredProgressBar(completedTasks, totalTasks);
@@ -310,9 +311,13 @@ export function printIterationHeader(
     boxLine(`  ${Colors.DIM}エンジン${Colors.NC}  ${engineDisplay}`)
   );
 
-  // Claude エンジンの場合は thinking budget を別行で表示
+  // Claude エンジンの場合は effort または thinking budget を表示
   if (engine === 'claude') {
-    lines.push(boxLine(`  ${Colors.DIM}thinking${Colors.NC}  ${thinkingBudget ?? 31999}`));
+    if (effort) {
+      lines.push(boxLine(`  ${Colors.DIM}effort${Colors.NC}    ${effort}`));
+    } else {
+      lines.push(boxLine(`  ${Colors.DIM}thinking${Colors.NC}  ${thinkingBudget ?? 31999}`));
+    }
   }
   // Codex エンジンの場合は reasoning effort を別行で表示
   if (engine === 'codex' && reasoningEffort) {

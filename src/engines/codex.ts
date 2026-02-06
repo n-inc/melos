@@ -5,7 +5,7 @@ import { Engine, EngineOptions, EngineResult } from './base.js';
  * Codex 固有のオプション
  */
 export interface CodexEngineOptions extends EngineOptions {
-  /** モデル名（デフォルト: gpt-5.2-codex） */
+  /** モデル名（デフォルト: gpt-5.3-codex） */
   model?: string;
   /** 推論努力レベル（デフォルト: xhigh） */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
@@ -14,7 +14,7 @@ export interface CodexEngineOptions extends EngineOptions {
 }
 
 /** デフォルトモデル */
-const DEFAULT_MODEL = 'gpt-5.2-codex';
+const DEFAULT_MODEL = 'gpt-5.3-codex';
 /** デフォルト推論努力レベル */
 const DEFAULT_REASONING_EFFORT = 'xhigh';
 /** Claude 専用モデル名（Codex では無視してデフォルトを使用） */

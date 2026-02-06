@@ -85,11 +85,13 @@ export interface OrchestratorConfig {
   progressFile: string;
   /** ステータスファイルパス */
   statusFile: string;
-  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など） */
+  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** Codex 推論努力レベル */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
-  /** Claude thinking budget（1024〜31999） */
+  /** Claude effort レベル（Opus 4.6+） */
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Claude thinking budget（旧モデル向け、1024〜31999） */
   thinkingBudget?: number;
   /** カスタムエンジンマップ（テスト用） */
   engines?: Map<EngineType, Engine>;
@@ -115,7 +117,7 @@ const MODE_NAMES: Record<ExecutionMode, string> = {
 /**
  * フェーズ別デフォルトエンジン設定
  */
-const DEFAULT_PHASE_ENGINES: Record<PhaseType, { engine: EngineType; reasoningEffort?: 'low' | 'medium' | 'high'; model?: string; thinkingBudget?: number }> = {
+const DEFAULT_PHASE_ENGINES: Record<PhaseType, { engine: EngineType; reasoningEffort?: 'low' | 'medium' | 'high'; model?: string; effort?: 'low' | 'medium' | 'high' | 'max'; thinkingBudget?: number }> = {
   research: {
     engine: 'codex',
     reasoningEffort: 'high',
@@ -139,7 +141,7 @@ const DEFAULT_PHASE_ENGINES: Record<PhaseType, { engine: EngineType; reasoningEf
  */
 const CLAUDE_FALLBACK_OPTIONS = {
   model: 'opus',
-  thinkingBudget: 31999,
+  effort: 'max' as const,
 };
 
 /**
@@ -469,10 +471,13 @@ export class Orchestrator {
    */
   private formatEngineOptions(
     engine: EngineType,
-    options: { reasoningEffort?: 'low' | 'medium' | 'high'; model?: string; thinkingBudget?: number }
+    options: { reasoningEffort?: 'low' | 'medium' | 'high'; model?: string; effort?: 'low' | 'medium' | 'high' | 'max'; thinkingBudget?: number }
   ): string {
     if (engine === 'claude') {
       const model = options.model ?? 'opus';
+      if (options.effort) {
+        return `claude/${model} (effort: ${options.effort})`;
+      }
       const thinking = options.thinkingBudget ?? 31999;
       return `claude/${model} (thinking: ${thinking})`;
     } else {
@@ -489,6 +494,7 @@ export class Orchestrator {
     options: {
       reasoningEffort?: 'low' | 'medium' | 'high';
       model?: string;
+      effort?: 'low' | 'medium' | 'high' | 'max';
       thinkingBudget?: number;
     };
   } {
@@ -500,6 +506,7 @@ export class Orchestrator {
       options: {
         reasoningEffort: phaseConfig?.reasoningEffort ?? defaultConfig.reasoningEffort,
         model: phaseConfig?.model ?? defaultConfig.model ?? this.config.model,
+        effort: phaseConfig?.effort ?? defaultConfig.effort,
         thinkingBudget: phaseConfig?.thinkingBudget ?? defaultConfig.thinkingBudget,
       },
     };
@@ -1195,6 +1202,7 @@ ${progress.claudeMdImprovements}
     const engineOptions = {
       model: this.config.model ?? phaseConfig.options.model,
       reasoningEffort: this.config.reasoningEffort ?? phaseConfig.options.reasoningEffort,
+      effort: this.config.effort ?? phaseConfig.options.effort,
       thinkingBudget: this.config.thinkingBudget ?? phaseConfig.options.thinkingBudget,
     };
 
@@ -1212,7 +1220,8 @@ ${progress.claudeMdImprovements}
       this.prdTitle,
       engineOptions.model,
       engineOptions.thinkingBudget,
-      engineOptions.reasoningEffort
+      engineOptions.reasoningEffort,
+      engineOptions.effort
     );
 
     // スピナーを開始
@@ -1227,7 +1236,7 @@ ${progress.claudeMdImprovements}
     await this.saveCurrentStatus();
 
     // プロンプトを生成
-    const prompt = await this.buildPrompt(promptType, maxIterations);
+    const prompt = await this.buildPrompt(promptType, maxIterations, nextTask?.id);
 
     // エンジンを実行
     const engineResult = await engine.execute(prompt, {
@@ -1395,13 +1404,15 @@ ${progress.claudeMdImprovements}
    */
   private async buildPrompt(
     promptType: PromptType,
-    maxIterations: number
+    maxIterations: number,
+    currentTaskId?: string
   ): Promise<string> {
     const variables: PromptVariables = {
       iteration: this.currentIteration,
       maxIterations,
       progressFile: this.config.progressFile,
       planFile: this.config.planFile,
+      currentTaskId,
     };
 
     return loadPrompt(promptType, variables);
@@ -1487,8 +1498,25 @@ export function getDefaultConfig(overrides: Partial<OrchestratorConfig> = {}): O
 
 /**
  * モードに応じたデフォルトイテレーション数を取得
+ * PLAN.json が存在する場合はタスク数 × 2 をデフォルトとする
  */
-export function getDefaultMaxIterations(mode: ExecutionMode): number {
+export async function getDefaultMaxIterations(
+  mode: ExecutionMode,
+  planPath?: string
+): Promise<number> {
+  // PLAN.json からタスク数を取得して 2 倍
+  if (planPath && planExists(planPath)) {
+    try {
+      const plan = await loadPlan(planPath);
+      if (plan.length > 0) {
+        return plan.length * 2;
+      }
+    } catch {
+      // パース失敗時はフォールバック
+    }
+  }
+
+  // フォールバック（PLAN.json がない場合）
   switch (mode) {
     case 'default':
     case 'task-only':

@@ -28,7 +28,9 @@ export interface PhaseEngineConfig {
   reasoningEffort?: 'low' | 'medium' | 'high';
   /** モデル名 */
   model?: string;
-  /** Claude thinking budget（1024〜31999） */
+  /** Claude effort レベル（Opus 4.6+） */
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Claude thinking budget（旧モデル向け、1024〜31999） */
   thinkingBudget?: number;
 }
 
@@ -36,7 +38,7 @@ export interface PhaseEngineConfig {
  * Melos 設定ファイルの型
  */
 export interface MelosConfig {
-  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など） */
+  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** 推論努力レベル（Codex用） */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
@@ -46,7 +48,9 @@ export interface MelosConfig {
   engine?: 'claude' | 'codex';
   /** HITL モード */
   hitl?: boolean;
-  /** Claude thinking budget（1024〜31999） */
+  /** Claude effort レベル（Opus 4.6+） */
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Claude thinking budget（旧モデル向け、1024〜31999） */
   thinkingBudget?: number;
   /** フェーズ別エンジン設定 */
   engines?: {
@@ -140,7 +144,15 @@ function validateConfig(config: MelosConfig): MelosConfig {
     validated.hitl = config.hitl;
   }
 
-  // thinkingBudget: 1024〜31999 の整数
+  // effort: 有効な値のみ
+  if (config.effort) {
+    const validEfforts = ['low', 'medium', 'high', 'max'];
+    if (validEfforts.includes(config.effort)) {
+      validated.effort = config.effort;
+    }
+  }
+
+  // thinkingBudget: 1024〜31999 の整数（旧モデル向け）
   if (typeof config.thinkingBudget === 'number') {
     const num = Math.floor(config.thinkingBudget);
     if (num >= 1024 && num <= 31999) {
@@ -173,7 +185,15 @@ function validateConfig(config: MelosConfig): MelosConfig {
           validatedPhase.model = phaseConfig.model;
         }
 
-        // thinkingBudget: 1024〜31999 の整数（Claude用）
+        // effort: 有効な値のみ（Claude用）
+        if (phaseConfig.effort) {
+          const validEfforts = ['low', 'medium', 'high', 'max'];
+          if (validEfforts.includes(phaseConfig.effort)) {
+            validatedPhase.effort = phaseConfig.effort as 'low' | 'medium' | 'high' | 'max';
+          }
+        }
+
+        // thinkingBudget: 1024〜31999 の整数（旧モデル向け）
         if (typeof phaseConfig.thinkingBudget === 'number') {
           const budget = Math.floor(phaseConfig.thinkingBudget);
           if (budget >= 1024 && budget <= 31999) {

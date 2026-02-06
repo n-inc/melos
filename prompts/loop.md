@@ -105,7 +105,7 @@
 
 ### Step 1: 未完了タスクがある場合 → Implement ONE task
 
-1. **Pick ONE task**（`passes: false` のもの、リスク順に優先）
+1. **タスク {CURRENT_TASK_ID}** を実行する
 
 2. **Implement it**
    - 変更は小さく、焦点を絞る

@@ -15,6 +15,8 @@ export interface PromptVariables {
   progressFile: string;
   /** プランファイルパス */
   planFile: string;
+  /** 現在のタスクID */
+  currentTaskId?: string;
 }
 
 /**
@@ -65,6 +67,7 @@ export function getPromptPath(promptType: PromptType): string {
  * - {MAX_ITERATIONS} -> variables.maxIterations
  * - {PROGRESS_FILE} -> variables.progressFile
  * - {PLAN_FILE} -> variables.planFile
+ * - {CURRENT_TASK_ID} -> variables.currentTaskId
  */
 export function substituteVariables(
   template: string,
@@ -79,6 +82,7 @@ export function substituteVariables(
   );
   result = result.replaceAll('{PROGRESS_FILE}', variables.progressFile);
   result = result.replaceAll('{PLAN_FILE}', variables.planFile);
+  result = result.replaceAll('{CURRENT_TASK_ID}', variables.currentTaskId ?? '');
 
   return result;
 }

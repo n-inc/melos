@@ -20,11 +20,13 @@ export interface WatchOptions {
   engine: EngineType;
   maxIterations?: number;
   hitl?: boolean;
-  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.2-codex など） */
+  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** Codex 推論努力レベル */
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
-  /** Claude thinking budget（1024〜31999） */
+  /** Claude effort レベル（Opus 4.6+） */
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Claude thinking budget（旧モデル向け、1024〜31999） */
   thinkingBudget?: number;
 }
 
@@ -56,18 +58,24 @@ export async function watchPlanFile(
   options: WatchOptions,
   dependencies: WatchDependencies = {}
 ): Promise<void> {
+  const cwd = dependencies.cwd ?? process.cwd();
+  const planFile = dependencies.planFile ?? DEFAULT_PLAN_FILE;
+  const resolvedPlanPath = join(cwd, planFile);
+  const resolvedMaxIterations =
+    options.maxIterations ?? await getDefaultMaxIterations('default', resolvedPlanPath);
+
   const config = getDefaultConfig({
     mode: 'default',
-    maxIterations:
-      options.maxIterations ?? getDefaultMaxIterations('default'),
+    maxIterations: resolvedMaxIterations,
     hitl: options.hitl ?? false,
     engine: options.engine,
-    cwd: dependencies.cwd ?? process.cwd(),
-    planFile: dependencies.planFile ?? DEFAULT_PLAN_FILE,
+    cwd,
+    planFile,
     prdFile: dependencies.prdFile ?? DEFAULT_PRD_FILE,
     progressFile: dependencies.progressFile ?? DEFAULT_PROGRESS_FILE,
     model: options.model,
     reasoningEffort: options.reasoningEffort,
+    effort: options.effort,
     thinkingBudget: options.thinkingBudget,
   });
 

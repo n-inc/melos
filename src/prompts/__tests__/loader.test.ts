@@ -75,6 +75,21 @@ describe('loader.ts', () => {
       const result = substituteVariables(template, testVariables);
       expect(result).toBe('');
     });
+
+    it('replaces {CURRENT_TASK_ID} placeholder', () => {
+      const template = 'Task: {CURRENT_TASK_ID}';
+      const result = substituteVariables(template, {
+        ...testVariables,
+        currentTaskId: '8',
+      });
+      expect(result).toBe('Task: 8');
+    });
+
+    it('replaces {CURRENT_TASK_ID} with empty string when undefined', () => {
+      const template = 'Task: {CURRENT_TASK_ID}';
+      const result = substituteVariables(template, testVariables);
+      expect(result).toBe('Task: ');
+    });
   });
 
   describe('getAvailablePromptTypes', () => {
