@@ -70,4 +70,52 @@ codex`;
       expect(result).toBe('');
     });
   });
+
+  describe('filterCodexStderr', () => {
+    let engine: CodexEngine;
+
+    beforeEach(() => {
+      engine = new CodexEngine();
+    });
+
+    // Access private method for testing
+    const callFilterCodexStderr = (
+      engine: CodexEngine,
+      stderr: string
+    ): string => {
+      return (engine as unknown as { filterCodexStderr: (s: string) => string }).filterCodexStderr(stderr);
+    };
+
+    it('removes known noisy codex stderr lines', () => {
+      const stderr = `mcp startup: no servers
+2026-02-06T02:37:11.398715Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c2271-403c-7f23-ada9-f63811207110
+real error message`;
+
+      const result = callFilterCodexStderr(engine, stderr);
+      expect(result).toBe('real error message');
+    });
+
+    it('returns empty string when stderr contains only known noise', () => {
+      const stderr = `mcp startup: no servers
+2026-02-06T02:37:11.398715Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c2271-403c-7f23-ada9-f63811207110`;
+
+      const result = callFilterCodexStderr(engine, stderr);
+      expect(result).toBe('');
+    });
+
+    it('keeps other codex_core errors', () => {
+      const stderr = '2026-02-06T02:37:11.398715Z ERROR codex_core::auth: token expired';
+
+      const result = callFilterCodexStderr(engine, stderr);
+      expect(result).toBe(stderr);
+    });
+
+    it('removes known noisy lines even when ANSI escapes are present', () => {
+      const stderr =
+        '\x1b[31m2026-02-06T02:37:11.398715Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c2271-403c-7f23-ada9-f63811207110\x1b[0m';
+
+      const result = callFilterCodexStderr(engine, stderr);
+      expect(result).toBe('');
+    });
+  });
 });

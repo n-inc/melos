@@ -19,6 +19,11 @@ const DEFAULT_MODEL = 'gpt-5.3-codex';
 const DEFAULT_REASONING_EFFORT = 'xhigh';
 /** Claude 専用モデル名（Codex では無視してデフォルトを使用） */
 const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
+/** ANSI エスケープコード */
+const ANSI_ESCAPE_REGEX = /\x1b\[[0-9;]*m/g;
+/** Codex CLI 既知ノイズ: rollout path missing */
+const ROLLOUT_PATH_MISSING_REGEX =
+  /^\d{4}-\d{2}-\d{2}T\S+Z ERROR codex_core::rollout::list: state db missing rollout path for thread [0-9a-f-]+$/i;
 
 /**
  * Codex エンジン
@@ -69,6 +74,7 @@ export class CodexEngine extends Engine {
 
       let stdout = '';
       let stderr = '';
+      let stderrPartialLine = '';
       let timeoutId: NodeJS.Timeout | undefined;
 
       if (timeout) {
@@ -87,8 +93,19 @@ export class CodexEngine extends Engine {
       child.stderr?.on('data', (data: Buffer) => {
         const chunk = data.toString();
         stderr += chunk;
-        // スピナー行をクリアしてから出力
-        process.stderr.write('\x1b[2K\r' + chunk);
+
+        // チャンクを行単位で処理し、既知ノイズを表示しない
+        stderrPartialLine += chunk;
+        const lines = stderrPartialLine.split(/\r?\n/);
+        stderrPartialLine = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (this.isIgnorableCodexStderrLine(line)) {
+            continue;
+          }
+          // スピナー行をクリアしてから出力
+          process.stderr.write('\x1b[2K\r' + line + '\n');
+        }
       });
 
       child.on('close', (code) => {
@@ -96,7 +113,13 @@ export class CodexEngine extends Engine {
           clearTimeout(timeoutId);
         }
 
+        // 改行なしの末尾行が残っている場合も処理
+        if (stderrPartialLine && !this.isIgnorableCodexStderrLine(stderrPartialLine)) {
+          process.stderr.write('\x1b[2K\r' + stderrPartialLine);
+        }
+
         const exitCode = code ?? 1;
+        const filteredStderr = this.filterCodexStderr(stderr);
 
         // Codex exec の出力から最後の "codex" ブロックを抽出
         const filteredOutput = execMode ? this.filterCodexOutput(stdout) : stdout;
@@ -111,7 +134,7 @@ export class CodexEngine extends Engine {
           resolve({
             success: false,
             output: filteredOutput,
-            error: stderr || `Process exited with code ${exitCode}`,
+            error: filteredStderr || `Process exited with code ${exitCode}`,
             exitCode,
           });
         }
@@ -144,7 +167,7 @@ export class CodexEngine extends Engine {
    */
   private filterCodexOutput(output: string): string {
     // ANSI エスケープコードを除去（カラー出力が Promise 検出を妨げる可能性があるため）
-    const cleanOutput = output.replace(/\x1b\[[0-9;]*m/g, '');
+    const cleanOutput = output.replace(ANSI_ESCAPE_REGEX, '');
 
     // Promise タグを先に抽出（フィルタで失われる可能性があるため）
     const promiseMatch = cleanOutput.match(/<promise>(COMPLETE|TASK_DONE|ESCALATE)<\/promise>/);
@@ -185,6 +208,36 @@ export class CodexEngine extends Engine {
     }
 
     return result;
+  }
+
+  /**
+   * Codex stderr から既知ノイズ行を除去する
+   */
+  private filterCodexStderr(stderr: string): string {
+    const filtered = stderr
+      .split(/\r?\n/)
+      .filter((line) => !this.isIgnorableCodexStderrLine(line))
+      .join('\n')
+      .trimEnd();
+
+    return filtered.trim() ? filtered : '';
+  }
+
+  /**
+   * 表示・エラー返却から除外してよい Codex 既知ノイズ判定
+   */
+  private isIgnorableCodexStderrLine(line: string): boolean {
+    const normalized = line.replace(ANSI_ESCAPE_REGEX, '').trim();
+
+    if (!normalized) {
+      return false;
+    }
+
+    if (normalized === 'mcp startup: no servers') {
+      return true;
+    }
+
+    return ROLLOUT_PATH_MISSING_REGEX.test(normalized);
   }
 
   /**
