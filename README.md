@@ -37,7 +37,6 @@ npx melos watch
 |-----------|------|-----------|
 | `--engine <engine>` | エンジン選択（`claude` または `codex`） | `claude` |
 | `--max-iterations <n>` | 最大イテレーション数（1〜1000） | モードによる |
-| `--hitl` | 対話モード（1イテレーションずつ実行） | `false` |
 | `--pr-fix` | PR 対応モード（5イテレーション） | - |
 | `--review-fix` | レビュー修正モード（5イテレーション） | - |
 | `-v, --version` | バージョンを表示 | - |
@@ -57,12 +56,6 @@ npx melos --engine claude
 npx melos --engine codex --max-iterations 10
 ```
 
-### 対話モードで動作確認
-
-```bash
-npx melos --hitl
-```
-
 ### PR 対応モード
 
 ```bash
@@ -80,3 +73,4 @@ Melos は以下のファイルを使用します：
 ## 関連スキル
 
 - `/melos-add-task`: 自然言語でタスクを追加する Claude Code スキル
+- `/handoff-next-task`: HANDOFF.md の有無に応じて次タスクを継続実行するスキル

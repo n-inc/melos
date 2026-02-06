@@ -46,8 +46,6 @@ export interface MelosConfig {
   maxIterations?: number;
   /** エンジン選択 */
   engine?: 'claude' | 'codex';
-  /** HITL モード */
-  hitl?: boolean;
   /** Claude effort レベル（Opus 4.6+） */
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Claude thinking budget（旧モデル向け、1024〜31999） */
@@ -137,11 +135,6 @@ function validateConfig(config: MelosConfig): MelosConfig {
   // engine: claude または codex
   if (config.engine === 'claude' || config.engine === 'codex') {
     validated.engine = config.engine;
-  }
-
-  // hitl: boolean
-  if (typeof config.hitl === 'boolean') {
-    validated.hitl = config.hitl;
   }
 
   // effort: 有効な値のみ

@@ -95,9 +95,8 @@ describe('loader.ts', () => {
   describe('getAvailablePromptTypes', () => {
     it('returns all prompt types', () => {
       const types = getAvailablePromptTypes();
-      expect(types).toHaveLength(5);
+      expect(types).toHaveLength(4);
       expect(types).toContain('loop');
-      expect(types).toContain('hitl-loop');
       expect(types).toContain('research');
       expect(types).toContain('verification');
       expect(types).toContain('review');
@@ -105,36 +104,20 @@ describe('loader.ts', () => {
   });
 
   describe('getPromptType', () => {
-    it('returns loop for default + AFK', () => {
-      expect(getPromptType('default', false)).toBe('loop');
+    it('returns loop for default mode', () => {
+      expect(getPromptType('default')).toBe('loop');
     });
 
-    it('returns hitl-loop for default + HITL', () => {
-      expect(getPromptType('default', true)).toBe('hitl-loop');
+    it('returns loop for review-only mode', () => {
+      expect(getPromptType('review-only')).toBe('loop');
     });
 
-    it('returns loop for review-only + AFK', () => {
-      expect(getPromptType('review-only', false)).toBe('loop');
+    it('returns loop for ci-fix-only mode', () => {
+      expect(getPromptType('ci-fix-only')).toBe('loop');
     });
 
-    it('returns hitl-loop for review-only + HITL', () => {
-      expect(getPromptType('review-only', true)).toBe('hitl-loop');
-    });
-
-    it('returns loop for ci-fix-only + AFK', () => {
-      expect(getPromptType('ci-fix-only', false)).toBe('loop');
-    });
-
-    it('returns hitl-loop for ci-fix-only + HITL', () => {
-      expect(getPromptType('ci-fix-only', true)).toBe('hitl-loop');
-    });
-
-    it('returns loop for task-only + AFK', () => {
-      expect(getPromptType('task-only', false)).toBe('loop');
-    });
-
-    it('returns hitl-loop for task-only + HITL', () => {
-      expect(getPromptType('task-only', true)).toBe('hitl-loop');
+    it('returns loop for task-only mode', () => {
+      expect(getPromptType('task-only')).toBe('loop');
     });
   });
 
@@ -142,7 +125,7 @@ describe('loader.ts', () => {
     it('returns true for existing prompt types', () => {
       // 既存のプロンプトファイルが存在することを確認
       expect(promptExists('loop')).toBe(true);
-      expect(promptExists('hitl-loop')).toBe(true);
+      expect(promptExists('research')).toBe(true);
     });
   });
 
@@ -153,9 +136,9 @@ describe('loader.ts', () => {
     });
 
     it('returns path in prompts directory', () => {
-      const path = getPromptPath('hitl-loop');
+      const path = getPromptPath('review');
       expect(path).toContain('prompts');
-      expect(path).toContain('hitl-loop.md');
+      expect(path).toContain('review.md');
     });
   });
 

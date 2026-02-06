@@ -75,8 +75,6 @@ export interface OrchestratorConfig {
   maxIterations: number;
   /** デフォルトエンジン */
   engine: EngineType;
-  /** HITL モード */
-  hitl: boolean;
   /** PRD ファイルパス */
   prdFile: string;
   /** プランファイルパス */
@@ -160,7 +158,7 @@ export interface LoopResult {
   /** 完了したイテレーション数 */
   completedIterations: number;
   /** 終了理由 */
-  reason: 'complete' | 'max_iterations' | 'error' | 'hitl_pause' | 'escalation';
+  reason: 'complete' | 'max_iterations' | 'error' | 'escalation';
   /** エラーメッセージ（エラー時） */
   error?: string;
 }
@@ -197,7 +195,7 @@ function log(color: keyof typeof Colors, message: string): void {
 /**
  * メインオーケストレーター
  *
- * Melos AFK/HITL ループを制御する。
+ * Melos AFK ループを制御する。
  * 単一ループで タスク実行 → レビュー → PR対応 を統合。
  */
 export class Orchestrator {
@@ -269,11 +267,8 @@ export class Orchestrator {
     }
 
     // 完了時にステータスを更新
-    // HITL pause の場合は runUnifiedLoop で既に paused を設定済みなので上書きしない
-    if (result.reason !== 'hitl_pause') {
-      this.status.status = result.success ? 'completed' : 'error';
-      await this.saveCurrentStatus();
-    }
+    this.status.status = result.success ? 'completed' : 'error';
+    await this.saveCurrentStatus();
 
     return result;
   }
@@ -458,9 +453,6 @@ export class Orchestrator {
       log('CYAN', `  ${label} ${optionStr}`);
     }
 
-    if (this.config.hitl) {
-      log('CYAN', 'HITL モード: 有効');
-    }
     log('CYAN', '');
     log('CYAN', 'Ctrl+C でいつでも一時停止できます');
     log('BLUE', '');
@@ -920,24 +912,6 @@ ${progress.claudeMdImprovements}
           error: researchResult.error,
         };
       }
-
-      // HITL モードの場合、探索フェーズ完了後に一時停止
-      if (this.config.hitl) {
-        log('GREEN', '');
-        log('GREEN', '========================================');
-        log('GREEN', 'HITL モード: 探索フェーズ完了');
-        log('GREEN', '========================================');
-        log('NC', '');
-        log('NC', 'PLAN.json が生成されました。');
-        log('NC', '続行する場合は再度 melos --hitl を実行してください。');
-        this.status.status = 'paused';
-        await this.saveCurrentStatus();
-        return {
-          success: true,
-          completedIterations: 0,
-          reason: 'hitl_pause',
-        };
-      }
     }
 
     const max = this.config.maxIterations;
@@ -962,17 +936,17 @@ ${progress.claudeMdImprovements}
       // モードに応じた処理
       let promptType: PromptType;
       if (this.config.mode === 'review-only') {
-        promptType = this.config.hitl ? 'hitl-loop' : 'loop';
+        promptType = 'loop';
       } else if (this.config.mode === 'ci-fix-only') {
         // CI修正の前にCI待機
         if (this.status.gitState.pullRequest) {
           log('YELLOW', 'CI完了を待機中...');
           await waitForCI(this.config.cwd);
         }
-        promptType = this.config.hitl ? 'hitl-loop' : 'loop';
+        promptType = 'loop';
       } else {
         // デフォルト / task-only モード: 統一プロンプトを使用
-        promptType = this.config.hitl ? 'hitl-loop' : 'loop';
+        promptType = 'loop';
       }
 
       // イテレーション実行
@@ -1005,24 +979,6 @@ ${progress.claudeMdImprovements}
         default:
           printWarning('Promise が検出されませんでした。続行します...');
           break;
-      }
-
-      // HITL モードでは1イテレーションで終了
-      if (this.config.hitl) {
-        log('GREEN', '');
-        log('GREEN', '========================================');
-        log('GREEN', 'HITL モード: 1イテレーション完了');
-        log('GREEN', '========================================');
-        log('NC', '');
-        log('NC', '続行する場合は再度 melos --hitl を実行してください。');
-        log('NC', `進捗: ${this.config.progressFile}`);
-        this.status.status = 'paused';
-        await this.saveCurrentStatus();
-        return {
-          success: true,
-          completedIterations: this.currentIteration,
-          reason: 'hitl_pause',
-        };
       }
 
       this.currentIteration++;
@@ -1487,7 +1443,6 @@ export function getDefaultConfig(overrides: Partial<OrchestratorConfig> = {}): O
     mode: 'default',
     maxIterations: 30,
     engine: 'claude',
-    hitl: false,
     prdFile: 'PRD.md',
     planFile: 'PLAN.json',
     progressFile: 'PROGRESS.md',

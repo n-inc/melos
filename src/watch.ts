@@ -19,7 +19,6 @@ const LOG_PREFIX = '[Melos]';
 export interface WatchOptions {
   engine: EngineType;
   maxIterations?: number;
-  hitl?: boolean;
   /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** Codex 推論努力レベル */
@@ -67,7 +66,6 @@ export async function watchPlanFile(
   const config = getDefaultConfig({
     mode: 'default',
     maxIterations: resolvedMaxIterations,
-    hitl: options.hitl ?? false,
     engine: options.engine,
     cwd,
     planFile,

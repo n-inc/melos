@@ -31,8 +31,6 @@ export interface CLIOptions {
   taskOnly?: boolean;
   /** 最大イテレーション数 */
   maxIterations?: number;
-  /** HITL モード */
-  hitl?: boolean;
   /** エンジン選択 */
   engine?: EngineType;
   /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
@@ -113,7 +111,6 @@ export function createProgram(): Command {
       '最大イテレーション数',
       parseMaxIterations
     )
-    .option('--hitl', '対話モード（1イテレーションずつ実行）')
     .option(
       '--engine <engine>',
       'エンジン選択 (claude | codex)'
@@ -155,7 +152,6 @@ export function createProgram(): Command {
       '最大イテレーション数',
       parseMaxIterations
     )
-    .option('--hitl', '対話モード（1イテレーションずつ実行）')
     .option(
       '--engine <engine>',
       'エンジン選択 (claude | codex)'
@@ -196,7 +192,6 @@ export function createProgram(): Command {
       '最大イテレーション数',
       parseMaxIterations
     )
-    .option('--hitl', '対話モード（1イテレーションずつ実行）')
     .option(
       '--engine <engine>',
       'エンジン選択 (claude | codex)'
@@ -286,7 +281,6 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   const config = getDefaultConfig({
     mode,
     maxIterations: merged.maxIterations ?? defaultIterations,
-    hitl: merged.hitl ?? false,
     engine,
     model: merged.model ?? defaultModel,
     reasoningEffort,
@@ -354,7 +348,6 @@ export async function executeWatch(options: CLIOptions): Promise<void> {
   await watchPlanFile({
     engine,
     maxIterations,
-    hitl: merged.hitl ?? false,
     model: merged.model ?? 'opus',
     reasoningEffort,
     effort: watchEffort,
@@ -431,7 +424,6 @@ function mergeOptions(cliOptions: CLIOptions, fileConfig: MelosConfig): CLIOptio
     effort: cliOptions.effort ?? fileConfig.effort,
     thinkingBudget: cliOptions.thinkingBudget ?? fileConfig.thinkingBudget,
     maxIterations: cliOptions.maxIterations ?? fileConfig.maxIterations,
-    hitl: cliOptions.hitl ?? fileConfig.hitl,
   };
 }
 

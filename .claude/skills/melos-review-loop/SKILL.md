@@ -55,7 +55,6 @@ cat "$(git rev-parse --show-toplevel)/STATUS.json"
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
 | `--max-iterations <n>` | 最大イテレーション数 | 5 |
-| `--hitl` | 対話モード（1イテレーションずつ） | false |
 | `--engine <engine>` | エンジン選択（claude/codex） | claude |
 </options>
 

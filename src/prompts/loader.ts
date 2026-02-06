@@ -22,7 +22,7 @@ export interface PromptVariables {
 /**
  * プロンプトタイプ
  */
-export type PromptType = 'loop' | 'hitl-loop' | 'research' | 'verification' | 'review';
+export type PromptType = 'loop' | 'research' | 'verification' | 'review';
 
 /**
  * プロンプトファイルのパスを取得
@@ -141,16 +141,15 @@ export async function loadPromptFromPathWithVariables(
  * 利用可能なすべてのプロンプトタイプを取得
  */
 export function getAvailablePromptTypes(): PromptType[] {
-  return ['loop', 'hitl-loop', 'research', 'verification', 'review'];
+  return ['loop', 'research', 'verification', 'review'];
 }
 
 /**
- * モードとHITLフラグからプロンプトタイプを決定
+ * モードからプロンプトタイプを決定
  * NOTE: モードに関係なく統一プロンプトを使用
  */
 export function getPromptType(
-  _mode: 'default' | 'review-only' | 'ci-fix-only' | 'task-only',
-  hitl: boolean
+  _mode: 'default' | 'review-only' | 'ci-fix-only' | 'task-only'
 ): PromptType {
-  return hitl ? 'hitl-loop' : 'loop';
+  return 'loop';
 }

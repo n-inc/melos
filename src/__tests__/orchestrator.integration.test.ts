@@ -110,7 +110,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'default',
         maxIterations: 5,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -158,7 +157,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'default',
         maxIterations: 5,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -190,7 +188,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'default',
         maxIterations: 3,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -220,7 +217,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'default',
         maxIterations: 5,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -236,36 +232,6 @@ describe('Orchestrator Integration Tests', () => {
       expect(result.reason).toBe('escalation');
     });
 
-    it('should work with HITL mode (single iteration)', async () => {
-      // Setup
-      await createMinimalPrd();
-      await createMinimalPlan();
-
-      const engines = createMockEngines(
-        'Task done.\n<promise>TASK_DONE</promise>'
-      );
-
-      const orchestrator = new Orchestrator({
-        cwd: testDir,
-        mode: 'default',
-        maxIterations: 5,
-        engine: 'claude',
-        hitl: true, // HITL mode enabled
-        prdFile: 'PRD.md',
-        planFile: 'PLAN.json',
-        progressFile: 'PROGRESS.md',
-        statusFile: 'STATUS.json',
-        engines,
-      });
-
-      // Execute
-      const result = await orchestrator.run();
-
-      // Verify - HITL mode should stop after 1 iteration
-      expect(result.success).toBe(true);
-      expect(result.reason).toBe('hitl_pause');
-      expect(result.completedIterations).toBe(1);
-    });
   });
 
   describe('Error handling', () => {
@@ -279,7 +245,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'default',
         maxIterations: 5,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -307,7 +272,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'task-only',
         maxIterations: 5,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -332,7 +296,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'review-only',
         maxIterations: 5,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -366,7 +329,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'default',
         maxIterations: 5,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -407,7 +369,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'default',
         maxIterations: 2,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
@@ -448,7 +409,6 @@ describe('Orchestrator Integration Tests', () => {
         mode: 'default',
         maxIterations: 1,
         engine: 'claude',
-        hitl: false,
         prdFile: 'PRD.md',
         planFile: 'PLAN.json',
         progressFile: 'PROGRESS.md',
