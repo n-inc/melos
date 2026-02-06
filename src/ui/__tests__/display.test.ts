@@ -125,10 +125,21 @@ describe('display.ts', () => {
   describe('createSpinner', () => {
     let stderrOutput: string[];
     let originalWrite: typeof process.stderr.write;
+    let originalMelosSpinner: string | undefined;
+    let originalMelosNoSpinner: string | undefined;
+    let originalClaudeCode: string | undefined;
 
     beforeEach(() => {
       stderrOutput = [];
       originalWrite = process.stderr.write;
+      originalMelosSpinner = process.env.MELOS_SPINNER;
+      originalMelosNoSpinner = process.env.MELOS_NO_SPINNER;
+      originalClaudeCode = process.env.CLAUDECODE;
+
+      process.env.MELOS_SPINNER = '1';
+      delete process.env.MELOS_NO_SPINNER;
+      delete process.env.CLAUDECODE;
+
       process.stderr.write = ((chunk: string) => {
         stderrOutput.push(chunk);
         return true;
@@ -137,6 +148,24 @@ describe('display.ts', () => {
 
     afterEach(() => {
       process.stderr.write = originalWrite;
+
+      if (originalMelosSpinner === undefined) {
+        delete process.env.MELOS_SPINNER;
+      } else {
+        process.env.MELOS_SPINNER = originalMelosSpinner;
+      }
+
+      if (originalMelosNoSpinner === undefined) {
+        delete process.env.MELOS_NO_SPINNER;
+      } else {
+        process.env.MELOS_NO_SPINNER = originalMelosNoSpinner;
+      }
+
+      if (originalClaudeCode === undefined) {
+        delete process.env.CLAUDECODE;
+      } else {
+        process.env.CLAUDECODE = originalClaudeCode;
+      }
     });
 
     test('スピナーを作成して停止できる', async () => {
