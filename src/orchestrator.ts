@@ -493,13 +493,16 @@ export class Orchestrator {
     const phaseConfig = this.config.phaseEngines?.[phase];
     const defaultConfig = DEFAULT_PHASE_ENGINES[phase];
 
+    // フォールバック順: phaseEngines > トップレベル config.engine > DEFAULT_PHASE_ENGINES
+    const resolvedEngine = phaseConfig?.engine ?? this.config.engine ?? defaultConfig.engine;
+
     return {
-      engine: phaseConfig?.engine ?? defaultConfig.engine,
+      engine: resolvedEngine,
       options: {
         reasoningEffort: phaseConfig?.reasoningEffort ?? defaultConfig.reasoningEffort,
         model: phaseConfig?.model ?? defaultConfig.model ?? this.config.model,
-        effort: phaseConfig?.effort ?? defaultConfig.effort,
-        thinkingBudget: phaseConfig?.thinkingBudget ?? defaultConfig.thinkingBudget,
+        effort: phaseConfig?.effort ?? defaultConfig.effort ?? this.config.effort,
+        thinkingBudget: phaseConfig?.thinkingBudget ?? defaultConfig.thinkingBudget ?? this.config.thinkingBudget,
       },
     };
   }

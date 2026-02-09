@@ -286,6 +286,7 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     reasoningEffort,
     effort,
     thinkingBudget: merged.thinkingBudget,
+    phaseEngines: fileConfig.engines,
   });
 
   // オーケストレーターを作成して実行
