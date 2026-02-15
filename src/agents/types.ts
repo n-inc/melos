@@ -4,9 +4,9 @@ import type { WorkReport } from '../state/work-report.js';
 import type { Escalation } from '../state/escalation.js';
 
 /**
- * v2 実行モード
+ * Agent モード
  */
-export type V2Mode = 'manager' | 'worker';
+export type AgentMode = 'manager' | 'worker';
 
 /**
  * Manager の判断結果
@@ -26,52 +26,6 @@ export type WorkerResult =
   | { type: 'partial'; report: WorkReport }
   | { type: 'failed'; report: WorkReport }
   | { type: 'blocked'; report: WorkReport; escalation?: Escalation };
-
-/**
- * v2 イテレーション結果
- */
-export interface V2IterationResult {
-  /** イテレーション番号 */
-  iteration: number;
-  /** 実行フェーズ */
-  phase: 'manager' | 'worker' | 'review';
-  /** タスクID */
-  taskId: string | null;
-  /** 成功/失敗 */
-  success: boolean;
-  /** 完了フラグ（全タスク完了時） */
-  completed: boolean;
-  /** エスカレーション（あれば） */
-  escalation?: Escalation;
-  /** エラーメッセージ */
-  error?: string;
-}
-
-/**
- * v2 オーケストレーター設定
- */
-export interface V2OrchestratorConfig {
-  /** 作業ディレクトリ */
-  cwd: string;
-  /** PLAN.json パス */
-  planPath: string;
-  /** PROGRESS.md パス */
-  progressPath: string;
-  /** .melos ディレクトリパス */
-  melosDir: string;
-  /** PRD.md パス */
-  prdPath: string;
-  /** HANDOFF.md パス */
-  handoffPath: string;
-  /** 最大イテレーション数 */
-  maxIterations: number;
-  /** Manager エンジン（claude） */
-  managerEngine: 'claude';
-  /** Worker エンジン（codex） */
-  workerEngine: 'codex';
-  /** ドライランモード（Worker を実行しない） */
-  dryRun?: boolean;
-}
 
 /**
  * Manager への入力
@@ -108,5 +62,5 @@ export interface Agent {
   /** Agent 名 */
   readonly name: string;
   /** Agent のモード */
-  readonly mode: V2Mode;
+  readonly mode: AgentMode;
 }

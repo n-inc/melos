@@ -1,9 +1,7 @@
 export {
-  type V2Mode,
+  type AgentMode,
   type ManagerDecision,
   type WorkerResult,
-  type V2IterationResult,
-  type V2OrchestratorConfig,
   type ManagerInput,
   type WorkerInput,
   type Agent,

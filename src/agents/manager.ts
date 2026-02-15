@@ -8,7 +8,7 @@ import type {
   Agent,
   ManagerDecision,
   ManagerInput,
-  V2Mode,
+  AgentMode,
 } from './types.js';
 
 /**
@@ -33,7 +33,7 @@ export interface ManagerAgentConfig {
  */
 export class ManagerAgent implements Agent {
   readonly name = 'manager';
-  readonly mode: V2Mode = 'manager';
+  readonly mode: AgentMode = 'manager';
 
   private engine: ClaudeEngine;
   private config: ManagerAgentConfig;

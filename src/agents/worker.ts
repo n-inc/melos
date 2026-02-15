@@ -5,7 +5,7 @@ import { CodexEngine, type CodexEngineOptions } from '../engines/codex.js';
 import { loadPromptRaw } from '../prompts/loader.js';
 import type { WorkOrder } from '../state/work-order.js';
 import type { WorkReport } from '../state/work-report.js';
-import type { Agent, WorkerInput, WorkerResult, V2Mode } from './types.js';
+import type { Agent, WorkerInput, WorkerResult, AgentMode } from './types.js';
 
 /**
  * Worker Agent 設定
@@ -29,7 +29,7 @@ export interface WorkerAgentConfig {
  */
 export class WorkerAgent implements Agent {
   readonly name = 'worker';
-  readonly mode: V2Mode = 'worker';
+  readonly mode: AgentMode = 'worker';
 
   private engine: CodexEngine;
   private config: WorkerAgentConfig;
