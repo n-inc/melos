@@ -132,41 +132,49 @@ export class ManagerAgent implements Agent {
    * Claude の出力から判断を抽出する
    */
   private parseDecision(output: string): ManagerDecision {
-    // WORK_ORDER.json の出力を探す
-    const workOrderMatch = output.match(
-      /```json\s*\n\s*\{[\s\S]*?"taskId"[\s\S]*?\}\s*\n```/
-    );
-    if (workOrderMatch) {
-      try {
-        const jsonStr = workOrderMatch[0]
-          .replace(/```json\s*\n/, '')
-          .replace(/\n```/, '');
-        const workOrder = JSON.parse(jsonStr) as WorkOrder;
-        return { type: 'dispatch_task', workOrder };
-      } catch {
-        // パース失敗は無視して続行
+    // 全ての JSON ブロックを抽出して、各ブロックを試行
+    const jsonBlocks = this.extractJsonBlocks(output);
+
+    // WORK_ORDER.json を探す（taskId を含むブロック）
+    for (const jsonStr of jsonBlocks) {
+      if (jsonStr.includes('"taskId"') && jsonStr.includes('"instructions"')) {
+        try {
+          const workOrder = JSON.parse(jsonStr) as WorkOrder;
+          if (workOrder.taskId && workOrder.description) {
+            return { type: 'dispatch_task', workOrder };
+          }
+        } catch {
+          // パース失敗は無視して続行
+        }
       }
     }
 
-    // ESCALATION の出力を探す
-    const escalationMatch = output.match(
-      /```json\s*\n\s*\{[\s\S]*?"type"\s*:\s*"(QUESTION|APPROVAL|BLOCKER)"[\s\S]*?\}\s*\n```/
-    );
-    if (escalationMatch) {
-      try {
-        const jsonStr = escalationMatch[0]
-          .replace(/```json\s*\n/, '')
-          .replace(/\n```/, '');
-        const escalation = JSON.parse(jsonStr) as Escalation;
-        return { type: 'escalate', escalation };
-      } catch {
-        // パース失敗は無視して続行
+    // ESCALATION を探す
+    for (const jsonStr of jsonBlocks) {
+      if (jsonStr.includes('"type"') && /QUESTION|APPROVAL|BLOCKER/.test(jsonStr)) {
+        try {
+          const escalation = JSON.parse(jsonStr) as Escalation;
+          if (escalation.type && escalation.question) {
+            return { type: 'escalate', escalation };
+          }
+        } catch {
+          // パース失敗は無視して続行
+        }
       }
     }
 
-    // HANDOFF.md の出力を探す
+    // HANDOFF.md の出力を探す（```markdown ブロック内または実際の完了レポート）
+    // 注意: プロンプト内のテンプレートではなく、実際の引き継ぎレポートのみをマッチ
+    const markdownBlockMatch = output.match(
+      /```markdown\s*\n(# (HANDOFF|Melos 引き継ぎレポート)[\s\S]*?)\n```/
+    );
+    if (markdownBlockMatch) {
+      return { type: 'complete', handoffContent: markdownBlockMatch[1] };
+    }
+
+    // 実際の引き継ぎレポート（生成日時と完了したタスクを含む）
     const handoffMatch = output.match(
-      /# (HANDOFF|Melos 引き継ぎレポート)[\s\S]*/
+      /# (HANDOFF|Melos 引き継ぎレポート)\s*\n\n\*\*生成日時\*\*:[\s\S]*/
     );
     if (handoffMatch) {
       return { type: 'complete', handoffContent: handoffMatch[0] };
@@ -185,6 +193,19 @@ export class ManagerAgent implements Agent {
       type: 'error',
       message: 'Could not parse Manager decision from output',
     };
+  }
+
+  /**
+   * 出力から全ての JSON ブロックを抽出する
+   */
+  private extractJsonBlocks(output: string): string[] {
+    const blocks: string[] = [];
+    const regex = /```json\s*\n([\s\S]*?)\n```/g;
+    let match;
+    while ((match = regex.exec(output)) !== null) {
+      blocks.push(match[1]);
+    }
+    return blocks;
   }
 
   /**

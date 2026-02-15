@@ -3,6 +3,42 @@ import { Engine, EngineOptions, EngineResult } from './base.js';
 import { JsonlBuffer } from '../utils/jsonl-formatter.js';
 
 /**
+ * JSONL からアシスタントのテキスト出力を抽出する
+ *
+ * @param jsonlOutput JSONL形式の生データ
+ * @returns 抽出されたアシスタントテキスト
+ */
+function extractAssistantTextFromJsonl(jsonlOutput: string): string {
+  const texts: string[] = [];
+
+  for (const line of jsonlOutput.split('\n')) {
+    if (!line.trim()) continue;
+
+    try {
+      const event = JSON.parse(line);
+
+      // assistant メッセージからテキストを抽出
+      if (event.type === 'assistant' && event.message?.content) {
+        for (const block of event.message.content) {
+          if (block.type === 'text' && block.text) {
+            texts.push(block.text);
+          }
+        }
+      }
+
+      // result イベントの result フィールドも含める（最終出力）
+      if (event.type === 'result' && event.result) {
+        texts.push(event.result);
+      }
+    } catch {
+      // JSON 以外の行は無視
+    }
+  }
+
+  return texts.join('\n\n');
+}
+
+/**
  * Claude Code 固有のオプション
  */
 export interface ClaudeEngineOptions extends EngineOptions {
@@ -128,16 +164,21 @@ export class ClaudeEngine extends Engine {
 
         const exitCode = code ?? 1;
 
+        // JSONL からアシスタント出力を抽出
+        const extractedOutput = printMode
+          ? extractAssistantTextFromJsonl(stdout)
+          : stdout;
+
         if (exitCode === 0) {
           resolve({
             success: true,
-            output: stdout,
+            output: extractedOutput,
             exitCode,
           });
         } else {
           resolve({
             success: false,
-            output: stdout,
+            output: extractedOutput,
             error: stderr || `Process exited with code ${exitCode}`,
             exitCode,
           });
