@@ -73,8 +73,8 @@ export interface OrchestratorConfig {
   mode: ExecutionMode;
   /** 最大イテレーション数 */
   maxIterations: number;
-  /** デフォルトエンジン */
-  engine: EngineType;
+  /** デフォルトエンジン（全フェーズの初期値） */
+  defaultEngine: EngineType;
   /** PRD ファイルパス */
   prdFile: string;
   /** プランファイルパス */
@@ -94,7 +94,7 @@ export interface OrchestratorConfig {
   /** カスタムエンジンマップ（テスト用） */
   engines?: Map<EngineType, Engine>;
   /** フェーズ別エンジン設定 */
-  phaseEngines?: {
+  phases?: {
     research?: PhaseEngineConfig;
     task?: PhaseEngineConfig;
     verification?: PhaseEngineConfig;
@@ -295,7 +295,7 @@ export class Orchestrator {
       totalTasks,
       startedAt: this.loopStartTime.toISOString(),
       engineStartedAt: null,
-      engine: this.config.engine,
+      engine: this.config.defaultEngine,
       status: 'running',
       gitState,
       updatedAt: new Date().toISOString(),
@@ -490,11 +490,11 @@ export class Orchestrator {
       thinkingBudget?: number;
     };
   } {
-    const phaseConfig = this.config.phaseEngines?.[phase];
+    const phaseConfig = this.config.phases?.[phase];
     const defaultConfig = DEFAULT_PHASE_ENGINES[phase];
 
-    // フォールバック順: phaseEngines > トップレベル config.engine > DEFAULT_PHASE_ENGINES
-    const resolvedEngine = phaseConfig?.engine ?? this.config.engine ?? defaultConfig.engine;
+    // フォールバック順: phases > defaultEngine > DEFAULT_PHASE_ENGINES
+    const resolvedEngine = phaseConfig?.engine ?? this.config.defaultEngine ?? defaultConfig.engine;
 
     return {
       engine: resolvedEngine,
@@ -1445,7 +1445,7 @@ export function getDefaultConfig(overrides: Partial<OrchestratorConfig> = {}): O
     cwd: process.cwd(),
     mode: 'default',
     maxIterations: 30,
-    engine: 'claude',
+    defaultEngine: 'claude',
     prdFile: 'PRD.md',
     planFile: 'PLAN.json',
     progressFile: 'PROGRESS.md',

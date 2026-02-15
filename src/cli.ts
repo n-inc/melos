@@ -30,7 +30,7 @@ export interface CLIOptions {
   taskOnly?: boolean;
   /** 最大イテレーション数 */
   maxIterations?: number;
-  /** エンジン選択 */
+  /** デフォルトエンジン（全フェーズの初期値） */
   engine?: EngineType;
   /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
@@ -44,6 +44,8 @@ export interface CLIOptions {
   dangerouslyResetBeforeStart?: boolean;
   /** プレーン出力モード（スピナー無効） */
   plain?: boolean;
+  /** 設定表示モード */
+  showConfig?: boolean;
 }
 
 /**
@@ -112,7 +114,11 @@ export function createProgram(): Command {
     )
     .option(
       '--engine <engine>',
-      'エンジン選択 (claude | codex)'
+      'デフォルトエンジン（全フェーズの初期値）(claude | codex)'
+    )
+    .option(
+      '--show-config',
+      '現在のフェーズ別エンジン設定を表示して終了'
     )
     .option(
       '--model <model>',
@@ -153,7 +159,11 @@ export function createProgram(): Command {
     )
     .option(
       '--engine <engine>',
-      'エンジン選択 (claude | codex)'
+      'デフォルトエンジン（全フェーズの初期値）(claude | codex)'
+    )
+    .option(
+      '--show-config',
+      '現在のフェーズ別エンジン設定を表示して終了'
     )
     .option(
       '--model <model>',
@@ -214,17 +224,22 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   // CLI オプションと設定ファイルをマージ（CLI が優先）
   const merged = mergeOptions(options, fileConfig);
 
+  // エンジンを検証
+  const defaultEngine = validateEngine(merged.engine ?? 'claude');
+
+  // --show-config オプションが指定された場合、設定を表示して終了
+  if (options.showConfig) {
+    printPhaseConfig(defaultEngine, fileConfig);
+    return;
+  }
+
   // 実行モードを決定
   const cwd = process.cwd();
   const mode = getExecutionMode(merged, cwd);
 
-
   // デフォルトイテレーション数を取得
   const planPath = join(process.cwd(), 'PLAN.json');
   const defaultIterations = await getDefaultMaxIterations(mode, planPath);
-
-  // エンジンを検証
-  const engine = validateEngine(merged.engine ?? 'claude');
 
   // 推論努力レベルを検証
   const reasoningEffort = merged.reasoningEffort
@@ -243,12 +258,12 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   const config = getDefaultConfig({
     mode,
     maxIterations: merged.maxIterations ?? defaultIterations,
-    engine,
+    defaultEngine,
     model: merged.model ?? defaultModel,
     reasoningEffort,
     effort,
     thinkingBudget: merged.thinkingBudget,
-    phaseEngines: fileConfig.engines,
+    phases: fileConfig.phases,
   });
 
   // オーケストレーターを作成して実行
@@ -338,13 +353,75 @@ function validateEffort(level: string): 'low' | 'medium' | 'high' | 'max' {
 }
 
 /**
+ * フェーズ別エンジン設定のデフォルト値
+ */
+const DEFAULT_PHASE_ENGINES: Record<string, { engine: EngineType; reasoningEffort?: string }> = {
+  research: { engine: 'codex', reasoningEffort: 'high' },
+  task: { engine: 'codex', reasoningEffort: 'high' },
+  verification: { engine: 'codex', reasoningEffort: 'high' },
+  review: { engine: 'codex', reasoningEffort: 'high' },
+};
+
+/**
+ * フェーズ別エンジン設定を表示
+ */
+function printPhaseConfig(defaultEngine: EngineType, fileConfig: MelosConfig): void {
+  const CYAN = '\x1b[0;36m';
+  const NC = '\x1b[0m';
+
+  console.log(`${CYAN}フェーズ別エンジン設定:${NC}`);
+
+  const phases = ['research', 'task', 'verification', 'review'] as const;
+  const labels: Record<string, string> = {
+    research: '探索:    ',
+    task: 'タスク:  ',
+    verification: '確認:    ',
+    review: 'レビュー:',
+  };
+
+  for (const phase of phases) {
+    const phaseConfig = fileConfig.phases?.[phase];
+    const defaultConfig = DEFAULT_PHASE_ENGINES[phase];
+
+    // phaseConfig は正規化済みなので常にオブジェクト形式
+    // フォールバック順: phases[phase] > defaultEngine > DEFAULT_PHASE_ENGINES
+    const resolvedEngine = phaseConfig?.engine ?? defaultEngine ?? defaultConfig.engine;
+
+    let optionStr: string;
+    if (resolvedEngine === 'claude') {
+      const model = phaseConfig?.model ?? 'opus';
+      if (phaseConfig?.effort) {
+        optionStr = `claude/${model} (effort: ${phaseConfig.effort})`;
+      } else {
+        const thinking = phaseConfig?.thinkingBudget ?? 31999;
+        optionStr = `claude/${model} (thinking: ${thinking})`;
+      }
+    } else {
+      const reasoning = phaseConfig?.reasoningEffort ?? defaultConfig.reasoningEffort ?? 'high';
+      optionStr = `codex (reasoning: ${reasoning})`;
+    }
+
+    console.log(`${CYAN}  ${labels[phase]} ${optionStr}${NC}`);
+  }
+
+  // 設定ソースを表示
+  const sources: string[] = [];
+  if (Object.keys(fileConfig).length > 0) {
+    sources.push('.melos.json');
+  }
+  sources.push('CLI引数');
+  console.log('');
+  console.log(`設定ソース: ${sources.join(' + ')}`);
+}
+
+/**
  * CLI オプションと設定ファイルをマージ（CLI が優先）
  */
 function mergeOptions(cliOptions: CLIOptions, fileConfig: MelosConfig): CLIOptions {
   return {
     ...cliOptions,
     // CLI で明示的に指定されていない場合のみ設定ファイルの値を使用
-    engine: cliOptions.engine ?? fileConfig.engine,
+    engine: cliOptions.engine ?? fileConfig.defaultEngine,
     model: cliOptions.model ?? fileConfig.model,
     reasoningEffort: cliOptions.reasoningEffort ?? fileConfig.reasoningEffort,
     effort: cliOptions.effort ?? fileConfig.effort,
