@@ -16,7 +16,6 @@ import {
   type EngineType,
 } from './orchestrator.js';
 import type { ExecutionMode } from './state/progress.js';
-import { watchPlanFile } from './watch.js';
 import { loadConfig, type MelosConfig } from './config/index.js';
 
 /**
@@ -184,43 +183,6 @@ export function createProgram(): Command {
       await handleCommandAction(() => executeWithOptions(options));
     });
 
-  program
-    .command('watch')
-    .description('PLAN.json を監視して Melos ループを自動起動')
-    .option(
-      '--max-iterations <number>',
-      '最大イテレーション数',
-      parseMaxIterations
-    )
-    .option(
-      '--engine <engine>',
-      'エンジン選択 (claude | codex)'
-    )
-    .option(
-      '--model <model>',
-      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など）'
-    )
-    .option(
-      '--reasoning-effort <level>',
-      'Codex 推論努力レベル (low | medium | high | xhigh)'
-    )
-    .option(
-      '--effort <level>',
-      'Claude effort レベル (low | medium | high | max、デフォルト: max)'
-    )
-    .option(
-      '--thinking-budget <number>',
-      'Claude thinking budget（旧モデル向け、1024〜31999）',
-      parseThinkingBudget
-    )
-    .option(
-      '--plain',
-      'プレーン出力モード（スピナー無効）'
-    )
-    .action(async (options: CLIOptions) => {
-      await handleCommandAction(() => executeWatch(options));
-    });
-
   return program;
 }
 
@@ -317,43 +279,6 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     process.removeListener('SIGINT', handleSignal);
     process.removeListener('SIGTERM', handleSignal);
   }
-}
-
-/**
- * watch モードを実行
- */
-export async function executeWatch(options: CLIOptions): Promise<void> {
-  // --plain オプションが指定された場合、環境変数を設定
-  if (options.plain) {
-    process.env.MELOS_NO_SPINNER = '1';
-  }
-
-  // 設定ファイルを読み込み
-  const fileConfig = await loadConfig();
-
-  // CLI オプションと設定ファイルをマージ（CLI が優先）
-  const merged = mergeOptions(options, fileConfig);
-
-  const engine = validateEngine(merged.engine ?? 'claude');
-  const planPath = join(process.cwd(), 'PLAN.json');
-  const maxIterations =
-    merged.maxIterations ?? await getDefaultMaxIterations('default', planPath);
-  const reasoningEffort = merged.reasoningEffort
-    ? validateReasoningEffort(merged.reasoningEffort)
-    : undefined;
-
-  const watchEffort = merged.effort
-    ? validateEffort(merged.effort)
-    : undefined;
-
-  await watchPlanFile({
-    engine,
-    maxIterations,
-    model: merged.model ?? 'opus',
-    reasoningEffort,
-    effort: watchEffort,
-    thinkingBudget: merged.thinkingBudget,
-  });
 }
 
 /**
