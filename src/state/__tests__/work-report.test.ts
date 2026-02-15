@@ -5,7 +5,6 @@ import {
   createWorkReport,
   saveWorkReport,
   loadWorkReport,
-  type WorkReport,
 } from '../work-report.js';
 
 describe('work-report.ts', () => {

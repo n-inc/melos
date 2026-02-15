@@ -5,7 +5,6 @@ import {
   createWorkOrder,
   saveWorkOrder,
   loadWorkOrder,
-  type WorkOrder,
 } from '../work-order.js';
 
 describe('work-order.ts', () => {

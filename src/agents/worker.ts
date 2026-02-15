@@ -18,7 +18,7 @@ export interface WorkerAgentConfig {
   /** Codex モデル名 */
   model?: string;
   /** 推論努力レベル */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 /**

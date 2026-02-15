@@ -23,7 +23,7 @@ export interface EngineOptions {
   /** モデル名 */
   model?: string;
   /** 推論努力レベル（Codex用） */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   /** Claude effort レベル（Opus 4.6+: adaptive thinking 制御） */
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Claude thinking budget（1024〜31999、旧モデル向け） */

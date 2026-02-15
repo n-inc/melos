@@ -9,13 +9,11 @@ import {
   loadPlan,
   planExists,
   updateTaskStatus,
-  savePlan,
   type Plan,
 } from './state/plan.js';
 import {
   type WorkOrder,
   saveWorkOrder,
-  loadWorkOrder,
 } from './state/work-order.js';
 import {
   type WorkReport,
@@ -57,7 +55,7 @@ export interface V2OrchestratorConfig {
   /** Worker モデル名 */
   workerModel?: string;
   /** Worker 推論努力レベル */
-  workerReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  workerReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   /** ドライラン（計画のみ、Worker実行しない） */
   dryRun?: boolean;
 }

@@ -8,7 +8,7 @@ export interface CodexEngineOptions extends EngineOptions {
   /** モデル名（デフォルト: gpt-5.3-codex） */
   model?: string;
   /** 推論努力レベル（デフォルト: high） */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   /** 実行モード: exec（print）または interactive */
   execMode?: boolean;
 }

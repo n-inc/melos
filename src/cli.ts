@@ -39,7 +39,7 @@ export interface CLIOptions {
   /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** Codex 推論努力レベル */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   /** Claude effort レベル（Opus 4.6+） */
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Claude thinking budget（旧モデル向け） */
@@ -134,7 +134,7 @@ export function createProgram(): Command {
     )
     .option(
       '--reasoning-effort <level>',
-      'Codex 推論努力レベル (minimal | low | medium | high)'
+      'Codex 推論努力レベル (minimal | low | medium | high | xhigh)'
     )
     .option(
       '--effort <level>',
@@ -187,7 +187,7 @@ export function createProgram(): Command {
     )
     .option(
       '--reasoning-effort <level>',
-      'Codex 推論努力レベル (minimal | low | medium | high)'
+      'Codex 推論努力レベル (minimal | low | medium | high | xhigh)'
     )
     .option(
       '--effort <level>',
@@ -432,11 +432,11 @@ function validateEngine(engine: string): EngineType {
 /**
  * 推論努力レベルを検証
  */
-function validateReasoningEffort(level: string): 'minimal' | 'low' | 'medium' | 'high' {
-  if (level === 'minimal' || level === 'low' || level === 'medium' || level === 'high') {
+function validateReasoningEffort(level: string): 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
+  if (level === 'minimal' || level === 'low' || level === 'medium' || level === 'high' || level === 'xhigh') {
     return level;
   }
-  throw new Error(`無効な推論努力レベル: ${level}（minimal, low, medium, high のいずれかを指定してください）`);
+  throw new Error(`無効な推論努力レベル: ${level}（minimal, low, medium, high, xhigh のいずれかを指定してください）`);
 }
 
 /**

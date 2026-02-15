@@ -25,7 +25,7 @@ export interface PhaseEngineConfig {
   /** エンジン選択 */
   engine?: 'claude' | 'codex';
   /** 推論努力レベル（Codex用） */
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   /** モデル名 */
   model?: string;
   /** Claude effort レベル（Opus 4.6+） */
@@ -47,7 +47,7 @@ export interface MelosConfig {
   /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** 推論努力レベル（Codex用） */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   /** 最大イテレーション数 */
   maxIterations?: number;
   /** デフォルトエンジン（全フェーズの初期値） */
@@ -155,7 +155,7 @@ function validateConfig(config: MelosConfig): MelosConfig {
 
   // reasoningEffort: 有効な値のみ
   if (config.reasoningEffort) {
-    const validLevels = ['minimal', 'low', 'medium', 'high'];
+    const validLevels = ['minimal', 'low', 'medium', 'high', 'xhigh'];
     if (validLevels.includes(config.reasoningEffort)) {
       validated.reasoningEffort = config.reasoningEffort;
     }

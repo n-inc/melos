@@ -7,7 +7,6 @@ import {
   saveEscalation,
   loadEscalation,
   clearEscalation,
-  type Escalation,
 } from '../escalation.js';
 
 describe('escalation.ts', () => {

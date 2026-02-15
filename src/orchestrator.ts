@@ -21,7 +21,6 @@ import {
   initializeProgress,
   progressExists,
   getCurrentIteration,
-  saveProgress,
   type ExecutionMode,
   type Progress,
 } from './state/progress.js';
@@ -86,7 +85,7 @@ export interface OrchestratorConfig {
   /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** Codex 推論努力レベル */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   /** Claude effort レベル（Opus 4.6+） */
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Claude thinking budget（旧モデル向け、1024〜31999） */
@@ -115,7 +114,7 @@ const MODE_NAMES: Record<ExecutionMode, string> = {
 /**
  * フェーズ別デフォルトエンジン設定
  */
-const DEFAULT_PHASE_ENGINES: Record<PhaseType, { engine: EngineType; reasoningEffort?: 'low' | 'medium' | 'high'; model?: string; effort?: 'low' | 'medium' | 'high' | 'max'; thinkingBudget?: number }> = {
+const DEFAULT_PHASE_ENGINES: Record<PhaseType, { engine: EngineType; reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; model?: string; effort?: 'low' | 'medium' | 'high' | 'max'; thinkingBudget?: number }> = {
   research: {
     engine: 'codex',
     reasoningEffort: 'high',
@@ -463,7 +462,7 @@ export class Orchestrator {
    */
   private formatEngineOptions(
     engine: EngineType,
-    options: { reasoningEffort?: 'low' | 'medium' | 'high'; model?: string; effort?: 'low' | 'medium' | 'high' | 'max'; thinkingBudget?: number }
+    options: { reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'; model?: string; effort?: 'low' | 'medium' | 'high' | 'max'; thinkingBudget?: number }
   ): string {
     if (engine === 'claude') {
       const model = options.model ?? 'opus';
@@ -484,7 +483,7 @@ export class Orchestrator {
   private getEngineForPhase(phase: PhaseType): {
     engine: EngineType;
     options: {
-      reasoningEffort?: 'low' | 'medium' | 'high';
+      reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
       model?: string;
       effort?: 'low' | 'medium' | 'high' | 'max';
       thinkingBudget?: number;
