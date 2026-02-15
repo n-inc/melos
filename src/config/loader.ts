@@ -47,7 +47,7 @@ export interface MelosConfig {
   /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** 推論努力レベル（Codex用） */
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
   /** 最大イテレーション数 */
   maxIterations?: number;
   /** デフォルトエンジン（全フェーズの初期値） */
@@ -155,7 +155,7 @@ function validateConfig(config: MelosConfig): MelosConfig {
 
   // reasoningEffort: 有効な値のみ
   if (config.reasoningEffort) {
-    const validLevels = ['low', 'medium', 'high', 'xhigh'];
+    const validLevels = ['minimal', 'low', 'medium', 'high'];
     if (validLevels.includes(config.reasoningEffort)) {
       validated.reasoningEffort = config.reasoningEffort;
     }

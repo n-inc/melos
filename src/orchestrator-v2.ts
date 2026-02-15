@@ -57,7 +57,7 @@ export interface V2OrchestratorConfig {
   /** Worker モデル名 */
   workerModel?: string;
   /** Worker 推論努力レベル */
-  workerReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  workerReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
   /** ドライラン（計画のみ、Worker実行しない） */
   dryRun?: boolean;
 }

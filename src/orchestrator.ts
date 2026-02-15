@@ -86,7 +86,7 @@ export interface OrchestratorConfig {
   /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
   model?: string;
   /** Codex 推論努力レベル */
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
   /** Claude effort レベル（Opus 4.6+） */
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Claude thinking budget（旧モデル向け、1024〜31999） */

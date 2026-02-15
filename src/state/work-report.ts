@@ -91,6 +91,8 @@ export interface WorkReport {
   requestsHelp: boolean;
   /** ヘルプが必要な理由 */
   helpReason?: string;
+  /** Worker 実行ログのファイルパス */
+  logFilePath?: string;
   /** 作成時刻（ISO 8601） */
   createdAt: string;
 }
@@ -158,6 +160,7 @@ export function createWorkReport(params: {
   learnings?: string[];
   requestsHelp?: boolean;
   helpReason?: string;
+  logFilePath?: string;
 }): WorkReport {
   return {
     iteration: params.iteration,
@@ -178,6 +181,7 @@ export function createWorkReport(params: {
     learnings: params.learnings ?? [],
     requestsHelp: params.requestsHelp ?? false,
     helpReason: params.helpReason,
+    logFilePath: params.logFilePath,
     createdAt: new Date().toISOString(),
   };
 }

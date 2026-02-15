@@ -1,3 +1,6 @@
+import { writeFile } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { CodexEngine, type CodexEngineOptions } from '../engines/codex.js';
 import { loadPromptRaw } from '../prompts/loader.js';
 import type { WorkOrder } from '../state/work-order.js';
@@ -15,7 +18,7 @@ export interface WorkerAgentConfig {
   /** Codex モデル名 */
   model?: string;
   /** 推論努力レベル */
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
 }
 
 /**
@@ -74,12 +77,22 @@ export class WorkerAgent implements Agent {
     const options: CodexEngineOptions = {
       cwd: this.config.cwd,
       model: this.config.model,
-      reasoningEffort: this.config.reasoningEffort || 'xhigh',
+      reasoningEffort: this.config.reasoningEffort || 'high',
       execMode: true,
     };
 
     const result = await this.engine.execute(prompt, options);
+
+    // 実行ログをファイルに保存
+    const logFilePath = await this.saveExecutionLog(
+      input.workOrder.iteration,
+      input.workOrder.taskId,
+      result.output,
+      result.error
+    );
+
     const report = this.parseWorkReport(input.workOrder, result.output, result.success);
+    report.logFilePath = logFilePath;
 
     if (report.status === 'SUCCESS') {
       return { type: 'success', report };
@@ -90,6 +103,34 @@ export class WorkerAgent implements Agent {
     } else {
       return { type: 'failed', report };
     }
+  }
+
+  /**
+   * 実行ログをファイルに保存する
+   */
+  private async saveExecutionLog(
+    iteration: number,
+    taskId: string,
+    output: string,
+    error?: string
+  ): Promise<string> {
+    const logsDir = join(this.config.cwd, '.melos', 'worker-logs');
+    mkdirSync(logsDir, { recursive: true });
+
+    const filename = `${iteration}-${taskId}.log`;
+    const filepath = join(logsDir, filename);
+    const content = `=== Worker Execution Log ===
+Iteration: ${iteration}
+TaskId: ${taskId}
+Timestamp: ${new Date().toISOString()}
+
+=== Output ===
+${output}
+
+${error ? `=== Error ===\n${error}` : ''}
+`;
+    await writeFile(filepath, content, 'utf-8');
+    return filepath;
   }
 
   /**

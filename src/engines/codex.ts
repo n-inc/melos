@@ -7,8 +7,8 @@ import { Engine, EngineOptions, EngineResult } from './base.js';
 export interface CodexEngineOptions extends EngineOptions {
   /** モデル名（デフォルト: gpt-5.3-codex） */
   model?: string;
-  /** 推論努力レベル（デフォルト: xhigh） */
-  reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
+  /** 推論努力レベル（デフォルト: high） */
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
   /** 実行モード: exec（print）または interactive */
   execMode?: boolean;
 }
@@ -16,7 +16,7 @@ export interface CodexEngineOptions extends EngineOptions {
 /** デフォルトモデル */
 const DEFAULT_MODEL = 'gpt-5.3-codex';
 /** デフォルト推論努力レベル */
-const DEFAULT_REASONING_EFFORT = 'xhigh';
+const DEFAULT_REASONING_EFFORT = 'high';
 /** Claude 専用モデル名（Codex では無視してデフォルトを使用） */
 const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
 /** ANSI エスケープコード */
