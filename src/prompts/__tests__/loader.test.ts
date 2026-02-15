@@ -95,11 +95,13 @@ describe('loader.ts', () => {
   describe('getAvailablePromptTypes', () => {
     it('returns all prompt types', () => {
       const types = getAvailablePromptTypes();
-      expect(types).toHaveLength(4);
+      expect(types).toHaveLength(6);
       expect(types).toContain('loop');
       expect(types).toContain('research');
       expect(types).toContain('verification');
       expect(types).toContain('review');
+      expect(types).toContain('manager');
+      expect(types).toContain('worker');
     });
   });
 

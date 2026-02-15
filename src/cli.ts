@@ -15,6 +15,10 @@ import {
   getDefaultMaxIterations,
   type EngineType,
 } from './orchestrator.js';
+import {
+  V2Orchestrator,
+  type V2OrchestratorConfig,
+} from './orchestrator-v2.js';
 import type { ExecutionMode } from './state/progress.js';
 import { loadConfig, type MelosConfig } from './config/index.js';
 
@@ -22,11 +26,11 @@ import { loadConfig, type MelosConfig } from './config/index.js';
  * CLI オプション
  */
 export interface CLIOptions {
-  /** CI修正のみモード */
+  /** CI修正のみモード（legacy） */
   ciFixOnly?: boolean;
-  /** レビューのみモード */
+  /** レビューのみモード（legacy） */
   reviewOnly?: boolean;
-  /** タスク実行のみモード */
+  /** タスク実行のみモード（legacy） */
   taskOnly?: boolean;
   /** 最大イテレーション数 */
   maxIterations?: number;
@@ -46,6 +50,10 @@ export interface CLIOptions {
   plain?: boolean;
   /** 設定表示モード */
   showConfig?: boolean;
+  /** レガシーモード（旧 loop.md ベースのオーケストレーター） */
+  legacy?: boolean;
+  /** ドライラン（計画のみ、Worker実行しない） */
+  dryRun?: boolean;
 }
 
 /**
@@ -144,6 +152,14 @@ export function createProgram(): Command {
     .addOption(
       new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
     )
+    .option(
+      '--legacy',
+      'レガシーモード（旧 loop.md ベースのオーケストレーター）'
+    )
+    .option(
+      '--dry-run',
+      'ドライラン（計画のみ、Worker実行しない）'
+    )
     .helpOption('-h, --help', 'ヘルプを表示');
 
   program
@@ -189,6 +205,14 @@ export function createProgram(): Command {
     .addOption(
       new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
     )
+    .option(
+      '--legacy',
+      'レガシーモード（旧 loop.md ベースのオーケストレーター）'
+    )
+    .option(
+      '--dry-run',
+      'ドライラン（計画のみ、Worker実行しない）'
+    )
     .action(async (options: CLIOptions) => {
       await handleCommandAction(() => executeWithOptions(options));
     });
@@ -218,6 +242,14 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     process.env.MELOS_NO_SPINNER = '1';
   }
 
+  // デフォルトは V2 モード（Manager + Worker）
+  // --legacy が指定された場合のみ旧モード
+  if (!options.legacy) {
+    await executeV2(options);
+    return;
+  }
+
+  // 以下はレガシーモード（旧 loop.md ベース）
   // 設定ファイルを読み込み
   const fileConfig = await loadConfig();
 
@@ -288,6 +320,71 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     const result = await orchestrator.run();
 
     if (!result.success) {
+      process.exit(1);
+    }
+  } finally {
+    process.removeListener('SIGINT', handleSignal);
+    process.removeListener('SIGTERM', handleSignal);
+  }
+}
+
+/**
+ * V2 モードで実行
+ */
+async function executeV2(options: CLIOptions): Promise<void> {
+  const cwd = process.cwd();
+
+  // 推論努力レベルを検証
+  const reasoningEffort = options.reasoningEffort
+    ? validateReasoningEffort(options.reasoningEffort)
+    : undefined;
+
+  // effort レベルを検証
+  const effort = options.effort
+    ? validateEffort(options.effort)
+    : undefined;
+
+  // V2 設定を作成
+  const config: V2OrchestratorConfig = {
+    cwd,
+    maxIterations: options.maxIterations ?? 30,
+    prdFile: join(cwd, 'PRD.md'),
+    planFile: join(cwd, 'PLAN.json'),
+    progressFile: join(cwd, 'PROGRESS.md'),
+    melosDir: join(cwd, '.melos'),
+    managerModel: options.model,
+    managerEffort: effort,
+    workerModel: options.model,
+    workerReasoningEffort: reasoningEffort,
+    dryRun: options.dryRun,
+  };
+
+  // V2 オーケストレーターを作成
+  const orchestrator = new V2Orchestrator(config);
+
+  // Ctrl+C ハンドラー
+  const handleSignal = () => {
+    console.error('\n\x1b[1;33m中断されました。\x1b[0m');
+    orchestrator.abort();
+    process.exit(130);
+  };
+
+  process.on('SIGINT', handleSignal);
+  process.on('SIGTERM', handleSignal);
+
+  // スモークテスト用リセット（開始前）
+  if (options.dangerouslyResetBeforeStart) {
+    resetForSmokeTest();
+  }
+
+  try {
+    const result = await orchestrator.run();
+
+    if (!result.success) {
+      if (result.reason === 'escalation') {
+        console.error('\x1b[1;33mエスカレーションが必要です。回答を入力してください。\x1b[0m');
+        process.exit(2);
+      }
       process.exit(1);
     }
   } finally {

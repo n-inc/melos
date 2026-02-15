@@ -22,7 +22,13 @@ export interface PromptVariables {
 /**
  * プロンプトタイプ
  */
-export type PromptType = 'loop' | 'research' | 'verification' | 'review';
+export type PromptType =
+  | 'loop'
+  | 'research'
+  | 'verification'
+  | 'review'
+  | 'manager'  // v2: Manager Agent 用
+  | 'worker';  // v2: Worker Agent 用
 
 /**
  * プロンプトファイルのパスを取得
@@ -141,7 +147,7 @@ export async function loadPromptFromPathWithVariables(
  * 利用可能なすべてのプロンプトタイプを取得
  */
 export function getAvailablePromptTypes(): PromptType[] {
-  return ['loop', 'research', 'verification', 'review'];
+  return ['loop', 'research', 'verification', 'review', 'manager', 'worker'];
 }
 
 /**
