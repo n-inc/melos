@@ -53,6 +53,8 @@ export interface WorkerInput {
   workOrder: WorkOrder;
   /** PROGRESS.md の Codebase Patterns セクション */
   codebasePatterns: string | null;
+  /** PRD.md の内容 */
+  prd: string | null;
 }
 
 /**

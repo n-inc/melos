@@ -1,6 +1,8 @@
 import {
   buildFollowupPlanTasks,
   formatLearningsForProgress,
+  getReviewTasksToAdd,
+  shouldBlockCompletion,
   upsertLearningsSection,
 } from '../orchestrator.js';
 
@@ -113,6 +115,63 @@ describe('orchestrator.ts', () => {
       expect(result[1].description).toContain('軽微な不整合 2 件をまとめて対応');
       expect(result[2].description).toContain('設定画面の表示崩れ');
       expect(result.every((task) => task.passes === false)).toBe(true);
+    });
+  });
+
+  describe('shouldBlockCompletion', () => {
+    it('does not block when plan is null', () => {
+      expect(shouldBlockCompletion(null)).toEqual({
+        blocked: false,
+        pendingTaskIds: [],
+        pendingReviewTaskIds: [],
+      });
+    });
+
+    it('blocks completion when there are pending implementation tasks', () => {
+      const result = shouldBlockCompletion([
+        { id: '1', description: 'impl', passes: false },
+      ]);
+
+      expect(result.blocked).toBe(true);
+      expect(result.pendingTaskIds).toEqual(['1']);
+      expect(result.pendingReviewTaskIds).toEqual([]);
+    });
+
+    it('blocks completion and reports pending review tasks separately', () => {
+      const result = shouldBlockCompletion([
+        { id: '1', description: 'impl', passes: true },
+        {
+          id: 'review-product-g1',
+          description: 'product review',
+          passes: false,
+          reviewType: 'product',
+          reviewGeneration: 1,
+        },
+      ]);
+
+      expect(result.blocked).toBe(true);
+      expect(result.pendingTaskIds).toEqual(['review-product-g1']);
+      expect(result.pendingReviewTaskIds).toEqual(['review-product-g1']);
+    });
+  });
+
+  describe('getReviewTasksToAdd', () => {
+    it('returns empty when PRD does not exist', () => {
+      const result = getReviewTasksToAdd(
+        [{ id: '1', description: 'impl', passes: true }],
+        false
+      );
+      expect(result).toEqual([]);
+    });
+
+    it('returns product/code review tasks when implementation tasks are complete', () => {
+      const result = getReviewTasksToAdd(
+        [{ id: '1', description: 'impl', passes: true }],
+        true
+      );
+
+      expect(result).toHaveLength(2);
+      expect(result.map((task) => task.reviewType)).toEqual(['product', 'code']);
     });
   });
 });

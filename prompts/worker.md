@@ -10,11 +10,21 @@
 {WORK_ORDER_JSON}
 ```
 
+## PRD.md（要件定義）
+
+{PRD_CONTENT}
+
 ---
 
 ## コードベースのパターン
 
 {CODEBASE_PATTERNS}
+
+---
+
+## タスクモードガイド
+
+{TASK_MODE_GUIDE}
 
 ---
 
@@ -31,6 +41,8 @@
 - 小さなステップで進める
 - 既存のコードスタイルに従う
 - `context.gotchas` に注意
+- レビュータスク（`review-product-g*` / `review-code-g*`）の場合は **コード修正を行わず監査のみ** 実施する
+- レビューで見つけた問題は `discoveredTasks` に記録し、次イテレーションで修正させる
 
 ### 3. 検証
 
@@ -118,6 +130,7 @@ git commit -m "feat: タスクの説明"
 - 全ての成功基準を満たした
 - テスト/lint/typecheck が全てパス
 - コミット完了
+- レビュータスクの場合は、レビュー実行と報告（`discoveredTasks` 記録）が完了している
 
 **PARTIAL:**
 - 一部の成功基準のみ満たした

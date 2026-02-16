@@ -14,6 +14,7 @@ import {
   isAllTasksCompleted,
   isAllChecksPassed,
   hasValidEvidence,
+  createMissingReviewTasks,
   addTasks,
   VALID_CHECK_TYPES,
   type Plan,
@@ -364,6 +365,158 @@ describe('plan.ts', () => {
       await expect(loadPlan(planPath)).rejects.toThrow(
         'Task.checks[0].screenshot must be a string if present'
       );
+    });
+  });
+
+  describe('review task fields', () => {
+    it('accepts valid review task with reviewType and reviewGeneration', async () => {
+      const plan: Plan = [
+        {
+          id: 'review-product-g1',
+          description: 'product review',
+          passes: false,
+          reviewType: 'product',
+          reviewGeneration: 1,
+        },
+      ];
+      await writeFile(planPath, JSON.stringify(plan));
+
+      const loaded = await loadPlan(planPath);
+      expect(loaded[0].reviewType).toBe('product');
+      expect(loaded[0].reviewGeneration).toBe(1);
+    });
+
+    it('rejects invalid reviewType', async () => {
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: 'review-1',
+          description: 'invalid review',
+          passes: false,
+          reviewType: 'invalid',
+          reviewGeneration: 1,
+        },
+      ]));
+      await expect(loadPlan(planPath)).rejects.toThrow(
+        'Task.reviewType must be one of'
+      );
+    });
+
+    it('rejects reviewGeneration without reviewType', async () => {
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: 'review-1',
+          description: 'invalid review',
+          passes: false,
+          reviewGeneration: 1,
+        },
+      ]));
+      await expect(loadPlan(planPath)).rejects.toThrow(
+        'Task.reviewType is required when Task.reviewGeneration is present'
+      );
+    });
+
+    it('rejects reviewType without reviewGeneration', async () => {
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: 'review-1',
+          description: 'invalid review',
+          passes: false,
+          reviewType: 'code',
+        },
+      ]));
+      await expect(loadPlan(planPath)).rejects.toThrow(
+        'Task.reviewGeneration is required when Task.reviewType is present'
+      );
+    });
+  });
+
+  describe('createMissingReviewTasks', () => {
+    it('creates product/code review tasks when implementation tasks are all done', () => {
+      const plan: Plan = [
+        { id: '1', description: 'impl 1', passes: true },
+        { id: '2', description: 'impl 2', passes: true },
+      ];
+
+      const result = createMissingReviewTasks(plan);
+      expect(result).toHaveLength(2);
+      expect(result.map((t) => t.reviewType)).toEqual(['product', 'code']);
+      expect(result.map((t) => t.reviewGeneration)).toEqual([2, 2]);
+      expect(result.every((t) => t.passes === false)).toBe(true);
+    });
+
+    it('returns empty when implementation tasks are not all done', () => {
+      const plan: Plan = [
+        { id: '1', description: 'impl 1', passes: true },
+        { id: '2', description: 'impl 2', passes: false },
+      ];
+
+      expect(createMissingReviewTasks(plan)).toEqual([]);
+    });
+
+    it('returns empty when current generation already has both review tasks', () => {
+      const plan: Plan = [
+        { id: '1', description: 'impl 1', passes: true },
+        { id: '2', description: 'impl 2', passes: true },
+        {
+          id: 'review-product-g2',
+          description: 'product review',
+          passes: true,
+          reviewType: 'product',
+          reviewGeneration: 2,
+        },
+        {
+          id: 'review-code-g2',
+          description: 'code review',
+          passes: false,
+          reviewType: 'code',
+          reviewGeneration: 2,
+        },
+      ];
+
+      expect(createMissingReviewTasks(plan)).toEqual([]);
+    });
+
+    it('creates only missing review type for current generation', () => {
+      const plan: Plan = [
+        { id: '1', description: 'impl 1', passes: true },
+        {
+          id: 'review-product-g1',
+          description: 'product review',
+          passes: true,
+          reviewType: 'product',
+          reviewGeneration: 1,
+        },
+      ];
+
+      const result = createMissingReviewTasks(plan);
+      expect(result).toHaveLength(1);
+      expect(result[0].reviewType).toBe('code');
+      expect(result[0].reviewGeneration).toBe(1);
+    });
+
+    it('triggers next generation review when follow-up implementation tasks are added and done', () => {
+      const plan: Plan = [
+        { id: '1', description: 'impl 1', passes: true },
+        {
+          id: 'review-product-g1',
+          description: 'product review',
+          passes: true,
+          reviewType: 'product',
+          reviewGeneration: 1,
+        },
+        {
+          id: 'review-code-g1',
+          description: 'code review',
+          passes: true,
+          reviewType: 'code',
+          reviewGeneration: 1,
+        },
+        { id: '1-followup-1', description: 'follow-up impl', passes: true },
+      ];
+
+      const result = createMissingReviewTasks(plan);
+      expect(result).toHaveLength(2);
+      expect(result.map((t) => t.reviewGeneration)).toEqual([2, 2]);
     });
   });
 

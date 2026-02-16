@@ -7,6 +7,16 @@ import { existsSync } from 'node:fs';
 export type TaskEngine = 'claude' | 'codex';
 
 /**
+ * レビュータスクの種類
+ */
+export type ReviewType = 'product' | 'code';
+
+/**
+ * 有効なレビュータスク種類
+ */
+export const VALID_REVIEW_TYPES: ReviewType[] = ['product', 'code'];
+
+/**
  * チェック項目のタイプ
  */
 export type CheckType =
@@ -73,6 +83,10 @@ export interface PlanTask {
   passes: boolean;
   /** タスク実行エンジン（省略時はデフォルトエンジンを使用） */
   model?: TaskEngine;
+  /** レビュータスク種別（未指定は実装タスク） */
+  reviewType?: ReviewType;
+  /** レビュー世代（reviewType 指定時は必須） */
+  reviewGeneration?: number;
 }
 
 /**
@@ -229,6 +243,117 @@ function validateTask(task: unknown): asserts task is PlanTask {
   ) {
     throw new Error('Task.model must be "claude" or "codex" if present');
   }
+
+  if (
+    t.reviewType !== undefined &&
+    (typeof t.reviewType !== 'string' ||
+      !VALID_REVIEW_TYPES.includes(t.reviewType as ReviewType))
+  ) {
+    throw new Error(`Task.reviewType must be one of: ${VALID_REVIEW_TYPES.join(', ')}`);
+  }
+
+  if (t.reviewGeneration !== undefined) {
+    if (
+      typeof t.reviewGeneration !== 'number' ||
+      !Number.isInteger(t.reviewGeneration) ||
+      t.reviewGeneration < 1
+    ) {
+      throw new Error('Task.reviewGeneration must be a positive integer if present');
+    }
+    if (t.reviewType === undefined) {
+      throw new Error('Task.reviewType is required when Task.reviewGeneration is present');
+    }
+  }
+
+  if (t.reviewType !== undefined && t.reviewGeneration === undefined) {
+    throw new Error('Task.reviewGeneration is required when Task.reviewType is present');
+  }
+}
+
+/**
+ * レビュータスクかどうか
+ */
+export function isReviewTask(task: PlanTask): boolean {
+  return task.reviewType !== undefined;
+}
+
+/**
+ * 実装タスク（reviewType 未指定）を取得
+ */
+export function getImplementationTasks(plan: Plan): PlanTask[] {
+  return plan.filter((task) => !isReviewTask(task));
+}
+
+/**
+ * 現在のレビュー世代（実装タスク数）を取得
+ */
+export function getCurrentReviewGeneration(plan: Plan): number {
+  return getImplementationTasks(plan).length;
+}
+
+/**
+ * 必須レビュー（product/code）で不足しているタスクを生成する
+ *
+ * 生成条件:
+ * - 実装タスクが1件以上ある
+ * - 実装タスクが全て完了している
+ * - 当該 generation に reviewType=product/code の両方が存在しない
+ */
+export function createMissingReviewTasks(plan: Plan): PlanTask[] {
+  const implementationTasks = getImplementationTasks(plan);
+  if (implementationTasks.length === 0) {
+    return [];
+  }
+
+  if (implementationTasks.some((task) => !task.passes)) {
+    return [];
+  }
+
+  const generation = implementationTasks.length;
+  const existingTypes = new Set<ReviewType>();
+  for (const task of plan) {
+    if (task.reviewType && task.reviewGeneration === generation) {
+      existingTypes.add(task.reviewType);
+    }
+  }
+
+  const missingTypes = VALID_REVIEW_TYPES.filter((type) => !existingTypes.has(type));
+  if (missingTypes.length === 0) {
+    return [];
+  }
+
+  const existingIds = new Set(plan.map((task) => task.id));
+  return missingTypes.map((type) =>
+    createReviewTask(existingIds, generation, type)
+  );
+}
+
+function createReviewTask(
+  existingIds: Set<string>,
+  generation: number,
+  type: ReviewType
+): PlanTask {
+  const baseId = `review-${type}-g${generation}`;
+  let id = baseId;
+  let suffix = 2;
+  while (existingIds.has(id)) {
+    id = `${baseId}-${suffix}`;
+    suffix++;
+  }
+  existingIds.add(id);
+
+  const description =
+    type === 'product'
+      ? `[Product Review] PRD.md との整合性を確認し、要件未達・仕様乖離を洗い出す (generation ${generation})`
+      : `[Code Review] 変更差分中心で P1/P2 相当の品質問題を確認する (generation ${generation})`;
+
+  return {
+    id,
+    description,
+    passes: false,
+    reviewType: type,
+    reviewGeneration: generation,
+  };
 }
 
 /**

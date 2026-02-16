@@ -44,7 +44,7 @@ export class WorkerAgent implements Agent {
    */
   private async buildPrompt(input: WorkerInput): Promise<string> {
     const template = await loadPromptRaw('worker');
-    const { workOrder, codebasePatterns } = input;
+    const { workOrder, codebasePatterns, prd } = input;
 
     // プレースホルダーを置換
     let prompt = template
@@ -65,7 +65,51 @@ export class WorkerAgent implements Agent {
       prompt = prompt.replace('{CODEBASE_PATTERNS}', '(なし)');
     }
 
+    // PRD セクション
+    if (prd) {
+      prompt = prompt.replace('{PRD_CONTENT}', prd);
+    } else {
+      prompt = prompt.replace('{PRD_CONTENT}', '(PRD.md が存在しません)');
+    }
+
+    // タスクモードガイド（実装 / product review / code review）
+    prompt = prompt.replace('{TASK_MODE_GUIDE}', this.buildTaskModeGuide(workOrder.taskId));
+
     return prompt;
+  }
+
+  private buildTaskModeGuide(taskId: string): string {
+    const mode = this.detectReviewMode(taskId);
+    if (mode === 'product') {
+      return [
+        '- このタスクは **Product Review** です。実装はせず、PRD.md と現在実装の整合性を監査してください。',
+        '- PRD の各要件について「満たしている根拠（ファイル/関数/テスト）」を確認してください。',
+        '- 要件未達や仕様乖離は `discoveredTasks` に追加し、再現条件と影響を記載してください。',
+        '- 指摘があってもレビュー実行自体が完了していれば `status` は `SUCCESS` にしてください。',
+      ].join('\n');
+    }
+
+    if (mode === 'code') {
+      return [
+        '- このタスクは **Code Review** です。実装はせず、コード観点の監査を実施してください。',
+        '- レビュー範囲は **Changed files中心**（`git diff` 対象 + 必要な関連箇所）で確認してください。',
+        '- P1/P2 相当の問題（バグ、セキュリティ、重大ロジック不整合、保守性の重大劣化）を優先して検出してください。',
+        '- 指摘事項は `discoveredTasks` に追加し、優先度と根拠を明記してください。',
+        '- 指摘があってもレビュー実行自体が完了していれば `status` は `SUCCESS` にしてください。',
+      ].join('\n');
+    }
+
+    return '- このタスクは通常の実装タスクです。WORK_ORDER に従って実装・検証・報告を行ってください。';
+  }
+
+  private detectReviewMode(taskId: string): 'product' | 'code' | null {
+    if (taskId.startsWith('review-product-g')) {
+      return 'product';
+    }
+    if (taskId.startsWith('review-code-g')) {
+      return 'code';
+    }
+    return null;
   }
 
   /**

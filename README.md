@@ -133,6 +133,16 @@ Melos は以下のファイルを使用します：
 - **PROGRESS.md**: 進捗ログ
 - **.melos.json**: プロジェクト設定ファイル（オプション）
 
+## レビュータスクの自動追加
+
+実装タスク（`reviewType` 未指定）がすべて完了すると、Melos は `PLAN.json` に以下のレビュータスクを自動追加します。
+
+- `reviewType: "product"`: PRD.md との整合性レビュー
+- `reviewType: "code"`: 変更差分中心のコードレビュー
+
+レビューで見つかった問題は `discoveredTasks` からフォローアップ実装タスクとして追加されます。  
+フォローアップ完了後は次 generation の product/code レビューが再度自動追加されます。
+
 ## 関連スキル
 
 - `/melos-add-task`: 自然言語でタスクを追加する Claude Code スキル

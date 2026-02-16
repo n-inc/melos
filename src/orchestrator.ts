@@ -9,6 +9,9 @@ import {
   loadPlan,
   planExists,
   addTasks,
+  createMissingReviewTasks,
+  getPendingTasks,
+  isReviewTask,
   updateTaskStatus,
   syncAutoChecksFromVerification,
   isAllChecksPassed,
@@ -330,6 +333,22 @@ export class Orchestrator {
       }
 
       case 'complete': {
+        const completionGuard = shouldBlockCompletion(this.state.plan);
+        if (completionGuard.blocked) {
+          const reviewCount = completionGuard.pendingReviewTaskIds.length;
+          log(
+            'YELLOW',
+            `未完了タスクが ${completionGuard.pendingTaskIds.length} 件あるため完了を保留します`
+          );
+          if (reviewCount > 0) {
+            log(
+              'YELLOW',
+              `レビュー未完了タスク: ${completionGuard.pendingReviewTaskIds.join(', ')}`
+            );
+          }
+          return { reason: 'continue' };
+        }
+
         // HANDOFF.md を保存
         const handoffPath = join(this.config.cwd, 'HANDOFF.md');
         await writeFile(handoffPath, decision.handoffContent, 'utf-8');
@@ -385,6 +404,7 @@ export class Orchestrator {
     const workerInput: WorkerInput = {
       workOrder,
       codebasePatterns: this.state.progress,
+      prd: this.state.prd,
     };
 
     let result: WorkerResult;
@@ -475,6 +495,8 @@ export class Orchestrator {
 
     // 保留中のエスカレーション
     this.state.pendingEscalation = await loadEscalation(this.config.melosDir);
+
+    await this.ensureRequiredReviewTasks();
   }
 
   /**
@@ -546,7 +568,27 @@ export class Orchestrator {
       log('CYAN', `フォローアップタスクを PLAN.json に ${followupTasks.length} 件追加`);
     }
 
+    const reviewTasks = getReviewTasksToAdd(plan, !!this.state.prd);
+    if (reviewTasks.length > 0) {
+      plan = await addTasks(this.config.planFile, reviewTasks);
+      log('CYAN', `レビュータスクを PLAN.json に ${reviewTasks.length} 件追加`);
+    }
+
     return plan;
+  }
+
+  private async ensureRequiredReviewTasks(): Promise<void> {
+    if (!this.state.plan || !planExists(this.config.planFile)) {
+      return;
+    }
+
+    const reviewTasks = getReviewTasksToAdd(this.state.plan, !!this.state.prd);
+    if (reviewTasks.length === 0) {
+      return;
+    }
+
+    this.state.plan = await addTasks(this.config.planFile, reviewTasks);
+    log('CYAN', `レビュータスクを PLAN.json に ${reviewTasks.length} 件追加`);
   }
 
   /**
@@ -581,6 +623,52 @@ export class Orchestrator {
       this.currentSpinner.fail('中止されました');
     }
   }
+}
+
+/**
+ * 完了判定をブロックすべきか判定する
+ */
+export function shouldBlockCompletion(plan: Plan | null): {
+  blocked: boolean;
+  pendingTaskIds: string[];
+  pendingReviewTaskIds: string[];
+} {
+  if (!plan) {
+    return {
+      blocked: false,
+      pendingTaskIds: [],
+      pendingReviewTaskIds: [],
+    };
+  }
+
+  const pendingTasks = getPendingTasks(plan);
+  if (pendingTasks.length === 0) {
+    return {
+      blocked: false,
+      pendingTaskIds: [],
+      pendingReviewTaskIds: [],
+    };
+  }
+
+  const pendingReviewTaskIds = pendingTasks
+    .filter((task) => isReviewTask(task))
+    .map((task) => task.id);
+
+  return {
+    blocked: true,
+    pendingTaskIds: pendingTasks.map((task) => task.id),
+    pendingReviewTaskIds,
+  };
+}
+
+/**
+ * PRD が存在する場合に限り、不足しているレビュータスクを返す
+ */
+export function getReviewTasksToAdd(plan: Plan | null, hasPrd: boolean): PlanTask[] {
+  if (!hasPrd || !plan) {
+    return [];
+  }
+  return createMissingReviewTasks(plan);
 }
 
 /**
