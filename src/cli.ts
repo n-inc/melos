@@ -271,6 +271,10 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
         console.error('\x1b[1;33mエスカレーションが必要です。回答を入力してください。\x1b[0m');
         process.exit(2);
       }
+      const detail = result.error ? ` / error: ${result.error}` : '';
+      console.error(
+        `\x1b[0;31m実行が失敗しました (reason: ${result.reason}${detail})\x1b[0m`
+      );
       process.exit(1);
     }
   } finally {

@@ -367,6 +367,8 @@ export class Orchestrator {
       }
 
       case 'error': {
+        log('RED', 'Manager の判断を解釈できず終了します');
+        log('RED', `理由: ${decision.message}`);
         return {
           reason: 'error',
           error: decision.message,

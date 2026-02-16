@@ -142,34 +142,23 @@ export class ManagerAgent implements Agent {
    * Claude の出力から判断を抽出する
    */
   private parseDecision(output: string): ManagerDecision {
-    // 全ての JSON ブロックを抽出して、各ブロックを試行
+    // fenced JSON と生JSON（ログ混在）を両方収集し、末尾優先で判定する
     const jsonBlocks = this.extractJsonBlocks(output);
+    const rawJsonBlocks = this.extractRawJsonBlocks(output);
+    const candidates = [...jsonBlocks, ...rawJsonBlocks];
 
-    // WORK_ORDER.json を探す（taskId を含むブロック）
-    for (const jsonStr of jsonBlocks) {
-      if (jsonStr.includes('"taskId"') && jsonStr.includes('"instructions"')) {
-        try {
-          const workOrder = JSON.parse(jsonStr) as WorkOrder;
-          if (workOrder.taskId && workOrder.description) {
-            return { type: 'dispatch_task', workOrder };
-          }
-        } catch {
-          // パース失敗は無視して続行
-        }
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const parsed = this.tryParseJsonObject(candidates[i]);
+      if (!parsed) {
+        continue;
       }
-    }
 
-    // ESCALATION を探す
-    for (const jsonStr of jsonBlocks) {
-      if (jsonStr.includes('"type"') && /QUESTION|APPROVAL|BLOCKER/.test(jsonStr)) {
-        try {
-          const escalation = JSON.parse(jsonStr) as Escalation;
-          if (escalation.type && escalation.question) {
-            return { type: 'escalate', escalation };
-          }
-        } catch {
-          // パース失敗は無視して続行
-        }
+      if (this.isWorkOrderCandidate(parsed)) {
+        return { type: 'dispatch_task', workOrder: parsed };
+      }
+
+      if (this.isEscalationCandidate(parsed)) {
+        return { type: 'escalate', escalation: parsed };
       }
     }
 
@@ -216,6 +205,100 @@ export class ManagerAgent implements Agent {
       blocks.push(match[1]);
     }
     return blocks;
+  }
+
+  /**
+   * ログ混在テキストからトップレベル JSON object を抽出する
+   * - "{}" のネスト深さで範囲を判定
+   * - 文字列内の "{}" は無視
+   */
+  private extractRawJsonBlocks(output: string): string[] {
+    const blocks: string[] = [];
+    let depth = 0;
+    let startIndex = -1;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < output.length; i++) {
+      const char = output[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (depth > 0 && char === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (char === '{') {
+        if (depth === 0) {
+          startIndex = i;
+        }
+        depth++;
+        continue;
+      }
+
+      if (char === '}' && depth > 0) {
+        depth--;
+        if (depth === 0 && startIndex >= 0) {
+          blocks.push(output.slice(startIndex, i + 1));
+          startIndex = -1;
+        }
+      }
+    }
+
+    return blocks;
+  }
+
+  /**
+   * JSON object を安全にパースする
+   */
+  private tryParseJsonObject(value: string): Record<string, unknown> | null {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private isWorkOrderCandidate(value: unknown): value is WorkOrder {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+    const candidate = value as Record<string, unknown>;
+    return (
+      typeof candidate.taskId === 'string' &&
+      typeof candidate.description === 'string' &&
+      Array.isArray(candidate.instructions)
+    );
+  }
+
+  private isEscalationCandidate(value: unknown): value is Escalation {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+    const candidate = value as Record<string, unknown>;
+    const type = candidate.type;
+    return (
+      (type === 'QUESTION' || type === 'APPROVAL' || type === 'BLOCKER') &&
+      typeof candidate.question === 'string'
+    );
   }
 
   /**
