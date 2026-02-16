@@ -280,26 +280,39 @@ export class Orchestrator {
     // 2. 判断に応じて行動
     switch (decision.type) {
       case 'dispatch_task': {
+        let workOrder = decision.workOrder;
+        const resolvedTaskId = resolveTaskIdForPlan(this.state.plan, workOrder.taskId);
+        if (resolvedTaskId !== workOrder.taskId) {
+          log(
+            'YELLOW',
+            `taskId を補正: "${workOrder.taskId}" -> "${resolvedTaskId}"`
+          );
+          workOrder = {
+            ...workOrder,
+            taskId: resolvedTaskId,
+          };
+        }
+
         if (this.config.dryRun) {
           log('YELLOW', '[DRY-RUN] Worker 実行をスキップ');
-          log('CYAN', `タスク: ${decision.workOrder.taskId}`);
-          log('CYAN', `説明: ${decision.workOrder.description}`);
+          log('CYAN', `タスク: ${workOrder.taskId}`);
+          log('CYAN', `説明: ${workOrder.description}`);
           return { reason: 'continue' };
         }
 
         // Worker にタスクを実行させる
-        const workerResult = await this.runWorker(decision.workOrder);
+        const workerResult = await this.runWorker(workOrder);
 
         // 結果を保存
-        this.state.lastWorkOrder = decision.workOrder;
+        this.state.lastWorkOrder = workOrder;
         this.state.lastWorkReport = workerResult.report;
-        await saveWorkOrder(this.config.melosDir, decision.workOrder);
+        await saveWorkOrder(this.config.melosDir, workOrder);
         await saveWorkReport(this.config.melosDir, workerResult.report);
 
         // 成功した場合、プランを更新
         if (planExists(this.config.planFile)) {
           this.state.plan = await this.updatePlanAfterWorker(
-            decision.workOrder.taskId,
+            workOrder.taskId,
             workerResult
           );
         }
@@ -546,19 +559,20 @@ export class Orchestrator {
     taskId: string,
     workerResult: WorkerResult
   ): Promise<Plan> {
+    const resolvedTaskId = resolveTaskIdForPlan(this.state.plan, taskId);
     let plan = await syncAutoChecksFromVerification(
       this.config.planFile,
-      taskId,
+      resolvedTaskId,
       workerResult.report.verification
     );
 
-    const task = plan.find((t) => t.id === taskId);
+    const task = plan.find((t) => t.id === resolvedTaskId);
     if (!task) {
       throw new Error(`Task not found: ${taskId}`);
     }
 
     const shouldPass = workerResult.type === 'success' && isAllChecksPassed(task);
-    plan = await updateTaskStatus(this.config.planFile, taskId, shouldPass);
+    plan = await updateTaskStatus(this.config.planFile, resolvedTaskId, shouldPass);
 
     const followupTasks = buildFollowupPlanTasks(
       plan,
@@ -661,6 +675,71 @@ export function shouldBlockCompletion(plan: Plan | null): {
     pendingTaskIds: pendingTasks.map((task) => task.id),
     pendingReviewTaskIds,
   };
+}
+
+/**
+ * Manager が返した taskId を PLAN 上の実IDに解決する
+ *
+ * 例:
+ * - "10" <-> "task-10"
+ */
+export function resolveTaskIdForPlan(plan: Plan | null, taskId: string): string {
+  if (!plan || plan.length === 0) {
+    return taskId;
+  }
+
+  const requested = taskId.trim();
+  if (requested.length === 0) {
+    return taskId;
+  }
+
+  // まず完全一致を優先
+  if (plan.some((task) => task.id === requested)) {
+    return requested;
+  }
+
+  const directAliases = new Set<string>([requested]);
+  const numeric = requested.match(/^\d+$/);
+  if (numeric) {
+    directAliases.add(`task-${requested}`);
+  }
+  const prefixed = requested.match(/^task-(\d+)$/);
+  if (prefixed) {
+    directAliases.add(prefixed[1]);
+  }
+
+  const directMatches = plan.filter((task) => directAliases.has(task.id));
+  if (directMatches.length === 1) {
+    return directMatches[0].id;
+  }
+
+  // "10" と "task-10" を同じキーとして扱ったときに一意なら採用
+  const canonicalRequested = toCanonicalTaskKey(requested);
+  if (!canonicalRequested) {
+    return requested;
+  }
+  const canonicalMatches = plan.filter(
+    (task) => toCanonicalTaskKey(task.id) === canonicalRequested
+  );
+  if (canonicalMatches.length === 1) {
+    return canonicalMatches[0].id;
+  }
+
+  return requested;
+}
+
+function toCanonicalTaskKey(taskId: string): string | null {
+  const numericOnly = taskId.match(/^\d+$/);
+  if (numericOnly) {
+    return numericOnly[0];
+  }
+
+  const prefixed = taskId.match(/^task-(\d+)$/);
+  if (prefixed) {
+    return prefixed[1];
+  }
+
+  return null;
 }
 
 /**

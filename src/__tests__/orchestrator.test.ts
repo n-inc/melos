@@ -2,6 +2,7 @@ import {
   buildFollowupPlanTasks,
   formatLearningsForProgress,
   getReviewTasksToAdd,
+  resolveTaskIdForPlan,
   shouldBlockCompletion,
   upsertLearningsSection,
 } from '../orchestrator.js';
@@ -152,6 +153,51 @@ describe('orchestrator.ts', () => {
       expect(result.blocked).toBe(true);
       expect(result.pendingTaskIds).toEqual(['review-product-g1']);
       expect(result.pendingReviewTaskIds).toEqual(['review-product-g1']);
+    });
+  });
+
+  describe('resolveTaskIdForPlan', () => {
+    it('returns exact match task id as-is', () => {
+      const result = resolveTaskIdForPlan(
+        [{ id: 'task-10', description: 'impl', passes: false }],
+        'task-10'
+      );
+      expect(result).toBe('task-10');
+    });
+
+    it('maps numeric id to task-prefixed id when uniquely matched', () => {
+      const result = resolveTaskIdForPlan(
+        [{ id: 'task-10', description: 'impl', passes: false }],
+        '10'
+      );
+      expect(result).toBe('task-10');
+    });
+
+    it('maps task-prefixed id to numeric id when uniquely matched', () => {
+      const result = resolveTaskIdForPlan(
+        [{ id: '10', description: 'impl', passes: false }],
+        'task-10'
+      );
+      expect(result).toBe('10');
+    });
+
+    it('keeps original id when mapping is ambiguous', () => {
+      const result = resolveTaskIdForPlan(
+        [
+          { id: '10', description: 'impl', passes: false },
+          { id: 'task-10', description: 'impl prefixed', passes: false },
+        ],
+        '10'
+      );
+      expect(result).toBe('10');
+    });
+
+    it('keeps original id when no match is found', () => {
+      const result = resolveTaskIdForPlan(
+        [{ id: 'task-11', description: 'impl', passes: false }],
+        '10'
+      );
+      expect(result).toBe('10');
     });
   });
 
