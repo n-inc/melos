@@ -8,6 +8,7 @@ import {
   updateTaskStatus,
   updateCheckStatus,
   updateCheckWithEvidence,
+  syncAutoChecksFromVerification,
   getPendingTasks,
   getNextTask,
   isAllTasksCompleted,
@@ -596,6 +597,133 @@ describe('plan.ts', () => {
       await expect(
         updateCheckWithEvidence(planPath, '1', 5, { screenshot: 'url' })
       ).rejects.toThrow('Check index 5 out of range for task 1');
+    });
+  });
+
+  describe('syncAutoChecksFromVerification', () => {
+    it('updates auto checks from verification and keeps manual/browser untouched', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [
+            { text: 'Jest', type: 'auto:jest', passed: false },
+            { text: 'RSpec', type: 'auto:rspec', passed: false },
+            { text: 'Typecheck', type: 'auto:typecheck', passed: false },
+            { text: 'Manual', type: 'manual', passed: false },
+            { text: 'Browser', type: 'browser', passed: false },
+          ],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      const updated = await syncAutoChecksFromVerification(planPath, '1', {
+        testsRun: true,
+        testsFailed: 0,
+        typecheckPassed: true,
+      });
+
+      expect(updated[0].checks![0].passed).toBe(true);
+      expect(updated[0].checks![1].passed).toBe(true);
+      expect(updated[0].checks![2].passed).toBe(true);
+      expect(updated[0].checks![3].passed).toBe(false);
+      expect(updated[0].checks![4].passed).toBe(false);
+    });
+
+    it('uses granular jest/rspec results when provided', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [
+            { text: 'Jest', type: 'auto:jest', passed: false },
+            { text: 'RSpec', type: 'auto:rspec', passed: true },
+          ],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      const updated = await syncAutoChecksFromVerification(planPath, '1', {
+        testsRun: true,
+        testsFailed: 0,
+        jestPassed: true,
+        rspecPassed: false,
+        typecheckPassed: true,
+      });
+
+      expect(updated[0].checks![0].passed).toBe(true);
+      expect(updated[0].checks![1].passed).toBe(false);
+    });
+
+    it('treats missing counterpart as not-run when only one granular result is provided', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [
+            { text: 'Jest', type: 'auto:jest', passed: true },
+            { text: 'RSpec', type: 'auto:rspec', passed: true },
+          ],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      const updated = await syncAutoChecksFromVerification(planPath, '1', {
+        testsRun: true,
+        testsFailed: 0,
+        jestPassed: true,
+        typecheckPassed: true,
+      });
+
+      expect(updated[0].checks![0].passed).toBe(true);
+      expect(updated[0].checks![1].passed).toBe(false);
+    });
+
+    it('sets auto:jest/auto:rspec to false when tests are not run', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [
+            { text: 'Jest', type: 'auto:jest', passed: true },
+            { text: 'RSpec', type: 'auto:rspec', passed: true },
+          ],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      const updated = await syncAutoChecksFromVerification(planPath, '1', {
+        testsRun: false,
+        testsFailed: 0,
+        typecheckPassed: true,
+      });
+
+      expect(updated[0].checks![0].passed).toBe(false);
+      expect(updated[0].checks![1].passed).toBe(false);
+    });
+
+    it('throws error when task not found', async () => {
+      const plan: Plan = [
+        {
+          id: '1',
+          description: 'Task',
+          checks: [{ text: 'Jest', type: 'auto:jest', passed: false }],
+          passes: false,
+        },
+      ];
+      await savePlan(planPath, plan);
+
+      await expect(
+        syncAutoChecksFromVerification(planPath, '999', {
+          testsRun: true,
+          testsFailed: 0,
+          typecheckPassed: true,
+        })
+      ).rejects.toThrow('Task not found: 999');
     });
   });
 });

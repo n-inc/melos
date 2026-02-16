@@ -75,6 +75,8 @@ git commit -m "feat: タスクの説明"
     "testsRun": true,
     "testsPassed": 5,
     "testsFailed": 0,
+    "jestPassed": true,
+    "rspecPassed": false,
     "lintPassed": true,
     "typecheckPassed": true
   },
@@ -90,6 +92,8 @@ git commit -m "feat: タスクの説明"
   "requestsHelp": false
 }
 ```
+
+`verification.jestPassed` / `verification.rspecPassed` は、該当コマンドを実行した場合に必ず設定してください。未実行の場合は省略可能です。
 
 ---
 

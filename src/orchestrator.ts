@@ -9,6 +9,8 @@ import {
   loadPlan,
   planExists,
   updateTaskStatus,
+  syncAutoChecksFromVerification,
+  isAllChecksPassed,
   type Plan,
 } from './state/plan.js';
 import {
@@ -289,11 +291,10 @@ export class Orchestrator {
         await saveWorkReport(this.config.melosDir, workerResult.report);
 
         // 成功した場合、プランを更新
-        if (workerResult.type === 'success') {
-          this.state.plan = await updateTaskStatus(
-            this.config.planFile,
+        if (planExists(this.config.planFile)) {
+          this.state.plan = await this.updatePlanAfterWorker(
             decision.workOrder.taskId,
-            true
+            workerResult
           );
         }
 
@@ -499,20 +500,40 @@ export class Orchestrator {
     learnings: string[]
   ): Promise<void> {
     const now = new Date().toISOString().split('T')[0];
-    const content = learnings
-      .map((l) => `- [${taskId}] ${l}`)
-      .join('\n');
+    const learningLines = formatLearningsForProgress(taskId, learnings, now).split('\n');
+    const existing = existsSync(this.config.progressFile)
+      ? await readFile(this.config.progressFile, 'utf-8')
+      : '# Progress Log\n';
 
-    const section = `\n### Learnings (${now})\n${content}\n`;
-
-    if (existsSync(this.config.progressFile)) {
-      appendFileSync(this.config.progressFile, section);
-    } else {
-      await writeFile(this.config.progressFile, `# Progress Log\n${section}`);
-    }
+    const updated = upsertLearningsSection(existing, learningLines);
+    await writeFile(this.config.progressFile, updated, 'utf-8');
 
     // 状態を更新
-    this.state.progress = await readFile(this.config.progressFile, 'utf-8');
+    this.state.progress = updated;
+  }
+
+  /**
+   * Worker 実行後に PLAN.json のチェックと完了状態を同期する
+   */
+  private async updatePlanAfterWorker(
+    taskId: string,
+    workerResult: WorkerResult
+  ): Promise<Plan> {
+    let plan = await syncAutoChecksFromVerification(
+      this.config.planFile,
+      taskId,
+      workerResult.report.verification
+    );
+
+    const task = plan.find((t) => t.id === taskId);
+    if (!task) {
+      throw new Error(`Task not found: ${taskId}`);
+    }
+
+    const shouldPass = workerResult.type === 'success' && isAllChecksPassed(task);
+    plan = await updateTaskStatus(this.config.planFile, taskId, shouldPass);
+
+    return plan;
   }
 
   /**
@@ -547,4 +568,147 @@ export class Orchestrator {
       this.currentSpinner.fail('中止されました');
     }
   }
+}
+
+/**
+ * PROGRESS.md に追記する学習項目を整形
+ */
+export function formatLearningsForProgress(
+  taskId: string,
+  learnings: string[],
+  date: string = new Date().toISOString().split('T')[0]
+): string {
+  return learnings.map((l) => `- ${date} Task ${taskId}: ${l}`).join('\n');
+}
+
+/**
+ * PROGRESS.md の Learnings セクションへ追記し、旧フォーマットも集約する
+ */
+export function upsertLearningsSection(
+  progressContent: string,
+  learningLines: string[]
+): string {
+  const normalized = progressContent.replace(/\r\n/g, '\n');
+  const nonEmptyLearningLines = learningLines.filter((line) => line.trim().length > 0);
+
+  const { withoutLegacy, legacyLines } = extractLegacyLearnings(normalized);
+  const lines = withoutLegacy.split('\n');
+
+  const learningsHeaderIndex = lines.findIndex((line) => line.startsWith('## Learnings'));
+  let beforeSection = lines;
+  let existingLearningLines: string[] = [];
+  let afterSection: string[] = [];
+
+  if (learningsHeaderIndex >= 0) {
+    let sectionEndIndex = lines.length;
+    for (let i = learningsHeaderIndex + 1; i < lines.length; i++) {
+      if (lines[i].startsWith('## ')) {
+        sectionEndIndex = i;
+        break;
+      }
+    }
+    beforeSection = lines.slice(0, learningsHeaderIndex);
+    existingLearningLines = lines
+      .slice(learningsHeaderIndex + 1, sectionEndIndex)
+      .filter((line) => line.startsWith('- '));
+    afterSection = lines.slice(sectionEndIndex);
+  }
+
+  const mergedLearningLines = dedupeLines([
+    ...existingLearningLines,
+    ...legacyLines,
+    ...nonEmptyLearningLines,
+  ]);
+
+  const beforeText = trimTrailingBlankLines(beforeSection).join('\n').trimEnd();
+  const baseText = beforeText.length > 0 ? beforeText : '# Progress Log';
+  const learningsText = `## Learnings\n\n${mergedLearningLines.join('\n')}`;
+  const afterText = trimLeadingBlankLines(afterSection).join('\n').trim();
+
+  let result = `${baseText}\n\n${learningsText}`;
+  if (afterText.length > 0) {
+    result += `\n\n${afterText}`;
+  }
+
+  return `${result.trimEnd()}\n`;
+}
+
+function extractLegacyLearnings(content: string): {
+  withoutLegacy: string;
+  legacyLines: string[];
+} {
+  const lines = content.split('\n');
+  const kept: string[] = [];
+  const legacyLines: string[] = [];
+
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    const match = line.match(/^### Learnings \((\d{4}-\d{2}-\d{2})\)$/);
+    if (!match) {
+      kept.push(line);
+      index++;
+      continue;
+    }
+
+    const date = match[1];
+    index++;
+
+    while (index < lines.length && lines[index].trim() === '') {
+      index++;
+    }
+
+    while (index < lines.length && lines[index].startsWith('- ')) {
+      const raw = lines[index].slice(2).trim();
+      const normalized = normalizeLegacyLearningText(raw);
+      legacyLines.push(`- ${date} ${normalized}`);
+      index++;
+    }
+
+    while (index < lines.length && lines[index].trim() === '') {
+      index++;
+    }
+  }
+
+  return {
+    withoutLegacy: kept.join('\n'),
+    legacyLines,
+  };
+}
+
+function normalizeLegacyLearningText(text: string): string {
+  const bracketTask = text.match(/^\[(.+?)\]\s*(.*)$/);
+  if (bracketTask) {
+    return `Task ${bracketTask[1]}: ${bracketTask[2]}`.trim();
+  }
+  return text;
+}
+
+function dedupeLines(lines: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const line of lines) {
+    if (!line || seen.has(line)) {
+      continue;
+    }
+    seen.add(line);
+    result.push(line);
+  }
+  return result;
+}
+
+function trimTrailingBlankLines(lines: string[]): string[] {
+  const result = [...lines];
+  while (result.length > 0 && result[result.length - 1].trim() === '') {
+    result.pop();
+  }
+  return result;
+}
+
+function trimLeadingBlankLines(lines: string[]): string[] {
+  const result = [...lines];
+  while (result.length > 0 && result[0].trim() === '') {
+    result.shift();
+  }
+  return result;
 }

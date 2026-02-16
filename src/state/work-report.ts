@@ -33,6 +33,10 @@ export interface VerificationResult {
   testsPassed: number;
   /** テスト失敗数 */
   testsFailed: number;
+  /** Jest チェックの結果（判定できる場合） */
+  jestPassed?: boolean;
+  /** RSpec チェックの結果（判定できる場合） */
+  rspecPassed?: boolean;
   /** lint パスしたか */
   lintPassed: boolean;
   /** typecheck パスしたか */
@@ -172,6 +176,12 @@ export function createWorkReport(params: {
       testsRun: params.verification?.testsRun ?? false,
       testsPassed: params.verification?.testsPassed ?? 0,
       testsFailed: params.verification?.testsFailed ?? 0,
+      ...(params.verification?.jestPassed !== undefined && {
+        jestPassed: params.verification.jestPassed,
+      }),
+      ...(params.verification?.rspecPassed !== undefined && {
+        rspecPassed: params.verification.rspecPassed,
+      }),
       lintPassed: params.verification?.lintPassed ?? false,
       typecheckPassed: params.verification?.typecheckPassed ?? false,
     },

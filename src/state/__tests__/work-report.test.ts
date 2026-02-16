@@ -105,6 +105,27 @@ describe('work-report.ts', () => {
       expect(report.verification.typecheckPassed).toBe(true);
     });
 
+    it('keeps granular jest/rspec verification results when provided', () => {
+      const report = createWorkReport({
+        iteration: 1,
+        taskId: 'task-1',
+        status: 'SUCCESS',
+        summary: 'Granular test results',
+        verification: {
+          testsRun: true,
+          testsPassed: 3,
+          testsFailed: 0,
+          jestPassed: true,
+          rspecPassed: false,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+      });
+
+      expect(report.verification.jestPassed).toBe(true);
+      expect(report.verification.rspecPassed).toBe(false);
+    });
+
     it('creates a WorkReport with success criteria results', () => {
       const report = createWorkReport({
         iteration: 1,

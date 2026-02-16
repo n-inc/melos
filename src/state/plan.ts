@@ -44,6 +44,22 @@ export interface CheckItem {
 }
 
 /**
+ * Worker の検証結果（チェック同期に必要な最小項目）
+ */
+export interface VerificationSummary {
+  /** テスト実行したか */
+  testsRun: boolean;
+  /** テスト失敗数 */
+  testsFailed: number;
+  /** Jest チェックの結果（判定できる場合） */
+  jestPassed?: boolean;
+  /** RSpec チェックの結果（判定できる場合） */
+  rspecPassed?: boolean;
+  /** typecheck パスしたか */
+  typecheckPassed: boolean;
+}
+
+/**
  * PLAN.json の個別タスク
  */
 export interface PlanTask {
@@ -299,6 +315,69 @@ export async function updateCheckWithEvidence(
 
   await savePlan(path, plan);
   return plan;
+}
+
+/**
+ * Worker の検証結果から auto:* チェックを同期する
+ */
+export async function syncAutoChecksFromVerification(
+  path: string,
+  taskId: string,
+  verification: VerificationSummary
+): Promise<Plan> {
+  const plan = await loadPlan(path);
+  const task = plan.find((t) => t.id === taskId);
+
+  if (!task) {
+    throw new Error(`Task not found: ${taskId}`);
+  }
+
+  if (!task.checks || task.checks.length === 0) {
+    return plan;
+  }
+
+  for (const check of task.checks) {
+    const inferred = inferCheckPassedFromVerification(check, verification);
+    if (inferred !== null) {
+      check.passed = inferred;
+    }
+  }
+
+  await savePlan(path, plan);
+  return plan;
+}
+
+/**
+ * check.type と検証結果から passed を推定する
+ */
+function inferCheckPassedFromVerification(
+  check: CheckItem,
+  verification: VerificationSummary
+): boolean | null {
+  switch (check.type) {
+    case 'auto:jest':
+      if (verification.jestPassed !== undefined) {
+        return verification.jestPassed;
+      }
+      // 片方のみ明示されている場合は未実行扱いにする
+      if (verification.rspecPassed !== undefined) {
+        return false;
+      }
+      return verification.testsRun && verification.testsFailed === 0;
+    case 'auto:rspec':
+      if (verification.rspecPassed !== undefined) {
+        return verification.rspecPassed;
+      }
+      // 片方のみ明示されている場合は未実行扱いにする
+      if (verification.jestPassed !== undefined) {
+        return false;
+      }
+      return verification.testsRun && verification.testsFailed === 0;
+    case 'auto:typecheck':
+      return verification.typecheckPassed;
+    default:
+      return null;
+  }
 }
 
 /**
