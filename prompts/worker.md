@@ -95,6 +95,21 @@ git commit -m "feat: タスクの説明"
 
 `verification.jestPassed` / `verification.rspecPassed` は、該当コマンドを実行した場合に必ず設定してください。未実行の場合は省略可能です。
 
+`discoveredTasks` は「このタスクのスコープ外の不整合」を報告するために使用してください。原則としてその場で修正せず、次のイテレーションへ回します。
+
+```json
+[
+  {
+    "description": "不整合の内容（再現条件・期待結果・実際結果・影響を簡潔に含める）",
+    "priority": "high | medium | low",
+    "relatedTaskId": "{TASK_ID}"
+  }
+]
+```
+
+- 関連する軽微な不整合は同じ `relatedTaskId` を設定して、Manager が集約しやすいようにする
+- 関連しない大きな不整合は別エントリとして記載する
+
 ---
 
 ## ステータスの判断基準

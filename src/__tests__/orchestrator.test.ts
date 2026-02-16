@@ -1,4 +1,5 @@
 import {
+  buildFollowupPlanTasks,
   formatLearningsForProgress,
   upsertLearningsSection,
 } from '../orchestrator.js';
@@ -64,6 +65,54 @@ describe('orchestrator.ts', () => {
       expect(updated).toContain('- 2026-02-17 Task 3: new learning');
       expect(updated).not.toContain('### Learnings (2026-02-15)');
       expect(updated).not.toContain('### Learnings (2026-02-16)');
+    });
+  });
+
+  describe('buildFollowupPlanTasks', () => {
+    it('returns empty array when discovered tasks are empty', () => {
+      const result = buildFollowupPlanTasks([], 'task-1', []);
+      expect(result).toEqual([]);
+    });
+
+    it('groups low/medium tasks by relatedTaskId and separates high tasks', () => {
+      const plan = [
+        { id: 'task-1', description: 'base', passes: false },
+        { id: 'task-1-followup-1', description: 'existing follow-up', passes: false },
+      ];
+
+      const result = buildFollowupPlanTasks(plan, 'task-1', [
+        {
+          description: '重大な決済エラー',
+          priority: 'high',
+          relatedTaskId: 'task-payment',
+        },
+        {
+          description: '文言の不一致',
+          priority: 'low',
+          relatedTaskId: 'task-1',
+        },
+        {
+          description: 'ボタン位置のずれ',
+          priority: 'medium',
+          relatedTaskId: 'task-1',
+        },
+        {
+          description: '設定画面の表示崩れ',
+          priority: 'low',
+          relatedTaskId: 'task-settings',
+        },
+      ]);
+
+      expect(result).toHaveLength(3);
+      expect(result.map((task) => task.id)).toEqual([
+        'task-1-followup-2',
+        'task-1-followup-3',
+        'task-1-followup-4',
+      ]);
+      expect(result[0].description).toContain('重大な決済エラー');
+      expect(result[1].description).toContain('軽微な不整合 2 件をまとめて対応');
+      expect(result[2].description).toContain('設定画面の表示崩れ');
+      expect(result.every((task) => task.passes === false)).toBe(true);
     });
   });
 });

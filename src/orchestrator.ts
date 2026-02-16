@@ -8,16 +8,19 @@ import type { ManagerInput, WorkerInput, ManagerDecision, WorkerResult } from '.
 import {
   loadPlan,
   planExists,
+  addTasks,
   updateTaskStatus,
   syncAutoChecksFromVerification,
   isAllChecksPassed,
   type Plan,
+  type PlanTask,
 } from './state/plan.js';
 import {
   type WorkOrder,
   saveWorkOrder,
 } from './state/work-order.js';
 import {
+  type DiscoveredTask,
   type WorkReport,
   saveWorkReport,
   loadWorkReport,
@@ -533,6 +536,16 @@ export class Orchestrator {
     const shouldPass = workerResult.type === 'success' && isAllChecksPassed(task);
     plan = await updateTaskStatus(this.config.planFile, taskId, shouldPass);
 
+    const followupTasks = buildFollowupPlanTasks(
+      plan,
+      workerResult.report.taskId,
+      workerResult.report.discoveredTasks
+    );
+    if (followupTasks.length > 0) {
+      plan = await addTasks(this.config.planFile, followupTasks);
+      log('CYAN', `フォローアップタスクを PLAN.json に ${followupTasks.length} 件追加`);
+    }
+
     return plan;
   }
 
@@ -711,4 +724,80 @@ function trimLeadingBlankLines(lines: string[]): string[] {
     result.shift();
   }
   return result;
+}
+
+/**
+ * WorkReport の discoveredTasks から PLAN 追加用タスクを生成する
+ *
+ * ルール:
+ * - priority=high は個別タスクとして追加
+ * - priority=medium/low は relatedTaskId 単位で集約（未指定は 1 つに集約）
+ */
+export function buildFollowupPlanTasks(
+  plan: Plan,
+  sourceTaskId: string,
+  discoveredTasks: DiscoveredTask[]
+): PlanTask[] {
+  if (!discoveredTasks || discoveredTasks.length === 0) {
+    return [];
+  }
+
+  const existingIds = new Set(plan.map((task) => task.id));
+  const drafts: Array<{ description: string }> = [];
+
+  const groupedMinor = new Map<string, DiscoveredTask[]>();
+
+  for (const task of discoveredTasks) {
+    if (!task.description || task.description.trim().length === 0) {
+      continue;
+    }
+
+    if (task.priority === 'high') {
+      drafts.push({
+        description: `[Follow-up] ${task.description.trim()}`,
+      });
+      continue;
+    }
+
+    const bucketKey = task.relatedTaskId?.trim() || '__minor_misc__';
+    const bucket = groupedMinor.get(bucketKey) ?? [];
+    bucket.push(task);
+    groupedMinor.set(bucketKey, bucket);
+  }
+
+  for (const bucket of groupedMinor.values()) {
+    if (bucket.length === 1) {
+      drafts.push({
+        description: `[Follow-up] ${bucket[0].description.trim()}`,
+      });
+      continue;
+    }
+
+    const preview = bucket
+      .slice(0, 2)
+      .map((task) => task.description.trim())
+      .join(' / ');
+    const tail = bucket.length > 2 ? ` ほか${bucket.length - 2}件` : '';
+    drafts.push({
+      description: `[Follow-up] 軽微な不整合 ${bucket.length} 件をまとめて対応: ${preview}${tail}`,
+    });
+  }
+
+  return drafts.map((draft) => ({
+    id: createNextFollowupTaskId(existingIds, sourceTaskId),
+    description: draft.description,
+    passes: false,
+  }));
+}
+
+function createNextFollowupTaskId(existingIds: Set<string>, sourceTaskId: string): string {
+  let sequence = 1;
+  while (true) {
+    const candidate = `${sourceTaskId}-followup-${sequence}`;
+    if (!existingIds.has(candidate)) {
+      existingIds.add(candidate);
+      return candidate;
+    }
+    sequence++;
+  }
 }
