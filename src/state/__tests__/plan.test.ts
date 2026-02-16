@@ -261,7 +261,7 @@ describe('plan.ts', () => {
         'Task.checks[0].text must be a string'
       );
 
-      // Invalid: checks item missing type
+      // Missing type: should normalize to manual
       await writeFile(planPath, JSON.stringify([
         {
           id: '1',
@@ -270,11 +270,10 @@ describe('plan.ts', () => {
           passes: false,
         },
       ]));
-      await expect(loadPlan(planPath)).rejects.toThrow(
-        'Task.checks[0].type must be one of'
-      );
+      const missingTypeLoaded = await loadPlan(planPath);
+      expect(missingTypeLoaded[0].checks![0].type).toBe('manual');
 
-      // Invalid: checks item invalid type
+      // Unknown type: should normalize to manual
       await writeFile(planPath, JSON.stringify([
         {
           id: '1',
@@ -283,9 +282,8 @@ describe('plan.ts', () => {
           passes: false,
         },
       ]));
-      await expect(loadPlan(planPath)).rejects.toThrow(
-        'Task.checks[0].type must be one of'
-      );
+      const invalidTypeLoaded = await loadPlan(planPath);
+      expect(invalidTypeLoaded[0].checks![0].type).toBe('manual');
 
       // Invalid: checks item missing passed
       await writeFile(planPath, JSON.stringify([
@@ -304,6 +302,7 @@ describe('plan.ts', () => {
     it('validates all check types', () => {
       expect(VALID_CHECK_TYPES).toContain('auto:jest');
       expect(VALID_CHECK_TYPES).toContain('auto:rspec');
+      expect(VALID_CHECK_TYPES).toContain('auto:lint');
       expect(VALID_CHECK_TYPES).toContain('auto:typecheck');
       expect(VALID_CHECK_TYPES).toContain('browser');
       expect(VALID_CHECK_TYPES).toContain('manual');
@@ -386,7 +385,7 @@ describe('plan.ts', () => {
       expect(loaded[0].reviewGeneration).toBe(1);
     });
 
-    it('rejects invalid reviewType', async () => {
+    it('falls back to normal task when reviewType is invalid', async () => {
       await writeFile(planPath, JSON.stringify([
         {
           id: 'review-1',
@@ -396,12 +395,12 @@ describe('plan.ts', () => {
           reviewGeneration: 1,
         },
       ]));
-      await expect(loadPlan(planPath)).rejects.toThrow(
-        'Task.reviewType must be one of'
-      );
+      const loaded = await loadPlan(planPath);
+      expect(loaded[0].reviewType).toBeUndefined();
+      expect(loaded[0].reviewGeneration).toBeUndefined();
     });
 
-    it('rejects reviewGeneration without reviewType', async () => {
+    it('drops reviewGeneration without reviewType', async () => {
       await writeFile(planPath, JSON.stringify([
         {
           id: 'review-1',
@@ -410,12 +409,12 @@ describe('plan.ts', () => {
           reviewGeneration: 1,
         },
       ]));
-      await expect(loadPlan(planPath)).rejects.toThrow(
-        'Task.reviewType is required when Task.reviewGeneration is present'
-      );
+      const loaded = await loadPlan(planPath);
+      expect(loaded[0].reviewType).toBeUndefined();
+      expect(loaded[0].reviewGeneration).toBeUndefined();
     });
 
-    it('rejects reviewType without reviewGeneration', async () => {
+    it('drops reviewType without reviewGeneration when id cannot infer generation', async () => {
       await writeFile(planPath, JSON.stringify([
         {
           id: 'review-1',
@@ -424,9 +423,23 @@ describe('plan.ts', () => {
           reviewType: 'code',
         },
       ]));
-      await expect(loadPlan(planPath)).rejects.toThrow(
-        'Task.reviewGeneration is required when Task.reviewType is present'
-      );
+      const loaded = await loadPlan(planPath);
+      expect(loaded[0].reviewType).toBeUndefined();
+      expect(loaded[0].reviewGeneration).toBeUndefined();
+    });
+
+    it('infers reviewGeneration from id when reviewType exists', async () => {
+      await writeFile(planPath, JSON.stringify([
+        {
+          id: 'review-product-g9',
+          description: 'product review',
+          passes: false,
+          reviewType: 'product',
+        },
+      ]));
+      const loaded = await loadPlan(planPath);
+      expect(loaded[0].reviewType).toBe('product');
+      expect(loaded[0].reviewGeneration).toBe(9);
     });
   });
 
@@ -762,6 +775,7 @@ describe('plan.ts', () => {
           checks: [
             { text: 'Jest', type: 'auto:jest', passed: false },
             { text: 'RSpec', type: 'auto:rspec', passed: false },
+            { text: 'Lint', type: 'auto:lint', passed: false },
             { text: 'Typecheck', type: 'auto:typecheck', passed: false },
             { text: 'Manual', type: 'manual', passed: false },
             { text: 'Browser', type: 'browser', passed: false },
@@ -774,14 +788,16 @@ describe('plan.ts', () => {
       const updated = await syncAutoChecksFromVerification(planPath, '1', {
         testsRun: true,
         testsFailed: 0,
+        lintPassed: true,
         typecheckPassed: true,
       });
 
       expect(updated[0].checks![0].passed).toBe(true);
       expect(updated[0].checks![1].passed).toBe(true);
       expect(updated[0].checks![2].passed).toBe(true);
-      expect(updated[0].checks![3].passed).toBe(false);
+      expect(updated[0].checks![3].passed).toBe(true);
       expect(updated[0].checks![4].passed).toBe(false);
+      expect(updated[0].checks![5].passed).toBe(false);
     });
 
     it('uses granular jest/rspec results when provided', async () => {
@@ -803,6 +819,7 @@ describe('plan.ts', () => {
         testsFailed: 0,
         jestPassed: true,
         rspecPassed: false,
+        lintPassed: true,
         typecheckPassed: true,
       });
 
@@ -828,6 +845,7 @@ describe('plan.ts', () => {
         testsRun: true,
         testsFailed: 0,
         jestPassed: true,
+        lintPassed: true,
         typecheckPassed: true,
       });
 
@@ -852,6 +870,7 @@ describe('plan.ts', () => {
       const updated = await syncAutoChecksFromVerification(planPath, '1', {
         testsRun: false,
         testsFailed: 0,
+        lintPassed: true,
         typecheckPassed: true,
       });
 
@@ -874,6 +893,7 @@ describe('plan.ts', () => {
         syncAutoChecksFromVerification(planPath, '999', {
           testsRun: true,
           testsFailed: 0,
+          lintPassed: true,
           typecheckPassed: true,
         })
       ).rejects.toThrow('Task not found: 999');

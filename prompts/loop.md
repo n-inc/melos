@@ -30,6 +30,7 @@
 |------|------|------|
 | `auto:jest` | Jest で自動検証 | 不要 |
 | `auto:rspec` | RSpec で自動検証 | 不要 |
+| `auto:lint` | lint で自動検証 | 不要 |
 | `auto:typecheck` | 型チェックで自動検証 | 不要 |
 | `browser` | ブラウザで確認 | **必須**（screenshot または video） |
 | `manual` | 手動確認 | 不要 |

@@ -22,6 +22,7 @@ export const VALID_REVIEW_TYPES: ReviewType[] = ['product', 'code'];
 export type CheckType =
   | 'auto:jest'      // Jest で自動検証
   | 'auto:rspec'     // RSpec で自動検証
+  | 'auto:lint'      // lint で自動検証
   | 'auto:typecheck' // 型チェックで自動検証
   | 'browser'        // ブラウザで確認（証拠必須）
   | 'manual';        // 手動確認
@@ -32,10 +33,24 @@ export type CheckType =
 export const VALID_CHECK_TYPES: CheckType[] = [
   'auto:jest',
   'auto:rspec',
+  'auto:lint',
   'auto:typecheck',
   'browser',
   'manual',
 ];
+
+const CHECK_TYPE_ALIASES: Record<string, CheckType> = {
+  jest: 'auto:jest',
+  rspec: 'auto:rspec',
+  lint: 'auto:lint',
+  eslint: 'auto:lint',
+  'auto:eslint': 'auto:lint',
+  typecheck: 'auto:typecheck',
+  tsc: 'auto:typecheck',
+  'auto:tsc': 'auto:typecheck',
+  ui: 'browser',
+  human: 'manual',
+};
 
 /**
  * 検証項目
@@ -65,6 +80,8 @@ export interface VerificationSummary {
   jestPassed?: boolean;
   /** RSpec チェックの結果（判定できる場合） */
   rspecPassed?: boolean;
+  /** lint パスしたか */
+  lintPassed: boolean;
   /** typecheck パスしたか */
   typecheckPassed: boolean;
 }
@@ -217,9 +234,8 @@ function validateTask(task: unknown): asserts task is PlanTask {
       if (typeof check.text !== 'string') {
         throw new Error(`Task.checks[${i}].text must be a string`);
       }
-      if (typeof check.type !== 'string' || !VALID_CHECK_TYPES.includes(check.type as CheckType)) {
-        throw new Error(`Task.checks[${i}].type must be one of: ${VALID_CHECK_TYPES.join(', ')}`);
-      }
+      // チェックタイプは厳密一致で落とさず、既知値へ正規化（未知値は manual にフォールバック）
+      check.type = normalizeCheckType(check.type);
       if (typeof check.passed !== 'boolean') {
         throw new Error(`Task.checks[${i}].passed must be a boolean`);
       }
@@ -237,36 +253,45 @@ function validateTask(task: unknown): asserts task is PlanTask {
     throw new Error('Task.passes must be a boolean');
   }
 
-  if (
-    t.model !== undefined &&
-    (typeof t.model !== 'string' || !['claude', 'codex'].includes(t.model))
-  ) {
-    throw new Error('Task.model must be "claude" or "codex" if present');
+  if (t.model !== undefined) {
+    const normalizedModel = normalizeTaskEngine(t.model);
+    if (normalizedModel) {
+      t.model = normalizedModel;
+    } else {
+      delete t.model;
+    }
   }
 
-  if (
-    t.reviewType !== undefined &&
-    (typeof t.reviewType !== 'string' ||
-      !VALID_REVIEW_TYPES.includes(t.reviewType as ReviewType))
-  ) {
-    throw new Error(`Task.reviewType must be one of: ${VALID_REVIEW_TYPES.join(', ')}`);
+  if (t.reviewType !== undefined) {
+    const normalizedReviewType = normalizeReviewType(t.reviewType);
+    if (normalizedReviewType) {
+      t.reviewType = normalizedReviewType;
+    } else {
+      delete t.reviewType;
+    }
   }
 
   if (t.reviewGeneration !== undefined) {
-    if (
-      typeof t.reviewGeneration !== 'number' ||
-      !Number.isInteger(t.reviewGeneration) ||
-      t.reviewGeneration < 1
-    ) {
-      throw new Error('Task.reviewGeneration must be a positive integer if present');
-    }
-    if (t.reviewType === undefined) {
-      throw new Error('Task.reviewType is required when Task.reviewGeneration is present');
+    const normalizedGeneration = normalizeReviewGeneration(t.reviewGeneration);
+    if (normalizedGeneration) {
+      t.reviewGeneration = normalizedGeneration;
+    } else {
+      delete t.reviewGeneration;
     }
   }
 
   if (t.reviewType !== undefined && t.reviewGeneration === undefined) {
-    throw new Error('Task.reviewGeneration is required when Task.reviewType is present');
+    const inferredGeneration = inferReviewGenerationFromTaskId(t.id);
+    if (inferredGeneration) {
+      t.reviewGeneration = inferredGeneration;
+    } else {
+      // reviewGeneration が補完不能なら、通常タスクとして扱って実行継続
+      delete t.reviewType;
+    }
+  }
+
+  if (t.reviewGeneration !== undefined && t.reviewType === undefined) {
+    delete t.reviewGeneration;
   }
 }
 
@@ -498,11 +523,97 @@ function inferCheckPassedFromVerification(
         return false;
       }
       return verification.testsRun && verification.testsFailed === 0;
+    case 'auto:lint':
+      return verification.lintPassed;
     case 'auto:typecheck':
       return verification.typecheckPassed;
     default:
       return null;
   }
+}
+
+function normalizeCheckType(type: unknown): CheckType {
+  if (typeof type !== 'string') {
+    return 'manual';
+  }
+
+  const normalized = type.trim().toLowerCase();
+  if (VALID_CHECK_TYPES.includes(normalized as CheckType)) {
+    return normalized as CheckType;
+  }
+
+  return CHECK_TYPE_ALIASES[normalized] ?? 'manual';
+}
+
+function normalizeTaskEngine(model: unknown): TaskEngine | undefined {
+  if (typeof model !== 'string') {
+    return undefined;
+  }
+
+  const normalized = model.trim().toLowerCase();
+  if (normalized === 'claude' || normalized === 'codex') {
+    return normalized;
+  }
+
+  if (normalized === 'openai' || normalized === 'gpt') {
+    return 'codex';
+  }
+
+  return undefined;
+}
+
+function normalizeReviewType(reviewType: unknown): ReviewType | undefined {
+  if (typeof reviewType !== 'string') {
+    return undefined;
+  }
+
+  const normalized = reviewType.trim().toLowerCase();
+  if (VALID_REVIEW_TYPES.includes(normalized as ReviewType)) {
+    return normalized as ReviewType;
+  }
+
+  if (normalized === 'prd' || normalized === 'product-review') {
+    return 'product';
+  }
+  if (normalized === 'code-review') {
+    return 'code';
+  }
+
+  return undefined;
+}
+
+function normalizeReviewGeneration(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    if (Number.isInteger(value) && value >= 1) {
+      return value;
+    }
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const parsed = Number.parseInt(trimmed, 10);
+      if (parsed >= 1) {
+        return parsed;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function inferReviewGenerationFromTaskId(taskId: unknown): number | undefined {
+  if (typeof taskId !== 'string') {
+    return undefined;
+  }
+
+  const match = taskId.match(/-g(\d+)(?:$|-)/i);
+  if (!match) {
+    return undefined;
+  }
+
+  return Number.parseInt(match[1], 10);
 }
 
 /**
