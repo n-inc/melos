@@ -13,7 +13,7 @@ import {
   Orchestrator,
   type OrchestratorConfig,
 } from './orchestrator.js';
-import { loadConfig } from './config/index.js';
+import { loadConfig, type MelosConfig } from './config/index.js';
 
 /**
  * CLI オプション
@@ -36,6 +36,9 @@ export interface CLIOptions {
   /** ドライラン（計画のみ、Worker実行しない） */
   dryRun?: boolean;
 }
+
+/** Claude 専用モデル名（Worker では無効） */
+const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
 
 /**
  * package.json からバージョンを取得
@@ -190,11 +193,13 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     ? validateEffort(options.effort)
     : undefined;
 
-  // CLI オプション > .melos.json の個別設定 > .melos.json の model > デフォルト値
-  const managerModel = options.model ?? fileConfig.manager?.model ?? fileConfig.model;
+  // CLI オプション > .melos.json の個別設定 > .melos.json の model の順で候補を選ぶ。
+  // Worker については Claude 専用モデル名を自動スキップして次候補へフォールバックする。
+  const managerModel = resolveManagerModel(options, fileConfig);
   const managerEffort = effort ?? fileConfig.manager?.effort;
-  const workerModel = options.model ?? fileConfig.worker?.model ?? fileConfig.model;
-  const workerReasoningEffort = reasoningEffort ?? fileConfig.worker?.reasoningEffort;
+  const workerModel = resolveWorkerModel(options, fileConfig);
+  const workerReasoningEffort =
+    reasoningEffort ?? fileConfig.worker?.effort ?? fileConfig.worker?.reasoningEffort;
   const maxIterations = options.maxIterations ?? fileConfig.maxIterations ?? 30;
 
   // 設定を作成
@@ -216,14 +221,37 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   const orchestrator = new Orchestrator(config);
 
   // Ctrl+C ハンドラー
-  const handleSignal = () => {
+  let isSignalHandled = false;
+  let signalExitCode: number | null = null;
+  const handleSignal = (signal: NodeJS.Signals) => {
+    if (isSignalHandled) {
+      return;
+    }
+    isSignalHandled = true;
+    signalExitCode = signal === 'SIGTERM' ? 143 : 130;
+    process.exitCode = signalExitCode;
     console.error('\n\x1b[1;33m中断されました。\x1b[0m');
     orchestrator.abort();
-    process.exit(130);
+    setTimeout(() => {
+      process.exit(signalExitCode ?? 130);
+    }, 3000).unref();
   };
 
   process.on('SIGINT', handleSignal);
   process.on('SIGTERM', handleSignal);
+
+  const handleStdinData = (chunk: Buffer | string) => {
+    const data = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    // raw mode 等で Ctrl+C がシグナルではなく ETX として届くケースに対応
+    if (data.includes('\u0003')) {
+      handleSignal('SIGINT');
+    }
+  };
+
+  if (process.stdin.isTTY) {
+    process.stdin.on('data', handleStdinData);
+    process.stdin.resume();
+  }
 
   // スモークテスト用リセット（開始前）
   if (options.dangerouslyResetBeforeStart) {
@@ -232,6 +260,11 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
 
   try {
     const result = await orchestrator.run();
+
+    if (signalExitCode !== null) {
+      // シグナル中断時は既に exitCode を設定済み
+      return;
+    }
 
     if (!result.success) {
       if (result.reason === 'escalation') {
@@ -243,7 +276,50 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   } finally {
     process.removeListener('SIGINT', handleSignal);
     process.removeListener('SIGTERM', handleSignal);
+    if (process.stdin.isTTY) {
+      process.stdin.removeListener('data', handleStdinData);
+    }
   }
+}
+
+/**
+ * Manager(Claude) に渡すモデルを解決する
+ */
+export function resolveManagerModel(
+  options: Pick<CLIOptions, 'model'>,
+  fileConfig: MelosConfig
+): string | undefined {
+  const candidates = [options.model, fileConfig.manager?.model, fileConfig.model];
+  return candidates.find((model): model is string => {
+    return isNonEmptyString(model);
+  });
+}
+
+/**
+ * Worker(Codex) に渡すモデルを解決する
+ */
+export function resolveWorkerModel(
+  options: Pick<CLIOptions, 'model'>,
+  fileConfig: MelosConfig
+): string | undefined {
+  const candidates = [options.model, fileConfig.worker?.model, fileConfig.model];
+  return candidates.find((model): model is string => {
+    return isNonEmptyString(model) && !isClaudeOnlyModel(model);
+  });
+}
+
+/**
+ * 空でない文字列かどうか
+ */
+function isNonEmptyString(value: string | undefined): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Claude 専用モデルかどうか（Worker には渡さない）
+ */
+function isClaudeOnlyModel(model: string): boolean {
+  return CLAUDE_ONLY_MODELS.includes(model.toLowerCase());
 }
 
 /**

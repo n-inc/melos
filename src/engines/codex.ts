@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { Engine, EngineOptions, EngineResult } from './base.js';
 
 /**
@@ -34,6 +34,28 @@ const ROLLOUT_PATH_MISSING_REGEX =
  */
 export class CodexEngine extends Engine {
   readonly name = 'codex';
+  private activeChild: ChildProcess | null = null;
+
+  /**
+   * 子プロセス（可能ならプロセスグループ）へシグナル送信
+   */
+  private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
+    const pid = child.pid;
+    if (pid) {
+      try {
+        // detached で起動した子プロセスグループ全体へ送る
+        process.kill(-pid, signal);
+        return;
+      } catch {
+        // フォールバックで単体プロセスに送る
+      }
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      // 既に終了している場合は何もしない
+    }
+  }
 
   /**
    * Codex CLI でプロンプトを実行する
@@ -68,18 +90,28 @@ export class CodexEngine extends Engine {
     return new Promise((resolve) => {
       const child = spawn('codex', args, {
         cwd,
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: process.env,
+        detached: true,
       });
+      this.activeChild = child;
 
       let stdout = '';
       let stderr = '';
       let stderrPartialLine = '';
       let timeoutId: NodeJS.Timeout | undefined;
+      const cleanup = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        if (this.activeChild === child) {
+          this.activeChild = null;
+        }
+      };
 
       if (timeout) {
         timeoutId = setTimeout(() => {
-          child.kill('SIGTERM');
+          this.signalChild(child, 'SIGTERM');
         }, timeout);
       }
 
@@ -109,9 +141,7 @@ export class CodexEngine extends Engine {
       });
 
       child.on('close', (code) => {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
+        cleanup();
 
         // 改行なしの末尾行が残っている場合も処理
         if (stderrPartialLine && !this.isIgnorableCodexStderrLine(stderrPartialLine)) {
@@ -141,9 +171,7 @@ export class CodexEngine extends Engine {
       });
 
       child.on('error', (err) => {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
+        cleanup();
 
         resolve({
           success: false,
@@ -153,6 +181,47 @@ export class CodexEngine extends Engine {
         });
       });
     });
+  }
+
+  /**
+   * 実行中の Codex プロセスを中断する
+   */
+  abort(): void {
+    const child = this.activeChild;
+    if (!child || child.killed) {
+      return;
+    }
+
+    try {
+      this.signalChild(child, 'SIGINT');
+    } catch {
+      // 既に終了している場合は何もしない
+      return;
+    }
+
+    const terminateTimer = setTimeout(() => {
+      if (this.activeChild !== child || child.killed) {
+        return;
+      }
+      try {
+        this.signalChild(child, 'SIGTERM');
+      } catch {
+        return;
+      }
+
+      const forceKillTimer = setTimeout(() => {
+        if (this.activeChild !== child || child.killed) {
+          return;
+        }
+        try {
+          this.signalChild(child, 'SIGKILL');
+        } catch {
+          // 無視
+        }
+      }, 1500);
+      forceKillTimer.unref();
+    }, 500);
+    terminateTimer.unref();
   }
 
   /**

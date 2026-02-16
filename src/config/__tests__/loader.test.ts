@@ -140,14 +140,20 @@ describe('config loader', () => {
       expect(result.worker?.model).toBe('gpt-5.3-codex');
     });
 
-    it('有効な reasoningEffort を返す', async () => {
-      writeConfig({ worker: { reasoningEffort: 'high' } });
+    it('有効な effort を返す', async () => {
+      writeConfig({ worker: { effort: 'high' } });
       const result = await loadConfig(tempDir);
-      expect(result.worker?.reasoningEffort).toBe('high');
+      expect(result.worker?.effort).toBe('high');
     });
 
-    it('無効な reasoningEffort は無視する', async () => {
-      writeConfig({ worker: { reasoningEffort: 'ultra' } });
+    it('旧キー reasoningEffort も後方互換で受け付ける', async () => {
+      writeConfig({ worker: { reasoningEffort: 'medium' } });
+      const result = await loadConfig(tempDir);
+      expect(result.worker?.effort).toBe('medium');
+    });
+
+    it('無効な effort は無視する', async () => {
+      writeConfig({ worker: { effort: 'ultra' } });
       const result = await loadConfig(tempDir);
       expect(result.worker).toBeUndefined();
     });
@@ -165,14 +171,14 @@ describe('config loader', () => {
         model: 'opus',
         maxIterations: 30,
         manager: { model: 'sonnet', effort: 'high' },
-        worker: { model: 'gpt-5.3-codex', reasoningEffort: 'high' },
+        worker: { model: 'gpt-5.3-codex', effort: 'high' },
       });
       const result = await loadConfig(tempDir);
       expect(result).toEqual({
         model: 'opus',
         maxIterations: 30,
         manager: { model: 'sonnet', effort: 'high' },
-        worker: { model: 'gpt-5.3-codex', reasoningEffort: 'high' },
+        worker: { model: 'gpt-5.3-codex', effort: 'high' },
       });
     });
 
@@ -181,13 +187,13 @@ describe('config loader', () => {
         model: 'opus',
         maxIterations: -1,
         manager: { model: 'sonnet', effort: 'invalid' },
-        worker: { model: 123, reasoningEffort: 'high' },
+        worker: { model: 123, effort: 'high' },
       });
       const result = await loadConfig(tempDir);
       expect(result).toEqual({
         model: 'opus',
         manager: { model: 'sonnet' },
-        worker: { reasoningEffort: 'high' },
+        worker: { effort: 'high' },
       });
     });
 

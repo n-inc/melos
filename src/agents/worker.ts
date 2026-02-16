@@ -245,4 +245,11 @@ ${error ? `=== Error ===\n${error}` : ''}
   async isAvailable(): Promise<boolean> {
     return this.engine.isAvailable();
   }
+
+  /**
+   * 実行中の Worker プロセスを中断する
+   */
+  abort(): void {
+    this.engine.abort();
+  }
 }

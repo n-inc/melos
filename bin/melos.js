@@ -20,7 +20,41 @@ const child = spawn('bun', [entryPoint, ...process.argv.slice(2)], {
   env: process.env,
 });
 
-child.on('close', (code) => {
+let signalHandled = false;
+const signalToExitCode = (signal) => {
+  if (signal === 'SIGTERM') return 143;
+  return 130; // SIGINT
+};
+
+const forwardSignal = (signal) => {
+  if (signalHandled) {
+    process.exit(signalToExitCode(signal));
+    return;
+  }
+
+  signalHandled = true;
+  if (child.exitCode === null && child.signalCode === null) {
+    child.kill(signal);
+  }
+
+  setTimeout(() => {
+    process.exit(signalToExitCode(signal));
+  }, 5000).unref();
+};
+
+process.on('SIGINT', () => {
+  forwardSignal('SIGINT');
+});
+
+process.on('SIGTERM', () => {
+  forwardSignal('SIGTERM');
+});
+
+child.on('close', (code, signal) => {
+  if (signal === 'SIGINT' || signal === 'SIGTERM') {
+    process.exit(signalToExitCode(signal));
+    return;
+  }
   process.exit(code ?? 0);
 });
 

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { Engine, EngineOptions, EngineResult } from './base.js';
 import { JsonlBuffer } from '../utils/jsonl-formatter.js';
 
@@ -62,6 +62,28 @@ export interface ClaudeEngineOptions extends EngineOptions {
  */
 export class ClaudeEngine extends Engine {
   readonly name = 'claude';
+  private activeChild: ChildProcess | null = null;
+
+  /**
+   * 子プロセス（可能ならプロセスグループ）へシグナル送信
+   */
+  private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
+    const pid = child.pid;
+    if (pid) {
+      try {
+        // detached で起動した子プロセスグループ全体へ送る
+        process.kill(-pid, signal);
+        return;
+      } catch {
+        // フォールバックで単体プロセスに送る
+      }
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      // 既に終了している場合は何もしない
+    }
+  }
 
   /**
    * Claude CLI でプロンプトを実行する
@@ -102,26 +124,36 @@ export class ClaudeEngine extends Engine {
     return new Promise((resolve) => {
       const child = spawn('claude', args, {
         cwd,
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: {
           ...process.env,
           ...(effort
             ? { CLAUDE_CODE_EFFORT_LEVEL: effort }
             : thinkingBudget != null
               ? { MAX_THINKING_TOKENS: String(thinkingBudget) }
-              : { CLAUDE_CODE_EFFORT_LEVEL: 'max' }
+            : { CLAUDE_CODE_EFFORT_LEVEL: 'max' }
           ),
         },
+        detached: true,
       });
+      this.activeChild = child;
 
       let stdout = '';
       let stderr = '';
       let timeoutId: NodeJS.Timeout | undefined;
       const jsonlBuffer = printMode ? new JsonlBuffer() : null;
+      const cleanup = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        if (this.activeChild === child) {
+          this.activeChild = null;
+        }
+      };
 
       if (timeout) {
         timeoutId = setTimeout(() => {
-          child.kill('SIGTERM');
+          this.signalChild(child, 'SIGTERM');
         }, timeout);
       }
 
@@ -149,9 +181,7 @@ export class ClaudeEngine extends Engine {
       });
 
       child.on('close', (code) => {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
+        cleanup();
 
         // バッファに残っているデータを処理
         if (jsonlBuffer) {
@@ -186,9 +216,7 @@ export class ClaudeEngine extends Engine {
       });
 
       child.on('error', (err) => {
-        if (timeoutId) {
-          clearTimeout(timeoutId);
-        }
+        cleanup();
 
         resolve({
           success: false,
@@ -198,6 +226,47 @@ export class ClaudeEngine extends Engine {
         });
       });
     });
+  }
+
+  /**
+   * 実行中の Claude プロセスを中断する
+   */
+  abort(): void {
+    const child = this.activeChild;
+    if (!child || child.killed) {
+      return;
+    }
+
+    try {
+      this.signalChild(child, 'SIGINT');
+    } catch {
+      // 既に終了している場合は何もしない
+      return;
+    }
+
+    const terminateTimer = setTimeout(() => {
+      if (this.activeChild !== child || child.killed) {
+        return;
+      }
+      try {
+        this.signalChild(child, 'SIGTERM');
+      } catch {
+        return;
+      }
+
+      const forceKillTimer = setTimeout(() => {
+        if (this.activeChild !== child || child.killed) {
+          return;
+        }
+        try {
+          this.signalChild(child, 'SIGKILL');
+        } catch {
+          // 無視
+        }
+      }, 1500);
+      forceKillTimer.unref();
+    }, 500);
+    terminateTimer.unref();
   }
 
   /**

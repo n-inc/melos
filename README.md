@@ -35,7 +35,7 @@ npx melos watch
 
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
-| `--model <model>` | モデル名（Manager/Worker 両方に適用） | - |
+| `--model <model>` | 共通モデル候補（`manager.*` / `worker.*` が優先） | - |
 | `--max-iterations <n>` | 最大イテレーション数（1〜1000） | `30` |
 | `--effort <level>` | Claude effort レベル（`low` / `medium` / `high` / `max`） | `max` |
 | `--reasoning-effort <level>` | Codex 推論努力レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） | - |
@@ -61,19 +61,19 @@ npx melos watch
   },
   "worker": {
     "model": "gpt-5.3-codex",
-    "reasoningEffort": "high"
+    "effort": "high"
   }
 }
 ```
 
 | フィールド | 型 | 説明 |
 |-----------|-----|------|
-| `model` | `string` | Manager/Worker 両方のデフォルトモデル |
+| `model` | `string` | Manager/Worker 共通のモデル候補（`manager.*` / `worker.*` が優先） |
 | `maxIterations` | `number` | 最大イテレーション数（1〜1000） |
 | `manager.model` | `string` | Manager モデル名（`model` より優先） |
 | `manager.effort` | `string` | Claude effort レベル（`low` / `medium` / `high` / `max`） |
 | `worker.model` | `string` | Worker モデル名（`model` より優先） |
-| `worker.reasoningEffort` | `string` | Codex 推論努力レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） |
+| `worker.effort` | `string` | Codex effort レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） |
 
 ### 優先順位
 
@@ -91,7 +91,7 @@ Manager に Claude Sonnet、Worker に Codex を使う場合：
   },
   "worker": {
     "model": "gpt-5.3-codex",
-    "reasoningEffort": "high"
+    "effort": "high"
   }
 }
 ```

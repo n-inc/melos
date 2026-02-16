@@ -117,7 +117,9 @@ function printIterationHeader(
   iteration: number,
   maxIterations: number,
   agent: 'manager' | 'worker',
-  elapsed: string
+  elapsed: string,
+  model: string,
+  effort: string
 ): void {
   const agentName = agent === 'manager' ? 'Manager' : 'Worker';
   const color = agent === 'manager' ? 'CYAN' : 'MAGENTA';
@@ -125,6 +127,7 @@ function printIterationHeader(
   log('BLUE', '');
   log('BLUE', `────────────────────────────────────────`);
   log(color, `Iteration ${iteration}/${maxIterations} │ ${agentName} │ ${elapsed}`);
+  log('DIM', `model: ${model} | effort: ${effort}`);
   log('BLUE', `────────────────────────────────────────`);
 }
 
@@ -132,7 +135,7 @@ function printIterationHeader(
  * オーケストレーター
  *
  * Manager + Worker アーキテクチャでタスクを実行する。
- * - Manager (Claude): 判断、タスク分解、レビュー
+ * - Manager (Claude/Codex): 判断、タスク分解、レビュー
  * - Worker (Codex): タスク実装、テスト、コミット
  */
 export class Orchestrator {
@@ -143,6 +146,9 @@ export class Orchestrator {
   private aborted: boolean = false;
   private loopStartTime: Date = new Date();
   private currentSpinner: Spinner | null = null;
+  private static readonly DEFAULT_WORKER_MODEL = 'gpt-5.3-codex';
+  private static readonly DEFAULT_MANAGER_EFFORT = 'high';
+  private static readonly DEFAULT_WORKER_EFFORT = 'high';
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -233,7 +239,9 @@ export class Orchestrator {
       this.state.iteration,
       this.config.maxIterations,
       'manager',
-      elapsed
+      elapsed,
+      this.config.managerModel ?? '(default)',
+      this.config.managerEffort ?? Orchestrator.DEFAULT_MANAGER_EFFORT
     );
 
     // 1. Manager に判断を求める
@@ -361,7 +369,9 @@ export class Orchestrator {
       this.state.iteration,
       this.config.maxIterations,
       'worker',
-      elapsed
+      elapsed,
+      this.config.workerModel ?? Orchestrator.DEFAULT_WORKER_MODEL,
+      this.config.workerReasoningEffort ?? Orchestrator.DEFAULT_WORKER_EFFORT
     );
 
     this.currentSpinner = createSpinner(
@@ -531,6 +541,8 @@ export class Orchestrator {
    */
   abort(): void {
     this.aborted = true;
+    this.manager.abort();
+    this.worker.abort();
     if (this.currentSpinner) {
       this.currentSpinner.fail('中止されました');
     }

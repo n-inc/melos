@@ -32,7 +32,12 @@ export interface MelosConfig {
   worker?: {
     /** Worker モデル名（model より優先） */
     model?: string;
-    /** Codex 推論努力レベル */
+    /** Codex effort レベル */
+    effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+    /**
+     * @deprecated `effort` を使用すること
+     * Codex 推論努力レベル（旧キー）
+     */
     reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   };
 }
@@ -130,10 +135,11 @@ function validateConfig(config: MelosConfig): MelosConfig {
       worker.model = config.worker.model;
     }
 
-    if (config.worker.reasoningEffort) {
+    const workerEffort = config.worker.effort ?? config.worker.reasoningEffort;
+    if (workerEffort) {
       const validLevels = ['minimal', 'low', 'medium', 'high', 'xhigh'];
-      if (validLevels.includes(config.worker.reasoningEffort)) {
-        worker.reasoningEffort = config.worker.reasoningEffort;
+      if (validLevels.includes(workerEffort)) {
+        worker.effort = workerEffort;
       }
     }
 

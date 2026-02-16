@@ -1,4 +1,6 @@
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
+import { CodexEngine, type CodexEngineOptions } from '../engines/codex.js';
+import type { EngineResult } from '../engines/base.js';
 import { loadPromptRaw } from '../prompts/loader.js';
 import type { PlanTask } from '../state/plan.js';
 import type { WorkOrder } from '../state/work-order.js';
@@ -19,28 +21,33 @@ export interface ManagerAgentConfig {
   cwd: string;
   /** プロンプトディレクトリ */
   promptsDir: string;
-  /** Claude モデル名 */
+  /** Manager モデル名（Claude/Codex） */
   model?: string;
   /** effort レベル */
   effort?: 'low' | 'medium' | 'high' | 'max';
 }
 
+/** Codex 系モデル名パターン */
+const CODEX_MODEL_PATTERN = /codex/i;
+
 /**
  * Manager Agent
  *
  * 判断、タスク分解、レビューを担当する。
- * Claude Engine を使用。
+ * model に応じて Claude/Codex Engine を使用。
  */
 export class ManagerAgent implements Agent {
   readonly name = 'manager';
   readonly mode: AgentMode = 'manager';
 
-  private engine: ClaudeEngine;
+  private claudeEngine: ClaudeEngine;
+  private codexEngine: CodexEngine;
   private config: ManagerAgentConfig;
 
   constructor(config: ManagerAgentConfig) {
     this.config = config;
-    this.engine = new ClaudeEngine();
+    this.claudeEngine = new ClaudeEngine();
+    this.codexEngine = new CodexEngine();
   }
 
   /**
@@ -107,15 +114,10 @@ export class ManagerAgent implements Agent {
   async run(input: ManagerInput): Promise<ManagerDecision> {
     const prompt = await this.buildPrompt(input);
 
-    const options: ClaudeEngineOptions = {
-      cwd: this.config.cwd,
-      model: this.config.model,
-      effort: this.config.effort || 'high',
-      skipPermissions: true,
-      printMode: true,
-    };
-
-    const result = await this.engine.execute(prompt, options);
+    const result = await this.executeWithConfiguredEngine(
+      prompt,
+      this.config.effort || 'high'
+    );
 
     if (!result.success) {
       return {
@@ -126,6 +128,14 @@ export class ManagerAgent implements Agent {
 
     // 出力から判断を抽出
     return this.parseDecision(result.output);
+  }
+
+  /**
+   * 実行中の Manager プロセスを中断する
+   */
+  abort(): void {
+    this.claudeEngine.abort();
+    this.codexEngine.abort();
   }
 
   /**
@@ -247,15 +257,7 @@ ${progress || '(なし)'}
 \`\`\`
 `;
 
-    const options: ClaudeEngineOptions = {
-      cwd: this.config.cwd,
-      model: this.config.model,
-      effort: 'high',
-      skipPermissions: true,
-      printMode: true,
-    };
-
-    const result = await this.engine.execute(prompt, options);
+    const result = await this.executeWithConfiguredEngine(prompt, 'high');
 
     if (!result.success) {
       throw new Error(`Failed to generate plan: ${result.error}`);
@@ -307,15 +309,7 @@ ${JSON.stringify(workReport, null, 2)}
 \`\`\`
 `;
 
-    const options: ClaudeEngineOptions = {
-      cwd: this.config.cwd,
-      model: this.config.model,
-      effort: 'medium',
-      skipPermissions: true,
-      printMode: true,
-    };
-
-    const result = await this.engine.execute(prompt, options);
+    const result = await this.executeWithConfiguredEngine(prompt, 'medium');
 
     if (!result.success) {
       return { approved: false, feedback: 'Review execution failed' };
@@ -332,5 +326,51 @@ ${JSON.stringify(workReport, null, 2)}
       feedback?: string;
     };
     return review;
+  }
+
+  /**
+   * 設定モデルに応じたエンジンでプロンプトを実行する
+   */
+  private executeWithConfiguredEngine(
+    prompt: string,
+    effort: NonNullable<ManagerAgentConfig['effort']>
+  ): Promise<EngineResult> {
+    if (this.isCodexModel(this.config.model)) {
+      const options: CodexEngineOptions = {
+        cwd: this.config.cwd,
+        model: this.config.model,
+        reasoningEffort: this.mapEffortForCodex(effort),
+        execMode: true,
+      };
+      return this.codexEngine.execute(prompt, options);
+    }
+
+    const options: ClaudeEngineOptions = {
+      cwd: this.config.cwd,
+      model: this.config.model,
+      effort,
+      skipPermissions: true,
+      printMode: true,
+    };
+    return this.claudeEngine.execute(prompt, options);
+  }
+
+  /**
+   * モデル名が Codex 系かどうか判定する
+   */
+  private isCodexModel(model: string | undefined): boolean {
+    return typeof model === 'string' && CODEX_MODEL_PATTERN.test(model);
+  }
+
+  /**
+   * Manager の effort 値を Codex の reasoning effort に変換する
+   */
+  private mapEffortForCodex(
+    effort: NonNullable<ManagerAgentConfig['effort']>
+  ): NonNullable<CodexEngineOptions['reasoningEffort']> {
+    if (effort === 'max') {
+      return 'xhigh';
+    }
+    return effort;
   }
 }
