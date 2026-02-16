@@ -2,7 +2,9 @@ import {
   buildFollowupPlanTasks,
   formatLearningsForProgress,
   getReviewTasksToAdd,
+  resolveTaskIdByDescription,
   resolveTaskIdForPlan,
+  resolveTaskIdWithFallback,
   shouldBlockCompletion,
   upsertLearningsSection,
 } from '../orchestrator.js';
@@ -198,6 +200,56 @@ describe('orchestrator.ts', () => {
         '10'
       );
       expect(result).toBe('10');
+    });
+
+    it('maps numeric id to zero-padded task id when uniquely matched', () => {
+      const result = resolveTaskIdForPlan(
+        [{ id: 'task-013', description: 'impl', passes: false }],
+        '13'
+      );
+      expect(result).toBe('task-013');
+    });
+  });
+
+  describe('resolveTaskIdByDescription', () => {
+    it('returns task id when description matches uniquely', () => {
+      const result = resolveTaskIdByDescription(
+        [{ id: 'task-13', description: 'Fix panel condition', passes: false }],
+        'Fix panel condition'
+      );
+      expect(result).toBe('task-13');
+    });
+
+    it('returns null when description match is ambiguous', () => {
+      const result = resolveTaskIdByDescription(
+        [
+          { id: 'task-13', description: 'Fix panel condition', passes: false },
+          { id: 'task-14', description: 'Fix panel condition', passes: false },
+        ],
+        'Fix panel condition'
+      );
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('resolveTaskIdWithFallback', () => {
+    it('resolves by fallback task id when primary task id is missing', () => {
+      const result = resolveTaskIdWithFallback(
+        [{ id: 'task-13', description: 'Fix panel condition', passes: false }],
+        '13',
+        'Fix panel condition',
+        ['task-13']
+      );
+      expect(result).toBe('task-13');
+    });
+
+    it('resolves by task description when id aliases are missing', () => {
+      const result = resolveTaskIdWithFallback(
+        [{ id: 'release/13', description: 'Fix panel condition', passes: false }],
+        '13',
+        'Fix panel condition'
+      );
+      expect(result).toBe('release/13');
     });
   });
 

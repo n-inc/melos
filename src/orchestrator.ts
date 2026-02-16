@@ -281,7 +281,12 @@ export class Orchestrator {
     switch (decision.type) {
       case 'dispatch_task': {
         let workOrder = decision.workOrder;
-        const resolvedTaskId = resolveTaskIdForPlan(this.state.plan, workOrder.taskId);
+        const latestPlan = await this.loadLatestPlanForResolution();
+        const resolvedTaskId = resolveTaskIdWithFallback(
+          latestPlan,
+          workOrder.taskId,
+          workOrder.description
+        );
         if (resolvedTaskId !== workOrder.taskId) {
           log(
             'YELLOW',
@@ -313,6 +318,7 @@ export class Orchestrator {
         if (planExists(this.config.planFile)) {
           this.state.plan = await this.updatePlanAfterWorker(
             workOrder.taskId,
+            workOrder.description,
             workerResult
           );
         }
@@ -557,9 +563,24 @@ export class Orchestrator {
    */
   private async updatePlanAfterWorker(
     taskId: string,
+    taskDescription: string,
     workerResult: WorkerResult
   ): Promise<Plan> {
-    const resolvedTaskId = resolveTaskIdForPlan(this.state.plan, taskId);
+    const latestPlan = await this.loadLatestPlanForResolution();
+    const resolvedTaskId = resolveTaskIdWithFallback(
+      latestPlan,
+      taskId,
+      taskDescription,
+      [workerResult.report.taskId]
+    );
+    if (!latestPlan || !latestPlan.some((task) => task.id === resolvedTaskId)) {
+      log(
+        'YELLOW',
+        `⚠ Task id を PLAN.json に解決できないため更新をスキップ: "${taskId}" -> "${resolvedTaskId}"`
+      );
+      return latestPlan ?? [];
+    }
+
     let plan = await syncAutoChecksFromVerification(
       this.config.planFile,
       resolvedTaskId,
@@ -591,6 +612,16 @@ export class Orchestrator {
     }
 
     return plan;
+  }
+
+  private async loadLatestPlanForResolution(): Promise<Plan | null> {
+    if (!planExists(this.config.planFile)) {
+      return this.state.plan;
+    }
+
+    const latestPlan = await loadPlan(this.config.planFile);
+    this.state.plan = latestPlan;
+    return latestPlan;
   }
 
   private async ensureRequiredReviewTasks(): Promise<void> {
@@ -728,18 +759,93 @@ export function resolveTaskIdForPlan(plan: Plan | null, taskId: string): string 
   return requested;
 }
 
+export function resolveTaskIdWithFallback(
+  plan: Plan | null,
+  taskId: string,
+  taskDescription?: string,
+  fallbackTaskIds: string[] = []
+): string {
+  if (!plan || plan.length === 0) {
+    return taskId;
+  }
+
+  const seenCandidates = new Set<string>();
+  const candidates = [taskId, ...fallbackTaskIds]
+    .map((candidate) => candidate.trim())
+    .filter((candidate) => {
+      if (candidate.length === 0 || seenCandidates.has(candidate)) {
+        return false;
+      }
+      seenCandidates.add(candidate);
+      return true;
+    });
+
+  for (const candidate of candidates) {
+    const resolved = resolveTaskIdForPlan(plan, candidate);
+    if (plan.some((task) => task.id === resolved)) {
+      return resolved;
+    }
+  }
+
+  if (taskDescription) {
+    const byDescription = resolveTaskIdByDescription(plan, taskDescription);
+    if (byDescription) {
+      return byDescription;
+    }
+  }
+
+  return taskId;
+}
+
+export function resolveTaskIdByDescription(
+  plan: Plan | null,
+  description: string
+): string | null {
+  if (!plan || plan.length === 0) {
+    return null;
+  }
+
+  const normalizedDescription = normalizeDescription(description);
+  if (normalizedDescription.length === 0) {
+    return null;
+  }
+
+  const matches = plan.filter(
+    (task) => normalizeDescription(task.description) === normalizedDescription
+  );
+  if (matches.length === 1) {
+    return matches[0].id;
+  }
+
+  const pendingMatches = matches.filter((task) => !task.passes);
+  if (pendingMatches.length === 1) {
+    return pendingMatches[0].id;
+  }
+
+  return null;
+}
+
 function toCanonicalTaskKey(taskId: string): string | null {
   const numericOnly = taskId.match(/^\d+$/);
   if (numericOnly) {
-    return numericOnly[0];
+    return normalizeNumericKey(numericOnly[0]);
   }
 
   const prefixed = taskId.match(/^task-(\d+)$/);
   if (prefixed) {
-    return prefixed[1];
+    return normalizeNumericKey(prefixed[1]);
   }
 
   return null;
+}
+
+function normalizeNumericKey(value: string): string {
+  const normalized = value.replace(/^0+(?=\d)/, '');
+  return normalized.length > 0 ? normalized : '0';
+}
+
+function normalizeDescription(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 /**
