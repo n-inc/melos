@@ -33,7 +33,7 @@ import {
 } from './ui/display.js';
 
 /**
- * V2 オーケストレーターの設定
+ * オーケストレーターの設定
  */
 export interface OrchestratorConfig {
   /** 作業ディレクトリ */
@@ -61,9 +61,9 @@ export interface OrchestratorConfig {
 }
 
 /**
- * V2 ループ実行結果
+ * ループ実行結果
  */
-export interface V2LoopResult {
+export interface LoopResult {
   /** 成功フラグ */
   success: boolean;
   /** 完了したイテレーション数 */
@@ -77,9 +77,9 @@ export interface V2LoopResult {
 }
 
 /**
- * V2 状態
+ * オーケストレーター状態
  */
-interface V2State {
+interface OrchestratorState {
   iteration: number;
   plan: Plan | null;
   prd: string | null;
@@ -111,9 +111,9 @@ function log(color: keyof typeof Colors, message: string): void {
 }
 
 /**
- * V2 用のシンプルなイテレーションヘッダー
+ * シンプルなイテレーションヘッダー
  */
-function printV2Header(
+function printIterationHeader(
   iteration: number,
   maxIterations: number,
   agent: 'manager' | 'worker',
@@ -129,7 +129,7 @@ function printV2Header(
 }
 
 /**
- * V2 オーケストレーター
+ * オーケストレーター
  *
  * Manager + Worker アーキテクチャでタスクを実行する。
  * - Manager (Claude): 判断、タスク分解、レビュー
@@ -139,7 +139,7 @@ export class Orchestrator {
   private config: OrchestratorConfig;
   private manager: ManagerAgent;
   private worker: WorkerAgent;
-  private state: V2State;
+  private state: OrchestratorState;
   private aborted: boolean = false;
   private loopStartTime: Date = new Date();
   private currentSpinner: Spinner | null = null;
@@ -178,9 +178,9 @@ export class Orchestrator {
   }
 
   /**
-   * V2 オーケストレーターを実行する
+   * オーケストレーターを実行する
    */
-  async run(): Promise<V2LoopResult> {
+  async run(): Promise<LoopResult> {
     this.loopStartTime = new Date();
 
     // .melos/ ディレクトリを作成
@@ -191,7 +191,7 @@ export class Orchestrator {
 
     log('BLUE', '');
     log('BLUE', '========================================');
-    log('BLUE', 'Melos V2 - Manager + Worker');
+    log('BLUE', 'Melos - Manager + Worker');
     log('BLUE', '========================================');
     log('BLUE', '');
 
@@ -203,7 +203,7 @@ export class Orchestrator {
         return {
           success: result.reason === 'complete',
           completedIterations: this.state.iteration,
-          reason: result.reason as V2LoopResult['reason'],
+          reason: result.reason as LoopResult['reason'],
           error: result.error,
           handoffContent: result.handoffContent,
         };
@@ -229,7 +229,7 @@ export class Orchestrator {
     handoffContent?: string;
   }> {
     const elapsed = formatElapsed(this.loopStartTime);
-    printV2Header(
+    printIterationHeader(
       this.state.iteration,
       this.config.maxIterations,
       'manager',
@@ -357,7 +357,7 @@ export class Orchestrator {
    */
   private async runWorker(workOrder: WorkOrder): Promise<WorkerResult> {
     const elapsed = formatElapsed(this.loopStartTime);
-    printV2Header(
+    printIterationHeader(
       this.state.iteration,
       this.config.maxIterations,
       'worker',

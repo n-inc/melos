@@ -27,8 +27,8 @@ export type PromptType =
   | 'research'
   | 'verification'
   | 'review'
-  | 'manager'  // v2: Manager Agent 用
-  | 'worker';  // v2: Worker Agent 用
+  | 'manager'  // Manager Agent 用
+  | 'worker';  // Worker Agent 用
 
 /**
  * プロンプトファイルのパスを取得

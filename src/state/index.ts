@@ -63,7 +63,7 @@ export { getCIStatus } from './git.js';
 
 export { type PrdFrontmatter, extractPrdTitle } from './prd.js';
 
-// v2: Manager + Worker アーキテクチャ用
+// Manager + Worker アーキテクチャ用
 export {
   type WorkOrder,
   type WorkOrderContext,
