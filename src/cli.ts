@@ -13,6 +13,7 @@ import {
   Orchestrator,
   type OrchestratorConfig,
 } from './orchestrator.js';
+import { loadConfig } from './config/index.js';
 
 /**
  * CLI オプション
@@ -176,6 +177,9 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
 
   const cwd = process.cwd();
 
+  // 設定ファイルを読み込み
+  const fileConfig = await loadConfig(cwd);
+
   // 推論努力レベルを検証
   const reasoningEffort = options.reasoningEffort
     ? validateReasoningEffort(options.reasoningEffort)
@@ -186,18 +190,25 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     ? validateEffort(options.effort)
     : undefined;
 
+  // CLI オプション > .melos.json の個別設定 > .melos.json の model > デフォルト値
+  const managerModel = options.model ?? fileConfig.manager?.model ?? fileConfig.model;
+  const managerEffort = effort ?? fileConfig.manager?.effort;
+  const workerModel = options.model ?? fileConfig.worker?.model ?? fileConfig.model;
+  const workerReasoningEffort = reasoningEffort ?? fileConfig.worker?.reasoningEffort;
+  const maxIterations = options.maxIterations ?? fileConfig.maxIterations ?? 30;
+
   // 設定を作成
   const config: OrchestratorConfig = {
     cwd,
-    maxIterations: options.maxIterations ?? 30,
+    maxIterations,
     prdFile: join(cwd, 'PRD.md'),
     planFile: join(cwd, 'PLAN.json'),
     progressFile: join(cwd, 'PROGRESS.md'),
     melosDir: join(cwd, '.melos'),
-    managerModel: options.model,
-    managerEffort: effort,
-    workerModel: options.model,
-    workerReasoningEffort: reasoningEffort,
+    managerModel,
+    managerEffort,
+    workerModel,
+    workerReasoningEffort,
     dryRun: options.dryRun,
   };
 

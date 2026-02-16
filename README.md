@@ -35,31 +35,93 @@ npx melos watch
 
 | オプション | 説明 | デフォルト |
 |-----------|------|-----------|
-| `--engine <engine>` | エンジン選択（`claude` または `codex`） | `claude` |
-| `--max-iterations <n>` | 最大イテレーション数（1〜1000） | モードによる |
-| `--pr-fix` | PR 対応モード（5イテレーション） | - |
-| `--review-fix` | レビュー修正モード（5イテレーション） | - |
+| `--model <model>` | モデル名（Manager/Worker 両方に適用） | - |
+| `--max-iterations <n>` | 最大イテレーション数（1〜1000） | `30` |
+| `--effort <level>` | Claude effort レベル（`low` / `medium` / `high` / `max`） | `max` |
+| `--reasoning-effort <level>` | Codex 推論努力レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） | - |
+| `--thinking-budget <n>` | Claude thinking budget（旧モデル向け、1024〜31999） | - |
+| `--dry-run` | ドライラン（計画のみ、Worker 実行しない） | - |
+| `--plain` | プレーン出力モード（スピナー無効） | - |
 | `-v, --version` | バージョンを表示 | - |
 | `-h, --help` | ヘルプを表示 | - |
 
+## 設定ファイル（`.melos.json`）
+
+プロジェクトルートに `.melos.json` を配置することで、デフォルト設定をカスタマイズできます。
+
+### スキーマ
+
+```json
+{
+  "model": "opus",
+  "maxIterations": 30,
+  "manager": {
+    "model": "sonnet",
+    "effort": "high"
+  },
+  "worker": {
+    "model": "gpt-5.3-codex",
+    "reasoningEffort": "high"
+  }
+}
+```
+
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `model` | `string` | Manager/Worker 両方のデフォルトモデル |
+| `maxIterations` | `number` | 最大イテレーション数（1〜1000） |
+| `manager.model` | `string` | Manager モデル名（`model` より優先） |
+| `manager.effort` | `string` | Claude effort レベル（`low` / `medium` / `high` / `max`） |
+| `worker.model` | `string` | Worker モデル名（`model` より優先） |
+| `worker.reasoningEffort` | `string` | Codex 推論努力レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） |
+
+### 優先順位
+
+CLI オプション > `.melos.json` の個別設定（`manager.*` / `worker.*`） > `.melos.json` の `model` > デフォルト値
+
+### 設定例
+
+Manager に Claude Sonnet、Worker に Codex を使う場合：
+
+```json
+{
+  "manager": {
+    "model": "sonnet",
+    "effort": "high"
+  },
+  "worker": {
+    "model": "gpt-5.3-codex",
+    "reasoningEffort": "high"
+  }
+}
+```
+
+全体のデフォルトモデルのみ指定する場合：
+
+```json
+{
+  "model": "opus"
+}
+```
+
 ## 実行例
 
-### Claude エンジンで実行
+### デフォルト設定で実行
 
 ```bash
-npx melos --engine claude
+npx melos
 ```
 
-### Codex エンジンで10イテレーション実行
+### モデルを指定して実行
 
 ```bash
-npx melos --engine codex --max-iterations 10
+npx melos --model opus
 ```
 
-### PR 対応モード
+### ドライランで計画のみ確認
 
 ```bash
-npx melos --pr-fix
+npx melos --dry-run
 ```
 
 ## ファイル構成
@@ -69,6 +131,7 @@ Melos は以下のファイルを使用します：
 - **PLAN.json**: タスク定義ファイル
 - **PRD.md**: 要件定義・受入基準
 - **PROGRESS.md**: 進捗ログ
+- **.melos.json**: プロジェクト設定ファイル（オプション）
 
 ## 関連スキル
 
