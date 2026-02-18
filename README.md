@@ -133,6 +133,16 @@ Melos は以下のファイルを使用します：
 - **PROGRESS.md**: 進捗ログ
 - **.melos.json**: プロジェクト設定ファイル（オプション）
 
+## Manager の責務
+
+Manager は Worker の報告内容をそのまま採用せず、`successCriteria` との照合、失敗時の原因分析、追加タスクの判断を行います。
+
+- 完了判定は根拠ベースで行い、不整合があれば `WORK_ORDER` を再発行する
+- `reviewType: "product"` と `reviewType: "code"` を独立して完了管理する
+- 未完了タスクがある状態では `HANDOFF.md` を出力しない
+
+詳細ルールは `prompts/manager.md` を参照してください。
+
 ## レビュータスクの自動追加
 
 実装タスク（`reviewType` 未指定）がすべて完了すると、Melos は `PLAN.json` に以下のレビュータスクを自動追加します。
