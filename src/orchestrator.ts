@@ -726,24 +726,55 @@ export class Orchestrator {
   }
 }
 
-const DEFAULT_TASK_LABEL_WIDTH = 64;
-const DEFAULT_SUMMARY_WIDTH = 96;
+const DEFAULT_TASK_LABEL_WIDTH = 40;
+const DEFAULT_SUMMARY_WIDTH = 72;
 
 function normalizeOneLine(value: string | null | undefined): string {
   return (value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function getCharDisplayWidth(char: string): number {
+  const code = char.charCodeAt(0);
+  if (
+    (code >= 0x3000 && code <= 0x9fff) ||
+    (code >= 0xff00 && code <= 0xffef)
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+function getDisplayWidth(value: string): number {
+  let width = 0;
+  for (const char of value) {
+    width += getCharDisplayWidth(char);
+  }
+  return width;
 }
 
 function truncateMessage(value: string, maxWidth: number): string {
   if (maxWidth <= 0) {
     return '';
   }
-  if (value.length <= maxWidth) {
+  if (getDisplayWidth(value) <= maxWidth) {
     return value;
   }
   if (maxWidth <= 3) {
     return '.'.repeat(maxWidth);
   }
-  return `${value.slice(0, maxWidth - 3)}...`;
+  const ellipsis = '...';
+  const maxBodyWidth = maxWidth - getDisplayWidth(ellipsis);
+  let width = 0;
+  let result = '';
+  for (const char of value) {
+    const charWidth = getCharDisplayWidth(char);
+    if (width + charWidth > maxBodyWidth) {
+      break;
+    }
+    width += charWidth;
+    result += char;
+  }
+  return `${result}${ellipsis}`;
 }
 
 export function formatTaskLabel(
@@ -788,7 +819,7 @@ export function buildManagerDecisionMessage(
 }
 
 export function buildWorkerRunMessage(task: Pick<TaskEntry, 'id' | 'description'>): string {
-  return `Worker 実行中: ${formatTaskLabel(task.id, task.description)}...`;
+  return `Worker 実行中: ${formatTaskLabel(task.id, task.description)}`;
 }
 
 export function buildWorkerFinishMessage(

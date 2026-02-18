@@ -59,6 +59,16 @@ describe('orchestrator.ts', () => {
       expect(label).toBe('[task-1] A very long ...');
     });
 
+    it('formats japanese task label with display width truncation', () => {
+      const label = formatTaskLabel(
+        '4',
+        '本修正に関連するレビュー/チャット/本文表示フローを横断的に回帰検証し、追跡する',
+        24
+      );
+      expect(label.endsWith('...')).toBe(true);
+      expect(label.startsWith('[4]')).toBe(true);
+    });
+
     it('builds manager run message without previous report', () => {
       expect(buildManagerRunMessage(null)).toBe(
         'Manager 実行中: 初回判断で次アクションを決定中...'
@@ -140,7 +150,7 @@ describe('orchestrator.ts', () => {
 
     it('builds worker run message with task label', () => {
       expect(buildWorkerRunMessage(baseTask)).toBe(
-        'Worker 実行中: [task-1] Implement login flow...'
+        'Worker 実行中: [task-1] Implement login flow'
       );
     });
 

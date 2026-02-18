@@ -248,6 +248,7 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   process.on('SIGINT', handleSignal);
   process.on('SIGTERM', handleSignal);
 
+  let stdinResumedByMelos = false;
   const handleStdinData = (chunk: Buffer | string) => {
     const data = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
     // raw mode 等で Ctrl+C がシグナルではなく ETX として届くケースに対応
@@ -259,6 +260,7 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   if (process.stdin.isTTY) {
     process.stdin.on('data', handleStdinData);
     process.stdin.resume();
+    stdinResumedByMelos = true;
   }
 
   // スモークテスト用リセット（開始前）
@@ -290,6 +292,9 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     process.removeListener('SIGTERM', handleSignal);
     if (process.stdin.isTTY) {
       process.stdin.removeListener('data', handleStdinData);
+      if (stdinResumedByMelos && !process.stdin.isPaused()) {
+        process.stdin.pause();
+      }
     }
   }
 }
