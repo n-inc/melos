@@ -1,4 +1,3 @@
-import { jest } from '@jest/globals';
 import type { ManagerDecision } from '../types.js';
 import { ManagerAgent } from '../manager.js';
 
@@ -148,46 +147,70 @@ describe('ManagerAgent engine selection', () => {
 
   it('uses Codex when model is not specified', async () => {
     const agent = createAgent();
-    const codexExecute = jest
-      .spyOn((agent as unknown as { codexEngine: { execute: (...args: unknown[]) => unknown } }).codexEngine, 'execute')
-      .mockResolvedValue({ success: true, output: 'ok', exitCode: 0 });
-    const claudeExecute = jest
-      .spyOn((agent as unknown as { claudeEngine: { execute: (...args: unknown[]) => unknown } }).claudeEngine, 'execute')
-      .mockResolvedValue({ success: true, output: 'ok', exitCode: 0 });
+    let codexExecuteCount = 0;
+    let claudeExecuteCount = 0;
+    (agent as unknown as { codexEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).codexEngine = {
+      execute: async () => {
+        codexExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+    (agent as unknown as { claudeEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).claudeEngine = {
+      execute: async () => {
+        claudeExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
 
     await executeWithConfiguredEngine(agent);
 
-    expect(codexExecute).toHaveBeenCalledTimes(1);
-    expect(claudeExecute).not.toHaveBeenCalled();
+    expect(codexExecuteCount).toBe(1);
+    expect(claudeExecuteCount).toBe(0);
   });
 
   it('uses Claude when model is claude family', async () => {
     const agent = createAgent('sonnet');
-    const codexExecute = jest
-      .spyOn((agent as unknown as { codexEngine: { execute: (...args: unknown[]) => unknown } }).codexEngine, 'execute')
-      .mockResolvedValue({ success: true, output: 'ok', exitCode: 0 });
-    const claudeExecute = jest
-      .spyOn((agent as unknown as { claudeEngine: { execute: (...args: unknown[]) => unknown } }).claudeEngine, 'execute')
-      .mockResolvedValue({ success: true, output: 'ok', exitCode: 0 });
+    let codexExecuteCount = 0;
+    let claudeExecuteCount = 0;
+    (agent as unknown as { codexEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).codexEngine = {
+      execute: async () => {
+        codexExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+    (agent as unknown as { claudeEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).claudeEngine = {
+      execute: async () => {
+        claudeExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
 
     await executeWithConfiguredEngine(agent);
 
-    expect(claudeExecute).toHaveBeenCalledTimes(1);
-    expect(codexExecute).not.toHaveBeenCalled();
+    expect(claudeExecuteCount).toBe(1);
+    expect(codexExecuteCount).toBe(0);
   });
 
   it('uses Codex when model includes codex', async () => {
     const agent = createAgent('gpt-5.3-codex');
-    const codexExecute = jest
-      .spyOn((agent as unknown as { codexEngine: { execute: (...args: unknown[]) => unknown } }).codexEngine, 'execute')
-      .mockResolvedValue({ success: true, output: 'ok', exitCode: 0 });
-    const claudeExecute = jest
-      .spyOn((agent as unknown as { claudeEngine: { execute: (...args: unknown[]) => unknown } }).claudeEngine, 'execute')
-      .mockResolvedValue({ success: true, output: 'ok', exitCode: 0 });
+    let codexExecuteCount = 0;
+    let claudeExecuteCount = 0;
+    (agent as unknown as { codexEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).codexEngine = {
+      execute: async () => {
+        codexExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+    (agent as unknown as { claudeEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).claudeEngine = {
+      execute: async () => {
+        claudeExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
 
     await executeWithConfiguredEngine(agent);
 
-    expect(codexExecute).toHaveBeenCalledTimes(1);
-    expect(claudeExecute).not.toHaveBeenCalled();
+    expect(codexExecuteCount).toBe(1);
+    expect(claudeExecuteCount).toBe(0);
   });
 });
