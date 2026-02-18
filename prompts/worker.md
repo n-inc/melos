@@ -34,6 +34,7 @@
 2. 実装の詳細（どのファイルをどう直すか）は自律的に判断する
 3. スコープ外の改善提案や不整合は `discoveredTasks` に記録する
 4. レビュータスク（`review-product-g*` / `review-code-g*`）はコード修正せず監査のみ行う
+5. 報告は次の Worker / Manager が再現・判断できる粒度で記載する（事実・根拠・判断・次アクション）
 
 ---
 
@@ -58,7 +59,7 @@ npm run typecheck
   "iteration": {ITERATION},
   "taskId": "{TASK_ID}",
   "status": "SUCCESS | PARTIAL | FAILED | BLOCKED",
-  "summary": "実行内容のサマリー（1-2文）",
+  "summary": "実行内容のサマリー（目的・変更内容・検証結果・残課題を含む3-6文）",
   "filesChanged": [
     { "path": "src/path/to/file.ts", "additions": 50, "deletions": 10 }
   ],
@@ -73,23 +74,32 @@ npm run typecheck
   },
   "successCriteriaResults": [
     { "criterion": "成功基準1", "passed": true },
-    { "criterion": "成功基準2", "passed": true, "note": "備考" }
+    { "criterion": "成功基準2", "passed": true, "note": "根拠（コマンド出力・テスト名・確認ファイル）" }
   ],
-  "issues": [],
+  "issues": [
+    "現象: ... | 再現条件: ... | 影響: ... | 原因仮説: ... | 暫定対処: ..."
+  ],
   "discoveredTasks": [],
   "learnings": [
-    "学習した内容（将来のタスクに役立つ情報）"
+    "Context: ... | Finding: ... | Next Action: ..."
   ],
   "requestsHelp": false
 }
 ```
+
+`WORK_REPORT.json` 記述ルール:
+
+1. 具体名を使う（抽象語のみを避け、ファイルパス・コマンド・テスト名を入れる）
+2. 成功/失敗の理由を書く（`passed: false` の項目は `note` 必須）
+3. `learnings` は「前提 → 発見 → 次回の活用」を1行で書く
+4. `PARTIAL` / `FAILED` / `BLOCKED` の場合、次の担当者が即着手できる情報を残す
 
 `discoveredTasks` 例:
 
 ```json
 [
   {
-    "description": "不整合の内容（再現条件・期待結果・実際結果・影響）",
+    "description": "不整合の内容（再現条件・期待結果・実際結果・影響・次の対処案）",
     "priority": "high | medium | low",
     "relatedTaskId": "{TASK_ID}"
   }
