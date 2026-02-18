@@ -253,7 +253,9 @@ export class Orchestrator {
     );
 
     // 1. Manager に判断を求める
-    this.currentSpinner = createSpinner('Manager が判断中...');
+    this.currentSpinner = createSpinner(
+      buildManagerRunMessage(this.state.lastWorkReport)
+    );
 
     const managerInput: ManagerInput = {
       iteration: this.state.iteration,
@@ -275,8 +277,6 @@ export class Orchestrator {
       };
     }
 
-    this.currentSpinner.succeed('Manager 判断完了');
-
     // 2. 判断に応じて行動
     switch (decision.type) {
       case 'dispatch_task': {
@@ -297,6 +297,9 @@ export class Orchestrator {
             taskId: resolvedTaskId,
           };
         }
+        this.currentSpinner.succeed(
+          buildManagerDecisionMessage({ type: 'dispatch_task', workOrder })
+        );
 
         if (this.config.dryRun) {
           log('YELLOW', '[DRY-RUN] Worker 実行をスキップ');
@@ -327,6 +330,7 @@ export class Orchestrator {
       }
 
       case 'escalate': {
+        this.currentSpinner.succeed(buildManagerDecisionMessage(decision));
         const escalation = decision.escalation;
         await saveEscalation(this.config.melosDir, escalation);
         this.state.pendingEscalation = escalation;
@@ -352,6 +356,7 @@ export class Orchestrator {
       }
 
       case 'complete': {
+        this.currentSpinner.succeed(buildManagerDecisionMessage(decision));
         const completionGuard = shouldBlockCompletion(this.state.plan);
         if (completionGuard.blocked) {
           const reviewCount = completionGuard.pendingReviewTaskIds.length;
@@ -386,6 +391,7 @@ export class Orchestrator {
       }
 
       case 'error': {
+        this.currentSpinner.fail(buildManagerDecisionMessage(decision));
         log('RED', 'Manager の判断を解釈できず終了します');
         log('RED', `理由: ${decision.message}`);
         return {
@@ -395,6 +401,7 @@ export class Orchestrator {
       }
 
       case 'review_complete': {
+        this.currentSpinner.succeed(buildManagerDecisionMessage(decision));
         // レビュー完了の場合は次のイテレーションへ
         if (!decision.approved && decision.feedback) {
           log('YELLOW', `レビューフィードバック: ${decision.feedback}`);
@@ -418,9 +425,7 @@ export class Orchestrator {
       this.config.workerReasoningEffort ?? Orchestrator.DEFAULT_WORKER_EFFORT
     );
 
-    this.currentSpinner = createSpinner(
-      `Worker がタスク ${workOrder.taskId} を実行中...`
-    );
+    this.currentSpinner = createSpinner(buildWorkerRunMessage(workOrder));
 
     const workerInput: WorkerInput = {
       workOrder,
@@ -432,8 +437,7 @@ export class Orchestrator {
     try {
       result = await this.worker.run(workerInput);
     } catch (error) {
-      this.currentSpinner.fail('Worker 実行エラー');
-      return {
+      const failedResult: WorkerResult = {
         type: 'failed',
         report: {
           iteration: workOrder.iteration,
@@ -456,31 +460,26 @@ export class Orchestrator {
           createdAt: new Date().toISOString(),
         },
       };
+      this.currentSpinner.fail(buildWorkerFinishMessage(workOrder, failedResult));
+      return failedResult;
     }
 
+    const finishMessage = buildWorkerFinishMessage(workOrder, result);
     // 結果に応じてスピナーを更新
     switch (result.type) {
       case 'success':
-        this.currentSpinner.succeed(
-          `タスク ${workOrder.taskId} 完了: ${result.report.summary}`
-        );
+        this.currentSpinner.succeed(finishMessage);
         break;
       case 'partial':
         // warn がないので succeed を使用
-        this.currentSpinner.succeed(
-          `タスク ${workOrder.taskId} 部分完了: ${result.report.summary}`
-        );
+        this.currentSpinner.succeed(finishMessage);
         log('YELLOW', '⚠ 一部の成功基準が満たされていません');
         break;
       case 'blocked':
-        this.currentSpinner.fail(
-          `タスク ${workOrder.taskId} ブロック: ${result.report.summary}`
-        );
+        this.currentSpinner.fail(finishMessage);
         break;
       case 'failed':
-        this.currentSpinner.fail(
-          `タスク ${workOrder.taskId} 失敗: ${result.report.summary}`
-        );
+        this.currentSpinner.fail(finishMessage);
         break;
     }
 
@@ -670,6 +669,81 @@ export class Orchestrator {
       this.currentSpinner.fail('中止されました');
     }
   }
+}
+
+const DEFAULT_TASK_LABEL_WIDTH = 64;
+const DEFAULT_SUMMARY_WIDTH = 96;
+
+function normalizeOneLine(value: string | null | undefined): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function truncateMessage(value: string, maxWidth: number): string {
+  if (maxWidth <= 0) {
+    return '';
+  }
+  if (value.length <= maxWidth) {
+    return value;
+  }
+  if (maxWidth <= 3) {
+    return '.'.repeat(maxWidth);
+  }
+  return `${value.slice(0, maxWidth - 3)}...`;
+}
+
+export function formatTaskLabel(
+  taskId: string,
+  description: string,
+  maxWidth: number = DEFAULT_TASK_LABEL_WIDTH
+): string {
+  const cleanedTaskId = normalizeOneLine(taskId);
+  const cleanedDescription = normalizeOneLine(description);
+  const label = cleanedDescription.length > 0
+    ? `[${cleanedTaskId}] ${cleanedDescription}`
+    : `[${cleanedTaskId}]`;
+  return truncateMessage(label, maxWidth);
+}
+
+export function buildManagerRunMessage(lastWorkReport: WorkReport | null): string {
+  if (!lastWorkReport) {
+    return 'Manager 実行中: 初回判断で次アクションを決定中...';
+  }
+
+  const taskId = normalizeOneLine(lastWorkReport.taskId) || '(unknown)';
+  const status = normalizeOneLine(lastWorkReport.status) || 'UNKNOWN';
+  return `Manager 実行中: 前回 [${taskId}] (${status}) を評価して次アクションを決定中...`;
+}
+
+export function buildManagerDecisionMessage(decision: ManagerDecision): string {
+  switch (decision.type) {
+    case 'dispatch_task':
+      return `Manager 決定: ${formatTaskLabel(decision.workOrder.taskId, decision.workOrder.description)} を Worker に指示`;
+    case 'escalate':
+      return `Manager 決定: エスカレーション (${decision.escalation.type})`;
+    case 'complete':
+      return 'Manager 決定: 完了判定';
+    case 'error':
+      return 'Manager 決定: エラー';
+    case 'review_complete':
+      return 'Manager 決定: レビュー継続';
+  }
+}
+
+export function buildWorkerRunMessage(workOrder: WorkOrder): string {
+  return `Worker 実行中: ${formatTaskLabel(workOrder.taskId, workOrder.description)}...`;
+}
+
+export function buildWorkerFinishMessage(
+  workOrder: WorkOrder,
+  result: WorkerResult,
+  summaryWidth: number = DEFAULT_SUMMARY_WIDTH
+): string {
+  const status = result.report.status;
+  const rawSummary = normalizeOneLine(result.report.summary);
+  const summary = rawSummary.length > 0
+    ? truncateMessage(rawSummary, summaryWidth)
+    : 'summary unavailable';
+  return `Worker 完了: ${formatTaskLabel(workOrder.taskId, workOrder.description)} ${status} - ${summary}`;
 }
 
 /**

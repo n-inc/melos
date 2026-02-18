@@ -1,6 +1,11 @@
 import {
   buildFollowupPlanTasks,
+  buildManagerDecisionMessage,
+  buildManagerRunMessage,
+  buildWorkerFinishMessage,
+  buildWorkerRunMessage,
   formatLearningsForProgress,
+  formatTaskLabel,
   getReviewTasksToAdd,
   resolveTaskIdByDescription,
   resolveTaskIdForPlan,
@@ -8,8 +13,171 @@ import {
   shouldBlockCompletion,
   upsertLearningsSection,
 } from '../orchestrator.js';
+import type { WorkOrder } from '../state/work-order.js';
+import type { WorkerResult, ManagerDecision } from '../agents/types.js';
 
 describe('orchestrator.ts', () => {
+  describe('display message helpers', () => {
+    const baseWorkOrder: WorkOrder = {
+      iteration: 1,
+      taskId: 'task-1',
+      description: 'Implement login flow',
+      instructions: [],
+      context: {
+        relatedFiles: [],
+        patterns: null,
+        gotchas: null,
+      },
+      successCriteria: [],
+      createdAt: '2026-02-18T00:00:00Z',
+    };
+
+    function createWorkerResult(
+      type: WorkerResult['type'],
+      status: WorkerResult['report']['status'],
+      summary: string
+    ): WorkerResult {
+      return {
+        type,
+        report: {
+          iteration: 1,
+          taskId: 'task-1',
+          status,
+          summary,
+          filesChanged: [],
+          verification: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          successCriteriaResults: [],
+          issues: [],
+          discoveredTasks: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: '2026-02-18T00:00:00Z',
+        },
+      };
+    }
+
+    it('formats task label with truncation', () => {
+      const label = formatTaskLabel('task-1', 'A very long description that should be cut', 24);
+      expect(label).toBe('[task-1] A very long ...');
+    });
+
+    it('builds manager run message without previous report', () => {
+      expect(buildManagerRunMessage(null)).toBe(
+        'Manager 実行中: 初回判断で次アクションを決定中...'
+      );
+    });
+
+    it('builds manager run message with previous report context', () => {
+      const message = buildManagerRunMessage({
+        iteration: 3,
+        taskId: 'task-9',
+        status: 'PARTIAL',
+        summary: 'partial',
+        filesChanged: [],
+        verification: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        successCriteriaResults: [],
+        issues: [],
+        discoveredTasks: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: '2026-02-18T00:00:00Z',
+      });
+      expect(message).toBe(
+        'Manager 実行中: 前回 [task-9] (PARTIAL) を評価して次アクションを決定中...'
+      );
+    });
+
+    it('builds manager decision messages for all decision types', () => {
+      const dispatchDecision: ManagerDecision = {
+        type: 'dispatch_task',
+        workOrder: baseWorkOrder,
+      };
+      const escalateDecision: ManagerDecision = {
+        type: 'escalate',
+        escalation: {
+          id: 'esc-1',
+          type: 'QUESTION',
+          context: 'task-1',
+          question: 'question?',
+          status: 'pending',
+          createdAt: '2026-02-18T00:00:00Z',
+        },
+      };
+      const completeDecision: ManagerDecision = {
+        type: 'complete',
+        handoffContent: 'done',
+      };
+      const errorDecision: ManagerDecision = {
+        type: 'error',
+        message: 'oops',
+      };
+      const reviewDecision: ManagerDecision = {
+        type: 'review_complete',
+        approved: false,
+        feedback: 'needs more',
+      };
+
+      expect(buildManagerDecisionMessage(dispatchDecision)).toContain(
+        'Manager 決定: [task-1] Implement login flow を Worker に指示'
+      );
+      expect(buildManagerDecisionMessage(escalateDecision)).toBe(
+        'Manager 決定: エスカレーション (QUESTION)'
+      );
+      expect(buildManagerDecisionMessage(completeDecision)).toBe(
+        'Manager 決定: 完了判定'
+      );
+      expect(buildManagerDecisionMessage(errorDecision)).toBe(
+        'Manager 決定: エラー'
+      );
+      expect(buildManagerDecisionMessage(reviewDecision)).toBe(
+        'Manager 決定: レビュー継続'
+      );
+    });
+
+    it('builds worker run message with task label', () => {
+      expect(buildWorkerRunMessage(baseWorkOrder)).toBe(
+        'Worker 実行中: [task-1] Implement login flow...'
+      );
+    });
+
+    it('builds worker finish message with summary fallback', () => {
+      const result = createWorkerResult('failed', 'FAILED', '');
+      expect(buildWorkerFinishMessage(baseWorkOrder, result)).toBe(
+        'Worker 完了: [task-1] Implement login flow FAILED - summary unavailable'
+      );
+    });
+
+    it('builds worker finish message for all statuses', () => {
+      const successResult = createWorkerResult('success', 'SUCCESS', 'done');
+      const partialResult = createWorkerResult('partial', 'PARTIAL', 'partial done');
+      const blockedResult = createWorkerResult('blocked', 'BLOCKED', 'need credentials');
+      const failedResult = createWorkerResult('failed', 'FAILED', 'test failed');
+
+      expect(buildWorkerFinishMessage(baseWorkOrder, successResult)).toContain('SUCCESS - done');
+      expect(buildWorkerFinishMessage(baseWorkOrder, partialResult)).toContain(
+        'PARTIAL - partial done'
+      );
+      expect(buildWorkerFinishMessage(baseWorkOrder, blockedResult)).toContain(
+        'BLOCKED - need credentials'
+      );
+      expect(buildWorkerFinishMessage(baseWorkOrder, failedResult)).toContain(
+        'FAILED - test failed'
+      );
+    });
+  });
+
   describe('formatLearningsForProgress', () => {
     it('formats learnings as date-prefixed bullet lines', () => {
       const result = formatLearningsForProgress('3', [
