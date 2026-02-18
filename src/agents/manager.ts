@@ -418,7 +418,7 @@ ${JSON.stringify(workReport, null, 2)}
     prompt: string,
     effort: NonNullable<ManagerAgentConfig['effort']>
   ): Promise<EngineResult> {
-    if (this.isCodexModel(this.config.model)) {
+    if (this.shouldUseCodexEngine(this.config.model)) {
       const options: CodexEngineOptions = {
         cwd: this.config.cwd,
         model: this.config.model,
@@ -439,10 +439,15 @@ ${JSON.stringify(workReport, null, 2)}
   }
 
   /**
-   * モデル名が Codex 系かどうか判定する
+   * モデル名に応じて Codex を使うべきか判定する
+   * - model 未指定: Codex をデフォルト使用
+   * - model 指定あり: codex 文字列を含む場合のみ Codex を使用
    */
-  private isCodexModel(model: string | undefined): boolean {
-    return typeof model === 'string' && CODEX_MODEL_PATTERN.test(model);
+  private shouldUseCodexEngine(model: string | undefined): boolean {
+    if (typeof model !== 'string' || model.trim().length === 0) {
+      return true;
+    }
+    return CODEX_MODEL_PATTERN.test(model);
   }
 
   /**

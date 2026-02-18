@@ -287,7 +287,7 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
 }
 
 /**
- * Manager(Claude) に渡すモデルを解決する
+ * Manager に渡すモデルを解決する
  */
 export function resolveManagerModel(
   options: Pick<CLIOptions, 'model'>,
