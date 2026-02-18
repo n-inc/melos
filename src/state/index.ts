@@ -1,16 +1,16 @@
 export {
   type TaskEngine,
-  type PlanTask,
-  type Plan,
-  planExists,
-  loadPlan,
-  savePlan,
+  type TaskEntry,
+  type TaskList,
+  taskFileExists,
+  loadTasks,
+  saveTasks,
   updateTaskStatus,
   getPendingTasks,
   getNextTask,
   isAllTasksCompleted,
   addTasks,
-} from './plan.js';
+} from './task.js';
 
 export {
   type ExecutionMode,
@@ -62,19 +62,6 @@ export {
 export { getCIStatus } from './git.js';
 
 export { type PrdFrontmatter, extractPrdTitle } from './prd.js';
-
-// Manager + Worker アーキテクチャ用
-export {
-  type WorkOrder,
-  type WorkOrderContext,
-  type WorkOrderConstraints,
-  getWorkOrderPath,
-  workOrderExists,
-  loadWorkOrder,
-  saveWorkOrder,
-  createWorkOrder,
-  clearWorkOrder,
-} from './work-order.js';
 
 export {
   type WorkReportStatus,

@@ -6,8 +6,8 @@ import { ManagerAgent, type ManagerAgentConfig } from './agents/manager.js';
 import { WorkerAgent, type WorkerAgentConfig } from './agents/worker.js';
 import type { ManagerInput, WorkerInput, ManagerDecision, WorkerResult } from './agents/types.js';
 import {
-  loadPlan,
-  planExists,
+  loadTasks,
+  taskFileExists,
   addTasks,
   createMissingReviewTasks,
   getPendingTasks,
@@ -15,13 +15,9 @@ import {
   updateTaskStatus,
   syncAutoChecksFromVerification,
   isAllChecksPassed,
-  type Plan,
-  type PlanTask,
-} from './state/plan.js';
-import {
-  type WorkOrder,
-  saveWorkOrder,
-} from './state/work-order.js';
+  type TaskList,
+  type TaskEntry,
+} from './state/task.js';
 import {
   type DiscoveredTask,
   type WorkReport,
@@ -50,8 +46,8 @@ export interface OrchestratorConfig {
   maxIterations: number;
   /** PRD ファイルパス */
   prdFile: string;
-  /** プランファイルパス */
-  planFile: string;
+  /** タスクファイルパス */
+  taskFile: string;
   /** 進捗ファイルパス */
   progressFile: string;
   /** .melos/ ディレクトリパス */
@@ -89,10 +85,9 @@ export interface LoopResult {
  */
 interface OrchestratorState {
   iteration: number;
-  plan: Plan | null;
+  tasks: TaskList | null;
   prd: string | null;
   progress: string | null;
-  lastWorkOrder: WorkOrder | null;
   lastWorkReport: WorkReport | null;
   pendingEscalation: Escalation | null;
 }
@@ -182,10 +177,9 @@ export class Orchestrator {
     // 状態初期化
     this.state = {
       iteration: 1,
-      plan: null,
+      tasks: null,
       prd: null,
       progress: null,
-      lastWorkOrder: null,
       lastWorkReport: null,
       pendingEscalation: null,
     };
@@ -259,7 +253,8 @@ export class Orchestrator {
 
     const managerInput: ManagerInput = {
       iteration: this.state.iteration,
-      plan: this.state.plan,
+      maxIterations: this.config.maxIterations,
+      tasks: this.state.tasks,
       prd: this.state.prd,
       progress: this.state.progress,
       lastWorkReport: this.state.lastWorkReport,
@@ -280,48 +275,35 @@ export class Orchestrator {
     // 2. 判断に応じて行動
     switch (decision.type) {
       case 'dispatch_task': {
-        let workOrder = decision.workOrder;
-        const latestPlan = await this.loadLatestPlanForResolution();
-        const resolvedTaskId = resolveTaskIdWithFallback(
-          latestPlan,
-          workOrder.taskId,
-          workOrder.description
-        );
-        if (resolvedTaskId !== workOrder.taskId) {
-          log(
-            'YELLOW',
-            `taskId を補正: "${workOrder.taskId}" -> "${resolvedTaskId}"`
-          );
-          workOrder = {
-            ...workOrder,
-            taskId: resolvedTaskId,
-          };
-        }
+        const latestTasks = await this.loadLatestTaskListForResolution();
+        const taskToRun = this.resolveTaskForExecution(decision.taskId, latestTasks);
+
         this.currentSpinner.succeed(
-          buildManagerDecisionMessage({ type: 'dispatch_task', workOrder })
+          buildManagerDecisionMessage(
+            { type: 'dispatch_task', taskId: taskToRun.id },
+            taskToRun.description
+          )
         );
 
         if (this.config.dryRun) {
           log('YELLOW', '[DRY-RUN] Worker 実行をスキップ');
-          log('CYAN', `タスク: ${workOrder.taskId}`);
-          log('CYAN', `説明: ${workOrder.description}`);
+          log('CYAN', `タスク: ${taskToRun.id}`);
+          log('CYAN', `説明: ${taskToRun.description}`);
           return { reason: 'continue' };
         }
 
         // Worker にタスクを実行させる
-        const workerResult = await this.runWorker(workOrder);
+        const workerResult = await this.runWorker(taskToRun);
 
         // 結果を保存
-        this.state.lastWorkOrder = workOrder;
         this.state.lastWorkReport = workerResult.report;
-        await saveWorkOrder(this.config.melosDir, workOrder);
         await saveWorkReport(this.config.melosDir, workerResult.report);
 
-        // 成功した場合、プランを更新
-        if (planExists(this.config.planFile)) {
-          this.state.plan = await this.updatePlanAfterWorker(
-            workOrder.taskId,
-            workOrder.description,
+        // 成功した場合、TASK.json を更新
+        if (taskFileExists(this.config.taskFile)) {
+          this.state.tasks = await this.updateTaskListAfterWorker(
+            taskToRun.id,
+            taskToRun.description,
             workerResult
           );
         }
@@ -357,20 +339,12 @@ export class Orchestrator {
 
       case 'complete': {
         this.currentSpinner.succeed(buildManagerDecisionMessage(decision));
-        const completionGuard = shouldBlockCompletion(this.state.plan);
-        if (completionGuard.blocked) {
-          const reviewCount = completionGuard.pendingReviewTaskIds.length;
+        const pendingTasks = this.state.tasks ? getPendingTasks(this.state.tasks) : [];
+        if (pendingTasks.length > 0) {
           log(
             'YELLOW',
-            `未完了タスクが ${completionGuard.pendingTaskIds.length} 件あるため完了を保留します`
+            `未完了タスク ${pendingTasks.length} 件が残っていますが、Manager 判断により HANDOFF を出力します`
           );
-          if (reviewCount > 0) {
-            log(
-              'YELLOW',
-              `レビュー未完了タスク: ${completionGuard.pendingReviewTaskIds.join(', ')}`
-            );
-          }
-          return { reason: 'continue' };
         }
 
         // HANDOFF.md を保存
@@ -379,7 +353,7 @@ export class Orchestrator {
 
         log('GREEN', '');
         log('GREEN', '========================================');
-        log('GREEN', '全タスク完了');
+        log('GREEN', 'HANDOFF 出力完了');
         log('GREEN', '========================================');
         log('GREEN', `HANDOFF.md を生成しました: ${handoffPath}`);
         log('GREEN', '');
@@ -414,7 +388,7 @@ export class Orchestrator {
   /**
    * Worker を実行する
    */
-  private async runWorker(workOrder: WorkOrder): Promise<WorkerResult> {
+  private async runWorker(task: TaskEntry): Promise<WorkerResult> {
     const elapsed = formatElapsed(this.loopStartTime);
     printIterationHeader(
       this.state.iteration,
@@ -425,10 +399,11 @@ export class Orchestrator {
       this.config.workerReasoningEffort ?? Orchestrator.DEFAULT_WORKER_EFFORT
     );
 
-    this.currentSpinner = createSpinner(buildWorkerRunMessage(workOrder));
+    this.currentSpinner = createSpinner(buildWorkerRunMessage(task));
 
     const workerInput: WorkerInput = {
-      workOrder,
+      iteration: this.state.iteration,
+      task,
       codebasePatterns: this.state.progress,
       prd: this.state.prd,
     };
@@ -440,8 +415,8 @@ export class Orchestrator {
       const failedResult: WorkerResult = {
         type: 'failed',
         report: {
-          iteration: workOrder.iteration,
-          taskId: workOrder.taskId,
+          iteration: this.state.iteration,
+          taskId: task.id,
           status: 'FAILED',
           summary: error instanceof Error ? error.message : String(error),
           filesChanged: [],
@@ -460,11 +435,11 @@ export class Orchestrator {
           createdAt: new Date().toISOString(),
         },
       };
-      this.currentSpinner.fail(buildWorkerFinishMessage(workOrder, failedResult));
+      this.currentSpinner.fail(buildWorkerFinishMessage(task, failedResult));
       return failedResult;
     }
 
-    const finishMessage = buildWorkerFinishMessage(workOrder, result);
+    const finishMessage = buildWorkerFinishMessage(task, result);
     // 結果に応じてスピナーを更新
     switch (result.type) {
       case 'success':
@@ -485,7 +460,7 @@ export class Orchestrator {
 
     // 学習内容を PROGRESS.md に追記
     if (result.report.learnings && result.report.learnings.length > 0) {
-      await this.appendLearnings(workOrder.taskId, result.report.learnings);
+      await this.appendLearnings(task.id, result.report.learnings);
     }
 
     return result;
@@ -495,9 +470,9 @@ export class Orchestrator {
    * 状態を読み込む
    */
   private async loadState(): Promise<void> {
-    // PLAN.json
-    if (planExists(this.config.planFile)) {
-      this.state.plan = await loadPlan(this.config.planFile);
+    // TASK.json
+    if (taskFileExists(this.config.taskFile)) {
+      this.state.tasks = await loadTasks(this.config.taskFile);
     }
 
     // PRD.md
@@ -558,14 +533,14 @@ export class Orchestrator {
   }
 
   /**
-   * Worker 実行後に PLAN.json のチェックと完了状態を同期する
+   * Worker 実行後に TASK.json のチェックと完了状態を同期する
    */
-  private async updatePlanAfterWorker(
+  private async updateTaskListAfterWorker(
     taskId: string,
     taskDescription: string,
     workerResult: WorkerResult
-  ): Promise<Plan> {
-    const latestPlan = await this.loadLatestPlanForResolution();
+  ): Promise<TaskList> {
+    const latestPlan = await this.loadLatestTaskListForResolution();
     const resolvedTaskId = resolveTaskIdWithFallback(
       latestPlan,
       taskId,
@@ -575,13 +550,13 @@ export class Orchestrator {
     if (!latestPlan || !latestPlan.some((task) => task.id === resolvedTaskId)) {
       log(
         'YELLOW',
-        `⚠ Task id を PLAN.json に解決できないため更新をスキップ: "${taskId}" -> "${resolvedTaskId}"`
+        `⚠ Task id を TASK.json に解決できないため更新をスキップ: "${taskId}" -> "${resolvedTaskId}"`
       );
       return latestPlan ?? [];
     }
 
     let plan = await syncAutoChecksFromVerification(
-      this.config.planFile,
+      this.config.taskFile,
       resolvedTaskId,
       workerResult.report.verification
     );
@@ -592,49 +567,129 @@ export class Orchestrator {
     }
 
     const shouldPass = workerResult.type === 'success' && isAllChecksPassed(task);
-    plan = await updateTaskStatus(this.config.planFile, resolvedTaskId, shouldPass);
+    plan = await updateTaskStatus(this.config.taskFile, resolvedTaskId, shouldPass);
 
-    const followupTasks = buildFollowupPlanTasks(
+    const followupTasks = buildFollowupTaskEntries(
       plan,
       workerResult.report.taskId,
       workerResult.report.discoveredTasks
     );
     if (followupTasks.length > 0) {
-      plan = await addTasks(this.config.planFile, followupTasks);
-      log('CYAN', `フォローアップタスクを PLAN.json に ${followupTasks.length} 件追加`);
+      plan = await addTasks(this.config.taskFile, followupTasks);
+      log('CYAN', `フォローアップタスクを TASK.json に ${followupTasks.length} 件追加`);
     }
 
     const reviewTasks = getReviewTasksToAdd(plan, !!this.state.prd);
     if (reviewTasks.length > 0) {
-      plan = await addTasks(this.config.planFile, reviewTasks);
-      log('CYAN', `レビュータスクを PLAN.json に ${reviewTasks.length} 件追加`);
+      plan = await addTasks(this.config.taskFile, reviewTasks);
+      log('CYAN', `レビュータスクを TASK.json に ${reviewTasks.length} 件追加`);
     }
 
     return plan;
   }
 
-  private async loadLatestPlanForResolution(): Promise<Plan | null> {
-    if (!planExists(this.config.planFile)) {
-      return this.state.plan;
+  private async loadLatestTaskListForResolution(): Promise<TaskList | null> {
+    if (!taskFileExists(this.config.taskFile)) {
+      return this.state.tasks;
     }
 
-    const latestPlan = await loadPlan(this.config.planFile);
-    this.state.plan = latestPlan;
+    const latestPlan = await loadTasks(this.config.taskFile);
+    this.state.tasks = latestPlan;
     return latestPlan;
   }
 
+  private resolveTaskForExecution(
+    requestedTaskId: string,
+    latestTasks: TaskList | null
+  ): TaskEntry {
+    const resolvedTaskId = resolveTaskIdWithFallback(latestTasks, requestedTaskId);
+    if (latestTasks) {
+      const matchedTask = latestTasks.find((task) => task.id === resolvedTaskId);
+      if (matchedTask) {
+        if (resolvedTaskId !== requestedTaskId) {
+          log('YELLOW', `taskId を補正: "${requestedTaskId}" -> "${resolvedTaskId}"`);
+        }
+        return matchedTask;
+      }
+    }
+
+    const closestTask = this.findClosestTaskCandidate(requestedTaskId, latestTasks);
+    if (closestTask) {
+      log(
+        'YELLOW',
+        `TASK.json に taskId が見つからないため近い候補へ補正: "${requestedTaskId}" -> "${closestTask.id}"`
+      );
+      return closestTask;
+    }
+
+    log('YELLOW', `TASK.json から解決できない taskId のため最小コンテキストで実行: "${requestedTaskId}"`);
+    return {
+      id: requestedTaskId,
+      description: `Task ${requestedTaskId}`,
+      passes: false,
+    };
+  }
+
+  private findClosestTaskCandidate(
+    requestedTaskId: string,
+    latestTasks: TaskList | null
+  ): TaskEntry | null {
+    if (!latestTasks || latestTasks.length === 0) {
+      return null;
+    }
+
+    const normalizedRequested = requestedTaskId.trim().toLowerCase();
+    const requestedCanonical = toCanonicalTaskKey(normalizedRequested);
+    const pendingTasks = getPendingTasks(latestTasks);
+    const pool = pendingTasks.length > 0 ? pendingTasks : latestTasks;
+
+    let best: { task: TaskEntry; score: number } | null = null;
+    for (const task of pool) {
+      const taskId = task.id.trim().toLowerCase();
+      let score = 0;
+
+      if (taskId === normalizedRequested) {
+        score += 1000;
+      }
+
+      if (taskId.includes(normalizedRequested) || normalizedRequested.includes(taskId)) {
+        score += 300;
+      }
+
+      const taskCanonical = toCanonicalTaskKey(taskId);
+      if (requestedCanonical && taskCanonical && requestedCanonical === taskCanonical) {
+        score += 500;
+      }
+
+      const description = task.description.trim().toLowerCase();
+      if (normalizedRequested.length > 0 && description.includes(normalizedRequested)) {
+        score += 120;
+      }
+
+      if (!task.passes) {
+        score += 50;
+      }
+
+      if (!best || score > best.score) {
+        best = { task, score };
+      }
+    }
+
+    return best?.task ?? null;
+  }
+
   private async ensureRequiredReviewTasks(): Promise<void> {
-    if (!this.state.plan || !planExists(this.config.planFile)) {
+    if (!this.state.tasks || !taskFileExists(this.config.taskFile)) {
       return;
     }
 
-    const reviewTasks = getReviewTasksToAdd(this.state.plan, !!this.state.prd);
+    const reviewTasks = getReviewTasksToAdd(this.state.tasks, !!this.state.prd);
     if (reviewTasks.length === 0) {
       return;
     }
 
-    this.state.plan = await addTasks(this.config.planFile, reviewTasks);
-    log('CYAN', `レビュータスクを PLAN.json に ${reviewTasks.length} 件追加`);
+    this.state.tasks = await addTasks(this.config.taskFile, reviewTasks);
+    log('CYAN', `レビュータスクを TASK.json に ${reviewTasks.length} 件追加`);
   }
 
   /**
@@ -714,10 +769,13 @@ export function buildManagerRunMessage(lastWorkReport: WorkReport | null): strin
   return `Manager 実行中: 前回 [${taskId}] (${status}) を評価して次アクションを決定中...`;
 }
 
-export function buildManagerDecisionMessage(decision: ManagerDecision): string {
+export function buildManagerDecisionMessage(
+  decision: ManagerDecision,
+  taskDescription: string = ''
+): string {
   switch (decision.type) {
     case 'dispatch_task':
-      return `Manager 決定: ${formatTaskLabel(decision.workOrder.taskId, decision.workOrder.description)} を Worker に指示`;
+      return `Manager 決定: ${formatTaskLabel(decision.taskId, taskDescription)} を Worker に指示`;
     case 'escalate':
       return `Manager 決定: エスカレーション (${decision.escalation.type})`;
     case 'complete':
@@ -729,12 +787,12 @@ export function buildManagerDecisionMessage(decision: ManagerDecision): string {
   }
 }
 
-export function buildWorkerRunMessage(workOrder: WorkOrder): string {
-  return `Worker 実行中: ${formatTaskLabel(workOrder.taskId, workOrder.description)}...`;
+export function buildWorkerRunMessage(task: Pick<TaskEntry, 'id' | 'description'>): string {
+  return `Worker 実行中: ${formatTaskLabel(task.id, task.description)}...`;
 }
 
 export function buildWorkerFinishMessage(
-  workOrder: WorkOrder,
+  task: Pick<TaskEntry, 'id' | 'description'>,
   result: WorkerResult,
   summaryWidth: number = DEFAULT_SUMMARY_WIDTH
 ): string {
@@ -743,13 +801,13 @@ export function buildWorkerFinishMessage(
   const summary = rawSummary.length > 0
     ? truncateMessage(rawSummary, summaryWidth)
     : 'summary unavailable';
-  return `Worker 完了: ${formatTaskLabel(workOrder.taskId, workOrder.description)} ${status} - ${summary}`;
+  return `Worker 完了: ${formatTaskLabel(task.id, task.description)} ${status} - ${summary}`;
 }
 
 /**
  * 完了判定をブロックすべきか判定する
  */
-export function shouldBlockCompletion(plan: Plan | null): {
+export function shouldBlockCompletion(plan: TaskList | null): {
   blocked: boolean;
   pendingTaskIds: string[];
   pendingReviewTaskIds: string[];
@@ -783,12 +841,12 @@ export function shouldBlockCompletion(plan: Plan | null): {
 }
 
 /**
- * Manager が返した taskId を PLAN 上の実IDに解決する
+ * Manager が返した taskId を TASK 上の実IDに解決する
  *
  * 例:
  * - "10" <-> "task-10"
  */
-export function resolveTaskIdForPlan(plan: Plan | null, taskId: string): string {
+export function resolveTaskIdForTaskList(plan: TaskList | null, taskId: string): string {
   if (!plan || plan.length === 0) {
     return taskId;
   }
@@ -834,7 +892,7 @@ export function resolveTaskIdForPlan(plan: Plan | null, taskId: string): string 
 }
 
 export function resolveTaskIdWithFallback(
-  plan: Plan | null,
+  plan: TaskList | null,
   taskId: string,
   taskDescription?: string,
   fallbackTaskIds: string[] = []
@@ -855,7 +913,7 @@ export function resolveTaskIdWithFallback(
     });
 
   for (const candidate of candidates) {
-    const resolved = resolveTaskIdForPlan(plan, candidate);
+    const resolved = resolveTaskIdForTaskList(plan, candidate);
     if (plan.some((task) => task.id === resolved)) {
       return resolved;
     }
@@ -872,7 +930,7 @@ export function resolveTaskIdWithFallback(
 }
 
 export function resolveTaskIdByDescription(
-  plan: Plan | null,
+  plan: TaskList | null,
   description: string
 ): string | null {
   if (!plan || plan.length === 0) {
@@ -925,7 +983,7 @@ function normalizeDescription(value: string): string {
 /**
  * PRD が存在する場合に限り、不足しているレビュータスクを返す
  */
-export function getReviewTasksToAdd(plan: Plan | null, hasPrd: boolean): PlanTask[] {
+export function getReviewTasksToAdd(plan: TaskList | null, hasPrd: boolean): TaskEntry[] {
   if (!hasPrd || !plan) {
     return [];
   }
@@ -1076,17 +1134,17 @@ function trimLeadingBlankLines(lines: string[]): string[] {
 }
 
 /**
- * WorkReport の discoveredTasks から PLAN 追加用タスクを生成する
+ * WorkReport の discoveredTasks から TASK 追加用タスクを生成する
  *
  * ルール:
  * - priority=high は個別タスクとして追加
  * - priority=medium/low は relatedTaskId 単位で集約（未指定は 1 つに集約）
  */
-export function buildFollowupPlanTasks(
-  plan: Plan,
+export function buildFollowupTaskEntries(
+  plan: TaskList,
   sourceTaskId: string,
   discoveredTasks: DiscoveredTask[]
-): PlanTask[] {
+): TaskEntry[] {
   if (!discoveredTasks || discoveredTasks.length === 0) {
     return [];
   }

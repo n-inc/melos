@@ -15,15 +15,13 @@ describe('ManagerAgent.parseDecision', () => {
     ).parseDecision(output);
   };
 
-  it('parses WORK_ORDER from fenced JSON', () => {
+  it('parses task dispatch from fenced JSON', () => {
     const output = [
       'some logs',
       '```json',
       '{',
-      '  "iteration": 7,',
       '  "taskId": "6",',
-      '  "description": "do task",',
-      '  "instructions": ["step-1"]',
+      '  "reason": "do task"',
       '}',
       '```',
     ].join('\n');
@@ -31,25 +29,19 @@ describe('ManagerAgent.parseDecision', () => {
     const decision = parseDecision(output);
     expect(decision.type).toBe('dispatch_task');
     if (decision.type === 'dispatch_task') {
-      expect(decision.workOrder.taskId).toBe('6');
-      expect(decision.workOrder.description).toBe('do task');
+      expect(decision.taskId).toBe('6');
     }
   });
 
-  it('parses WORK_ORDER from raw JSON with logs', () => {
+  it('parses task dispatch from raw JSON with logs', () => {
     const output = [
       'thinking',
       '**Analyzing issue**',
       'exec',
       'some command output...',
       '{',
-      '  "iteration": 7,',
       '  "taskId": "6",',
-      '  "description": "fix parser {robust}",',
-      '  "instructions": [',
-      '    "wire parser",',
-      '    "add tests"',
-      '  ]',
+      '  "reason": "fix parser {robust}"',
       '}',
       'tokens used',
       '12345',
@@ -58,35 +50,56 @@ describe('ManagerAgent.parseDecision', () => {
     const decision = parseDecision(output);
     expect(decision.type).toBe('dispatch_task');
     if (decision.type === 'dispatch_task') {
-      expect(decision.workOrder.taskId).toBe('6');
-      expect(decision.workOrder.description).toBe('fix parser {robust}');
+      expect(decision.taskId).toBe('6');
     }
   });
 
-  it('uses the last valid WORK_ORDER when multiple JSON blocks exist', () => {
+  it('uses the last valid task dispatch when multiple JSON blocks exist', () => {
     const output = [
       '```json',
       '{',
-      '  "iteration": 7,',
       '  "taskId": "old-task",',
-      '  "description": "old",',
-      '  "instructions": ["old-step"]',
+      '  "reason": "old"',
       '}',
       '```',
       'intermediate logs',
       '{',
-      '  "iteration": 7,',
       '  "taskId": "new-task",',
-      '  "description": "new",',
-      '  "instructions": ["new-step"]',
+      '  "reason": "new"',
       '}',
     ].join('\n');
 
     const decision = parseDecision(output);
     expect(decision.type).toBe('dispatch_task');
     if (decision.type === 'dispatch_task') {
-      expect(decision.workOrder.taskId).toBe('new-task');
-      expect(decision.workOrder.description).toBe('new');
+      expect(decision.taskId).toBe('new-task');
+    }
+  });
+
+  it('parses TASK_DISPATCH fixed text format', () => {
+    const output = [
+      'progress logs...',
+      'TASK_DISPATCH',
+      'task-42',
+    ].join('\n');
+
+    const decision = parseDecision(output);
+    expect(decision.type).toBe('dispatch_task');
+    if (decision.type === 'dispatch_task') {
+      expect(decision.taskId).toBe('task-42');
+    }
+  });
+
+  it('parses TASK_DISPATCH keyed fallback format', () => {
+    const output = [
+      'TASK_DISPATCH',
+      'taskId: task-99',
+    ].join('\n');
+
+    const decision = parseDecision(output);
+    expect(decision.type).toBe('dispatch_task');
+    if (decision.type === 'dispatch_task') {
+      expect(decision.taskId).toBe('task-99');
     }
   });
 
@@ -115,6 +128,41 @@ describe('ManagerAgent.parseDecision', () => {
     if (decision.type === 'error') {
       expect(decision.message).toBe('Could not parse Manager decision from output');
     }
+  });
+});
+
+describe('ManagerAgent.buildPrompt', () => {
+  it('injects tasks and maxIterations into manager prompt', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: `${process.cwd()}/prompts`,
+    });
+
+    const prompt = await (
+      agent as unknown as {
+        buildPrompt: (input: {
+          iteration: number;
+          maxIterations: number;
+          tasks: Array<{ id: string; description: string; passes: boolean }> | null;
+          prd: string | null;
+          progress: string | null;
+          lastWorkReport: null;
+          pendingEscalation: null;
+        }) => Promise<string>;
+      }
+    ).buildPrompt({
+      iteration: 3,
+      maxIterations: 42,
+      tasks: [{ id: 'task-1', description: 'demo', passes: false }],
+      prd: null,
+      progress: null,
+      lastWorkReport: null,
+      pendingEscalation: null,
+    });
+
+    expect(prompt).toContain('Iteration 3 / 42');
+    expect(prompt).toContain('"id": "task-1"');
+    expect(prompt).not.toContain('{TASK_JSON}');
   });
 });
 

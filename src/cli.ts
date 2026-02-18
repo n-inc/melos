@@ -105,7 +105,7 @@ export function createProgram(): Command {
       'プレーン出力モード（スピナー無効）'
     )
     .addOption(
-      new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
+      new Option('--dangerously-reset-before-start', '開始前にTASK.json等をリセット（スモークテスト用）').hideHelp()
     )
     .option(
       '--dry-run',
@@ -143,7 +143,7 @@ export function createProgram(): Command {
       'プレーン出力モード（スピナー無効）'
     )
     .addOption(
-      new Option('--dangerously-reset-before-start', '開始前にPLAN.json等をリセット（スモークテスト用）').hideHelp()
+      new Option('--dangerously-reset-before-start', '開始前にTASK.json等をリセット（スモークテスト用）').hideHelp()
     )
     .option(
       '--dry-run',
@@ -201,13 +201,21 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   const workerReasoningEffort =
     reasoningEffort ?? fileConfig.worker?.effort ?? fileConfig.worker?.reasoningEffort;
   const maxIterations = options.maxIterations ?? fileConfig.maxIterations ?? 30;
+  const taskFilePath = join(cwd, 'TASK.json');
+  const legacyPlanPath = join(cwd, 'PLAN.json');
+
+  if (!existsSync(taskFilePath) && existsSync(legacyPlanPath)) {
+    throw new Error(
+      'PLAN.json は廃止されました。PLAN.json を TASK.json にリネームして再実行してください。'
+    );
+  }
 
   // 設定を作成
   const config: OrchestratorConfig = {
     cwd,
     maxIterations,
     prdFile: join(cwd, 'PRD.md'),
-    planFile: join(cwd, 'PLAN.json'),
+    taskFile: taskFilePath,
     progressFile: join(cwd, 'PROGRESS.md'),
     melosDir: join(cwd, '.melos'),
     managerModel,
@@ -374,23 +382,23 @@ function validateEffort(level: string): 'low' | 'medium' | 'high' | 'max' {
 
 /**
  * スモークテスト用リセット処理
- * PLAN.json の passes と checks.passed を false にリセットし、証拠URLも空にする
+ * TASK.json の passes と checks.passed を false にリセットし、証拠URLも空にする
  * PROGRESS.md と STATUS.json を削除
  */
 function resetForSmokeTest(): void {
   const cwd = process.cwd();
-  const planPath = join(cwd, 'PLAN.json');
+  const taskPath = join(cwd, 'TASK.json');
   const progressPath = join(cwd, 'PROGRESS.md');
   const statusPath = join(cwd, 'STATUS.json');
 
   console.log('\n🔄 Smoke Test リセット...');
 
-  // PLAN.json をリセット
-  if (existsSync(planPath)) {
+  // TASK.json をリセット
+  if (existsSync(taskPath)) {
     try {
-      const plan = JSON.parse(readFileSync(planPath, 'utf-8'));
-      if (Array.isArray(plan)) {
-        const resetPlan = plan.map((task: {
+      const tasks = JSON.parse(readFileSync(taskPath, 'utf-8'));
+      if (Array.isArray(tasks)) {
+        const resetTasks = tasks.map((task: {
           passes?: boolean;
           checks?: Array<{
             text: string;
@@ -413,11 +421,11 @@ function resetForSmokeTest(): void {
             })),
           }),
         }));
-        writeFileSync(planPath, JSON.stringify(resetPlan, null, 2) + '\n');
-        console.log('  Reset PLAN.json');
+        writeFileSync(taskPath, JSON.stringify(resetTasks, null, 2) + '\n');
+        console.log('  Reset TASK.json');
       }
     } catch {
-      console.error('  Failed to reset PLAN.json');
+      console.error('  Failed to reset TASK.json');
     }
   }
 

@@ -2,8 +2,7 @@ import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
 import { CodexEngine, type CodexEngineOptions } from '../engines/codex.js';
 import type { EngineResult } from '../engines/base.js';
 import { loadPromptRaw } from '../prompts/loader.js';
-import type { PlanTask } from '../state/plan.js';
-import type { WorkOrder } from '../state/work-order.js';
+import type { TaskEntry } from '../state/task.js';
 import type { WorkReport } from '../state/work-report.js';
 import type { Escalation } from '../state/escalation.js';
 import type {
@@ -59,16 +58,16 @@ export class ManagerAgent implements Agent {
     // プレースホルダーを置換
     let prompt = template
       .replace('{ITERATION}', String(input.iteration))
-      .replace('{MAX_ITERATIONS}', '30');
+      .replace('{MAX_ITERATIONS}', String(input.maxIterations));
 
-    // PLAN セクション
-    if (input.plan) {
+    // TASK セクション
+    if (input.tasks) {
       prompt = prompt.replace(
-        '{PLAN_JSON}',
-        JSON.stringify(input.plan, null, 2)
+        '{TASK_JSON}',
+        JSON.stringify(input.tasks, null, 2)
       );
     } else {
-      prompt = prompt.replace('{PLAN_JSON}', 'null (PLAN.json が存在しません)');
+      prompt = prompt.replace('{TASK_JSON}', 'null (TASK.json が存在しません)');
     }
 
     // PRD セクション
@@ -153,13 +152,18 @@ export class ManagerAgent implements Agent {
         continue;
       }
 
-      if (this.isWorkOrderCandidate(parsed)) {
-        return { type: 'dispatch_task', workOrder: parsed };
+      if (this.isTaskDispatchCandidate(parsed)) {
+        return { type: 'dispatch_task', taskId: parsed.taskId };
       }
 
       if (this.isEscalationCandidate(parsed)) {
         return { type: 'escalate', escalation: parsed };
       }
+    }
+
+    const taskDispatchId = this.extractTaskDispatchTaskId(output);
+    if (taskDispatchId) {
+      return { type: 'dispatch_task', taskId: taskDispatchId };
     }
 
     // HANDOFF.md の出力を探す（```markdown ブロック内または実際の完了レポート）
@@ -173,7 +177,7 @@ export class ManagerAgent implements Agent {
 
     // 実際の引き継ぎレポート（生成日時と完了したタスクを含む）
     const handoffMatch = output.match(
-      /# (HANDOFF|Melos 引き継ぎレポート)\s*\n\n\*\*生成日時\*\*:[\s\S]*/
+      /# (HANDOFF|Melos 引き継ぎレポート)\s*\n\n(?:\*\*生成日時\*\*|生成日時)\s*:[\s\S]*/
     );
     if (handoffMatch) {
       return { type: 'complete', handoffContent: handoffMatch[0] };
@@ -277,16 +281,72 @@ export class ManagerAgent implements Agent {
     }
   }
 
-  private isWorkOrderCandidate(value: unknown): value is WorkOrder {
+  private isTaskDispatchCandidate(
+    value: unknown
+  ): value is { taskId: string; reason?: string; description?: string } {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return false;
     }
     const candidate = value as Record<string, unknown>;
-    return (
-      typeof candidate.taskId === 'string' &&
-      typeof candidate.description === 'string' &&
-      Array.isArray(candidate.instructions)
-    );
+    if (typeof candidate.taskId !== 'string') {
+      return false;
+    }
+
+    const allowedKeys = new Set(['taskId', 'reason', 'description']);
+    return Object.keys(candidate).every((key) => allowedKeys.has(key));
+  }
+
+  /**
+   * TASK_DISPATCH 固定テキスト形式から taskId を抽出する
+   *
+   * 対応形式:
+   * TASK_DISPATCH
+   * task-1
+   *
+   * 互換形式（旧）:
+   * TASK_DISPATCH
+   * taskId: task-1
+   */
+  private extractTaskDispatchTaskId(output: string): string | null {
+    const lines = output.split(/\r?\n/);
+    let lastTaskId: string | null = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim() !== 'TASK_DISPATCH') {
+        continue;
+      }
+
+      for (let j = i + 1; j < lines.length; j++) {
+        const line = lines[j].trim();
+
+        if (line.length === 0) {
+          continue;
+        }
+
+        if (line.startsWith('```')) {
+          continue;
+        }
+
+        const keyed = line.match(/^taskId\s*:\s*(.+)$/i);
+        if (keyed && keyed[1].trim().length > 0) {
+          lastTaskId = this.cleanTaskIdCandidate(keyed[1]);
+          break;
+        }
+
+        if (/^[A-Z_]+(?:\.(json|md))?$/i.test(line)) {
+          break;
+        }
+
+        lastTaskId = this.cleanTaskIdCandidate(line);
+        break;
+      }
+    }
+
+    return lastTaskId;
+  }
+
+  private cleanTaskIdCandidate(value: string): string {
+    return value.trim().replace(/^['"`]|['"`]$/g, '');
   }
 
   private isEscalationCandidate(value: unknown): value is Escalation {
@@ -302,9 +362,9 @@ export class ManagerAgent implements Agent {
   }
 
   /**
-   * PLAN.json がない場合にタスクを生成する
+   * TASK.json がない場合にタスクを生成する
    */
-  async generatePlan(prd: string, progress: string | null): Promise<PlanTask[]> {
+  async generateTasks(prd: string, progress: string | null): Promise<TaskEntry[]> {
     const prompt = `
 あなたは熟練したテックリードです。
 
@@ -343,16 +403,16 @@ ${progress || '(なし)'}
     const result = await this.executeWithConfiguredEngine(prompt, 'high');
 
     if (!result.success) {
-      throw new Error(`Failed to generate plan: ${result.error}`);
+      throw new Error(`Failed to generate tasks: ${result.error}`);
     }
 
     // JSON を抽出
     const jsonMatch = result.output.match(/```json\s*\n([\s\S]*?)\n```/);
     if (!jsonMatch) {
-      throw new Error('Could not parse plan JSON from output');
+      throw new Error('Could not parse task JSON from output');
     }
 
-    const tasks = JSON.parse(jsonMatch[1]) as PlanTask[];
+    const tasks = JSON.parse(jsonMatch[1]) as TaskEntry[];
     return tasks;
   }
 
@@ -360,7 +420,7 @@ ${progress || '(なし)'}
    * Worker の報告をレビューする
    */
   async reviewWorkReport(
-    workOrder: WorkOrder,
+    task: Pick<TaskEntry, 'id' | 'description' | 'checks'>,
     workReport: WorkReport
   ): Promise<{ approved: boolean; feedback?: string }> {
     const prompt = `
@@ -368,9 +428,9 @@ ${progress || '(なし)'}
 
 Worker の実行報告をレビューしてください。
 
-## 指示内容 (WORK_ORDER)
+## タスク情報 (TASK)
 
-${JSON.stringify(workOrder, null, 2)}
+${JSON.stringify(task, null, 2)}
 
 ## 報告内容 (WORK_REPORT)
 

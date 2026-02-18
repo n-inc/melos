@@ -20,7 +20,7 @@ describe('loader.ts', () => {
     iteration: 5,
     maxIterations: 30,
     progressFile: 'PROGRESS.md',
-    planFile: 'PLAN.json',
+    taskFile: 'TASK.json',
   };
 
   describe('substituteVariables', () => {
@@ -42,18 +42,18 @@ describe('loader.ts', () => {
       expect(result).toBe('Progress: PROGRESS.md');
     });
 
-    it('replaces {PLAN_FILE} placeholder', () => {
-      const template = 'Plan: {PLAN_FILE}';
+    it('replaces {TASK_FILE} placeholder', () => {
+      const template = 'TaskList: {TASK_FILE}';
       const result = substituteVariables(template, testVariables);
-      expect(result).toBe('Plan: PLAN.json');
+      expect(result).toBe('TaskList: TASK.json');
     });
 
     it('replaces multiple placeholders in one template', () => {
       const template =
-        '## Iteration {ITERATION} / {MAX_ITERATIONS}\n\n**Plan**: @{PLAN_FILE}\n**Progress**: @{PROGRESS_FILE}';
+        '## Iteration {ITERATION} / {MAX_ITERATIONS}\n\n**TaskList**: @{TASK_FILE}\n**Progress**: @{PROGRESS_FILE}';
       const result = substituteVariables(template, testVariables);
       expect(result).toBe(
-        '## Iteration 5 / 30\n\n**Plan**: @PLAN.json\n**Progress**: @PROGRESS.md'
+        '## Iteration 5 / 30\n\n**TaskList**: @TASK.json\n**Progress**: @PROGRESS.md'
       );
     });
 

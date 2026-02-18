@@ -1,6 +1,6 @@
 # Melos CLI
 
-Melos は自律的なエージェントループシステムです。PLAN.json に定義されたタスクを順次実行し、PRD.md の受入基準に従って検証を行います。
+Melos は自律的なエージェントループシステムです。TASK.json に定義されたタスクを順次実行し、PRD.md の受入基準に従って検証を行います。
 
 ## 前提
 
@@ -17,7 +17,7 @@ npm install
 
 ### plan モード（デフォルト）
 
-PLAN.json のタスクを順次実行します。
+TASK.json のタスクを順次実行します。
 
 ```bash
 npx melos
@@ -25,7 +25,7 @@ npx melos
 
 ### watch モード
 
-PLAN.json を監視し、新しいタスクが追加されると自動的に Melos ループを開始します。
+TASK.json を監視し、新しいタスクが追加されると自動的に Melos ループを開始します。
 
 ```bash
 npx melos watch
@@ -128,24 +128,25 @@ npx melos --dry-run
 
 Melos は以下のファイルを使用します：
 
-- **PLAN.json**: タスク定義ファイル
+- **TASK.json**: タスク定義ファイル
 - **PRD.md**: 要件定義・受入基準
 - **PROGRESS.md**: 進捗ログ
 - **.melos.json**: プロジェクト設定ファイル（オプション）
 
 ## Manager の責務
 
-Manager は Worker の報告内容をそのまま採用せず、`successCriteria` との照合、失敗時の原因分析、追加タスクの判断を行います。
+Manager は `TASK.json` を更新しながら、要件達成まで反復実行を管理します。
 
-- 完了判定は根拠ベースで行い、不整合があれば `WORK_ORDER` を再発行する
+- Worker が `PARTIAL` / `FAILED` / `BLOCKED` の場合は、必要に応じて `TASK.json` を調整して再実行を継続する
 - `reviewType: "product"` と `reviewType: "code"` を独立して完了管理する
-- 未完了タスクがある状態では `HANDOFF.md` を出力しない
+- 最終レビューでは通常ケースに加えて、失敗しやすい条件や境界条件も確認する
+- 状況に応じて `HANDOFF.md` を出力できる
 
 詳細ルールは `prompts/manager.md` を参照してください。
 
 ## レビュータスクの自動追加
 
-実装タスク（`reviewType` 未指定）がすべて完了すると、Melos は `PLAN.json` に以下のレビュータスクを自動追加します。
+実装タスク（`reviewType` 未指定）がすべて完了すると、Melos は `TASK.json` に以下のレビュータスクを自動追加します。
 
 - `reviewType: "product"`: PRD.md との整合性レビュー
 - `reviewType: "code"`: 変更差分中心のコードレビュー

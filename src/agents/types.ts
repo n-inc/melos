@@ -1,5 +1,4 @@
-import type { PlanTask } from '../state/plan.js';
-import type { WorkOrder } from '../state/work-order.js';
+import type { TaskEntry } from '../state/task.js';
 import type { WorkReport } from '../state/work-report.js';
 import type { Escalation } from '../state/escalation.js';
 
@@ -12,7 +11,7 @@ export type AgentMode = 'manager' | 'worker';
  * Manager の判断結果
  */
 export type ManagerDecision =
-  | { type: 'dispatch_task'; workOrder: WorkOrder }
+  | { type: 'dispatch_task'; taskId: string }
   | { type: 'review_complete'; approved: boolean; feedback?: string }
   | { type: 'escalate'; escalation: Escalation }
   | { type: 'complete'; handoffContent: string }
@@ -33,8 +32,10 @@ export type WorkerResult =
 export interface ManagerInput {
   /** 現在のイテレーション */
   iteration: number;
-  /** PLAN.json の内容 */
-  plan: PlanTask[] | null;
+  /** 最大イテレーション数 */
+  maxIterations: number;
+  /** TASK.json の内容 */
+  tasks: TaskEntry[] | null;
   /** PRD.md の内容 */
   prd: string | null;
   /** PROGRESS.md の内容 */
@@ -49,8 +50,10 @@ export interface ManagerInput {
  * Worker への入力
  */
 export interface WorkerInput {
-  /** WorkOrder */
-  workOrder: WorkOrder;
+  /** 現在のイテレーション */
+  iteration: number;
+  /** 実行対象タスク */
+  task: TaskEntry;
   /** PROGRESS.md の Codebase Patterns セクション */
   codebasePatterns: string | null;
   /** PRD.md の内容 */

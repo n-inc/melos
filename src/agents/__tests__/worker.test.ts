@@ -1,4 +1,3 @@
-import { createWorkOrder } from '../../state/work-order.js';
 import type { WorkerInput } from '../types.js';
 import { WorkerAgent } from '../worker.js';
 
@@ -16,13 +15,12 @@ describe('WorkerAgent', () => {
 
   it('injects PRD content into prompt', async () => {
     const prompt = await buildPrompt({
-      workOrder: createWorkOrder({
-        iteration: 1,
-        taskId: 'task-1',
+      iteration: 1,
+      task: {
+        id: 'task-1',
         description: 'normal implementation',
-        instructions: ['do implementation'],
-        successCriteria: ['all tests pass'],
-      }),
+        passes: false,
+      },
       codebasePatterns: 'pattern-a',
       prd: '# PRD\n- feature A',
     });
@@ -35,13 +33,14 @@ describe('WorkerAgent', () => {
 
   it('uses product review guide for review-product task ids', async () => {
     const prompt = await buildPrompt({
-      workOrder: createWorkOrder({
-        iteration: 2,
-        taskId: 'review-product-g3',
+      iteration: 2,
+      task: {
+        id: 'review-product-g3',
         description: 'product review',
-        instructions: ['run review'],
-        successCriteria: ['review completed'],
-      }),
+        passes: false,
+        reviewType: 'product',
+        reviewGeneration: 3,
+      },
       codebasePatterns: null,
       prd: '# Product PRD',
     });
@@ -53,13 +52,14 @@ describe('WorkerAgent', () => {
 
   it('uses code review guide for review-code task ids', async () => {
     const prompt = await buildPrompt({
-      workOrder: createWorkOrder({
-        iteration: 2,
-        taskId: 'review-code-g3',
+      iteration: 2,
+      task: {
+        id: 'review-code-g3',
         description: 'code review',
-        instructions: ['run review'],
-        successCriteria: ['review completed'],
-      }),
+        passes: false,
+        reviewType: 'code',
+        reviewGeneration: 3,
+      },
       codebasePatterns: null,
       prd: '# Product PRD',
     });
@@ -100,13 +100,12 @@ describe('WorkerAgent', () => {
     }).saveExecutionLog = async () => '/tmp/worker-test.log';
 
     const input: WorkerInput = {
-      workOrder: createWorkOrder({
-        iteration: 1,
-        taskId: 'task-2',
+      iteration: 1,
+      task: {
+        id: 'task-2',
         description: 'default effort test',
-        instructions: ['execute task'],
-        successCriteria: ['done'],
-      }),
+        passes: false,
+      },
       codebasePatterns: null,
       prd: null,
     };

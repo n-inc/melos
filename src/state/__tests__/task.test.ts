@@ -2,9 +2,9 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  loadPlan,
-  savePlan,
-  planExists,
+  loadTasks,
+  saveTasks,
+  taskFileExists,
   updateTaskStatus,
   updateCheckStatus,
   updateCheckWithEvidence,
@@ -17,57 +17,57 @@ import {
   createMissingReviewTasks,
   addTasks,
   VALID_CHECK_TYPES,
-  type Plan,
-  type PlanTask,
+  type TaskList,
+  type TaskEntry,
   type CheckItem,
-} from '../plan.js';
+} from '../task.js';
 
-describe('plan.ts', () => {
+describe('task.ts', () => {
   let testDir: string;
-  let planPath: string;
+  let taskPath: string;
 
   beforeEach(async () => {
     testDir = join(tmpdir(), `melos-test-${Date.now()}`);
     await mkdir(testDir, { recursive: true });
-    planPath = join(testDir, 'PLAN.json');
+    taskPath = join(testDir, 'TASK.json');
   });
 
   afterEach(async () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  describe('planExists', () => {
+  describe('taskFileExists', () => {
     it('returns false when file does not exist', () => {
-      expect(planExists(planPath)).toBe(false);
+      expect(taskFileExists(taskPath)).toBe(false);
     });
 
     it('returns true when file exists', async () => {
-      await writeFile(planPath, '[]');
-      expect(planExists(planPath)).toBe(true);
+      await writeFile(taskPath, '[]');
+      expect(taskFileExists(taskPath)).toBe(true);
     });
   });
 
-  describe('loadPlan', () => {
+  describe('loadTasks', () => {
     it('throws error when file does not exist', async () => {
-      await expect(loadPlan(planPath)).rejects.toThrow('PLAN.json not found');
+      await expect(loadTasks(taskPath)).rejects.toThrow('TASK.json not found');
     });
 
     it('throws error when content is not an array', async () => {
-      await writeFile(planPath, '{}');
-      await expect(loadPlan(planPath)).rejects.toThrow(
-        'PLAN.json must be an array'
+      await writeFile(taskPath, '{}');
+      await expect(loadTasks(taskPath)).rejects.toThrow(
+        'TASK.json must be an array'
       );
     });
 
     it('throws error when task is missing required fields', async () => {
-      await writeFile(planPath, '[{"id": "1"}]');
-      await expect(loadPlan(planPath)).rejects.toThrow(
+      await writeFile(taskPath, '[{"id": "1"}]');
+      await expect(loadTasks(taskPath)).rejects.toThrow(
         'Task.description must be a string'
       );
     });
 
-    it('loads valid plan correctly', async () => {
-      const plan: Plan = [
+    it('loads valid tasks correctly', async () => {
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task 1',
@@ -83,16 +83,16 @@ describe('plan.ts', () => {
           passes: true,
         },
       ];
-      await writeFile(planPath, JSON.stringify(plan));
+      await writeFile(taskPath, JSON.stringify(tasks));
 
-      const loaded = await loadPlan(planPath);
-      expect(loaded).toEqual(plan);
+      const loaded = await loadTasks(taskPath);
+      expect(loaded).toEqual(tasks);
     });
   });
 
-  describe('savePlan', () => {
-    it('saves plan as formatted JSON', async () => {
-      const plan: Plan = [
+  describe('saveTasks', () => {
+    it('saves tasks as formatted JSON', async () => {
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task 1',
@@ -100,38 +100,38 @@ describe('plan.ts', () => {
         },
       ];
 
-      await savePlan(planPath, plan);
-      const loaded = await loadPlan(planPath);
-      expect(loaded).toEqual(plan);
+      await saveTasks(taskPath, tasks);
+      const loaded = await loadTasks(taskPath);
+      expect(loaded).toEqual(tasks);
     });
   });
 
   describe('updateTaskStatus', () => {
     it('updates task passes status', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task 1',
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      const updated = await updateTaskStatus(planPath, '1', true);
+      const updated = await updateTaskStatus(taskPath, '1', true);
       expect(updated[0].passes).toBe(true);
     });
 
     it('throws error when task not found', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task 1',
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      await expect(updateTaskStatus(planPath, '999', true)).rejects.toThrow(
+      await expect(updateTaskStatus(taskPath, '999', true)).rejects.toThrow(
         'Task not found: 999'
       );
     });
@@ -139,77 +139,77 @@ describe('plan.ts', () => {
 
   describe('getPendingTasks', () => {
     it('returns only tasks with passes: false', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'Task 1', passes: true },
         { id: '2', description: 'Task 2', passes: false },
         { id: '3', description: 'Task 3', passes: false },
       ];
 
-      const pending = getPendingTasks(plan);
+      const pending = getPendingTasks(tasks);
       expect(pending).toHaveLength(2);
       expect(pending.map((t) => t.id)).toEqual(['2', '3']);
     });
 
     it('preserves original order', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'First task', passes: false },
         { id: '2', description: 'Second task', passes: false },
         { id: '3', description: 'Third task', passes: false },
       ];
 
-      const pending = getPendingTasks(plan);
+      const pending = getPendingTasks(tasks);
       expect(pending.map((t) => t.id)).toEqual(['1', '2', '3']);
     });
   });
 
   describe('getNextTask', () => {
     it('returns undefined when all tasks completed', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'Task 1', passes: true },
       ];
 
-      expect(getNextTask(plan)).toBeUndefined();
+      expect(getNextTask(tasks)).toBeUndefined();
     });
 
     it('returns first pending task', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'First task', passes: false },
         { id: '2', description: 'Second task', passes: false },
       ];
 
-      const next = getNextTask(plan);
+      const next = getNextTask(tasks);
       expect(next?.id).toBe('1');
     });
   });
 
   describe('isAllTasksCompleted', () => {
     it('returns true when all tasks pass', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'Task 1', passes: true },
         { id: '2', description: 'Task 2', passes: true },
       ];
 
-      expect(isAllTasksCompleted(plan)).toBe(true);
+      expect(isAllTasksCompleted(tasks)).toBe(true);
     });
 
     it('returns false when any task fails', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'Task 1', passes: true },
         { id: '2', description: 'Task 2', passes: false },
       ];
 
-      expect(isAllTasksCompleted(plan)).toBe(false);
+      expect(isAllTasksCompleted(tasks)).toBe(false);
     });
   });
 
   describe('addTasks', () => {
-    it('adds new tasks to existing plan', async () => {
-      const initial: Plan = [
+    it('adds new tasks to existing tasks', async () => {
+      const initial: TaskList = [
         { id: '1', description: 'Task 1', passes: true },
       ];
-      await savePlan(planPath, initial);
+      await saveTasks(taskPath, initial);
 
-      const newTasks: PlanTask[] = [
+      const newTasks: TaskEntry[] = [
         {
           id: 'review-1',
           description: '[P1] test: finding',
@@ -217,15 +217,15 @@ describe('plan.ts', () => {
         },
       ];
 
-      const updated = await addTasks(planPath, newTasks);
+      const updated = await addTasks(taskPath, newTasks);
       expect(updated).toHaveLength(2);
       expect(updated[1].id).toBe('review-1');
     });
   });
 
   describe('checks with type field', () => {
-    it('loads plan with checks correctly', async () => {
-      const plan: Plan = [
+    it('loads tasks with checks correctly', async () => {
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task with checks',
@@ -236,9 +236,9 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await writeFile(planPath, JSON.stringify(plan));
+      await writeFile(taskPath, JSON.stringify(tasks));
 
-      const loaded = await loadPlan(planPath);
+      const loaded = await loadTasks(taskPath);
       expect(loaded[0].checks).toHaveLength(2);
       expect(loaded[0].checks![0].text).toBe('Test passes');
       expect(loaded[0].checks![0].type).toBe('auto:jest');
@@ -249,7 +249,7 @@ describe('plan.ts', () => {
 
     it('validates checks structure', async () => {
       // Invalid: checks item missing text
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: '1',
           description: 'Task',
@@ -257,12 +257,12 @@ describe('plan.ts', () => {
           passes: false,
         },
       ]));
-      await expect(loadPlan(planPath)).rejects.toThrow(
+      await expect(loadTasks(taskPath)).rejects.toThrow(
         'Task.checks[0].text must be a string'
       );
 
       // Missing type: should normalize to manual
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: '1',
           description: 'Task',
@@ -270,11 +270,11 @@ describe('plan.ts', () => {
           passes: false,
         },
       ]));
-      const missingTypeLoaded = await loadPlan(planPath);
+      const missingTypeLoaded = await loadTasks(taskPath);
       expect(missingTypeLoaded[0].checks![0].type).toBe('manual');
 
       // Unknown type: should normalize to manual
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: '1',
           description: 'Task',
@@ -282,11 +282,11 @@ describe('plan.ts', () => {
           passes: false,
         },
       ]));
-      const invalidTypeLoaded = await loadPlan(planPath);
+      const invalidTypeLoaded = await loadTasks(taskPath);
       expect(invalidTypeLoaded[0].checks![0].type).toBe('manual');
 
       // Invalid: checks item missing passed
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: '1',
           description: 'Task',
@@ -294,7 +294,7 @@ describe('plan.ts', () => {
           passes: false,
         },
       ]));
-      await expect(loadPlan(planPath)).rejects.toThrow(
+      await expect(loadTasks(taskPath)).rejects.toThrow(
         'Task.checks[0].passed must be a boolean'
       );
     });
@@ -309,7 +309,7 @@ describe('plan.ts', () => {
     });
 
     it('accepts evidence fields for browser checks', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task with browser check',
@@ -324,14 +324,14 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await writeFile(planPath, JSON.stringify(plan));
+      await writeFile(taskPath, JSON.stringify(tasks));
 
-      const loaded = await loadPlan(planPath);
+      const loaded = await loadTasks(taskPath);
       expect(loaded[0].checks![0].screenshot).toBe('https://r2.example.com/screenshot.png');
     });
 
     it('accepts video evidence field', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task with video check',
@@ -346,14 +346,14 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await writeFile(planPath, JSON.stringify(plan));
+      await writeFile(taskPath, JSON.stringify(tasks));
 
-      const loaded = await loadPlan(planPath);
+      const loaded = await loadTasks(taskPath);
       expect(loaded[0].checks![0].video).toBe('https://r2.example.com/flow.mp4');
     });
 
     it('rejects non-string evidence fields', async () => {
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: '1',
           description: 'Task',
@@ -361,7 +361,7 @@ describe('plan.ts', () => {
           passes: false,
         },
       ]));
-      await expect(loadPlan(planPath)).rejects.toThrow(
+      await expect(loadTasks(taskPath)).rejects.toThrow(
         'Task.checks[0].screenshot must be a string if present'
       );
     });
@@ -369,7 +369,7 @@ describe('plan.ts', () => {
 
   describe('review task fields', () => {
     it('accepts valid review task with reviewType and reviewGeneration', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: 'review-product-g1',
           description: 'product review',
@@ -378,15 +378,15 @@ describe('plan.ts', () => {
           reviewGeneration: 1,
         },
       ];
-      await writeFile(planPath, JSON.stringify(plan));
+      await writeFile(taskPath, JSON.stringify(tasks));
 
-      const loaded = await loadPlan(planPath);
+      const loaded = await loadTasks(taskPath);
       expect(loaded[0].reviewType).toBe('product');
       expect(loaded[0].reviewGeneration).toBe(1);
     });
 
     it('falls back to normal task when reviewType is invalid', async () => {
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: 'review-1',
           description: 'invalid review',
@@ -395,13 +395,13 @@ describe('plan.ts', () => {
           reviewGeneration: 1,
         },
       ]));
-      const loaded = await loadPlan(planPath);
+      const loaded = await loadTasks(taskPath);
       expect(loaded[0].reviewType).toBeUndefined();
       expect(loaded[0].reviewGeneration).toBeUndefined();
     });
 
     it('drops reviewGeneration without reviewType', async () => {
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: 'review-1',
           description: 'invalid review',
@@ -409,13 +409,13 @@ describe('plan.ts', () => {
           reviewGeneration: 1,
         },
       ]));
-      const loaded = await loadPlan(planPath);
+      const loaded = await loadTasks(taskPath);
       expect(loaded[0].reviewType).toBeUndefined();
       expect(loaded[0].reviewGeneration).toBeUndefined();
     });
 
     it('drops reviewType without reviewGeneration when id cannot infer generation', async () => {
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: 'review-1',
           description: 'invalid review',
@@ -423,13 +423,13 @@ describe('plan.ts', () => {
           reviewType: 'code',
         },
       ]));
-      const loaded = await loadPlan(planPath);
+      const loaded = await loadTasks(taskPath);
       expect(loaded[0].reviewType).toBeUndefined();
       expect(loaded[0].reviewGeneration).toBeUndefined();
     });
 
     it('infers reviewGeneration from id when reviewType exists', async () => {
-      await writeFile(planPath, JSON.stringify([
+      await writeFile(taskPath, JSON.stringify([
         {
           id: 'review-product-g9',
           description: 'product review',
@@ -437,7 +437,7 @@ describe('plan.ts', () => {
           reviewType: 'product',
         },
       ]));
-      const loaded = await loadPlan(planPath);
+      const loaded = await loadTasks(taskPath);
       expect(loaded[0].reviewType).toBe('product');
       expect(loaded[0].reviewGeneration).toBe(9);
     });
@@ -445,12 +445,12 @@ describe('plan.ts', () => {
 
   describe('createMissingReviewTasks', () => {
     it('creates product/code review tasks when implementation tasks are all done', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'impl 1', passes: true },
         { id: '2', description: 'impl 2', passes: true },
       ];
 
-      const result = createMissingReviewTasks(plan);
+      const result = createMissingReviewTasks(tasks);
       expect(result).toHaveLength(2);
       expect(result.map((t) => t.reviewType)).toEqual(['product', 'code']);
       expect(result.map((t) => t.reviewGeneration)).toEqual([2, 2]);
@@ -458,16 +458,16 @@ describe('plan.ts', () => {
     });
 
     it('returns empty when implementation tasks are not all done', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'impl 1', passes: true },
         { id: '2', description: 'impl 2', passes: false },
       ];
 
-      expect(createMissingReviewTasks(plan)).toEqual([]);
+      expect(createMissingReviewTasks(tasks)).toEqual([]);
     });
 
     it('returns empty when current generation already has both review tasks', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'impl 1', passes: true },
         { id: '2', description: 'impl 2', passes: true },
         {
@@ -486,11 +486,11 @@ describe('plan.ts', () => {
         },
       ];
 
-      expect(createMissingReviewTasks(plan)).toEqual([]);
+      expect(createMissingReviewTasks(tasks)).toEqual([]);
     });
 
     it('creates only missing review type for current generation', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'impl 1', passes: true },
         {
           id: 'review-product-g1',
@@ -501,14 +501,14 @@ describe('plan.ts', () => {
         },
       ];
 
-      const result = createMissingReviewTasks(plan);
+      const result = createMissingReviewTasks(tasks);
       expect(result).toHaveLength(1);
       expect(result[0].reviewType).toBe('code');
       expect(result[0].reviewGeneration).toBe(1);
     });
 
     it('triggers next generation review when follow-up implementation tasks are added and done', () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         { id: '1', description: 'impl 1', passes: true },
         {
           id: 'review-product-g1',
@@ -527,7 +527,7 @@ describe('plan.ts', () => {
         { id: '1-followup-1', description: 'follow-up impl', passes: true },
       ];
 
-      const result = createMissingReviewTasks(plan);
+      const result = createMissingReviewTasks(tasks);
       expect(result).toHaveLength(2);
       expect(result.map((t) => t.reviewGeneration)).toEqual([2, 2]);
     });
@@ -535,7 +535,7 @@ describe('plan.ts', () => {
 
   describe('updateCheckStatus', () => {
     it('updates specific check passed status', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -546,15 +546,15 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      const updated = await updateCheckStatus(planPath, '1', 0, true);
+      const updated = await updateCheckStatus(taskPath, '1', 0, true);
       expect(updated[0].checks![0].passed).toBe(true);
       expect(updated[0].checks![1].passed).toBe(false);
     });
 
     it('throws error when task not found', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -562,30 +562,30 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      await expect(updateCheckStatus(planPath, '999', 0, true)).rejects.toThrow(
+      await expect(updateCheckStatus(taskPath, '999', 0, true)).rejects.toThrow(
         'Task not found: 999'
       );
     });
 
     it('throws error when task has no checks', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      await expect(updateCheckStatus(planPath, '1', 0, true)).rejects.toThrow(
+      await expect(updateCheckStatus(taskPath, '1', 0, true)).rejects.toThrow(
         'Task 1 has no checks'
       );
     });
 
     it('throws error when check index out of range', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -593,9 +593,9 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      await expect(updateCheckStatus(planPath, '1', 5, true)).rejects.toThrow(
+      await expect(updateCheckStatus(taskPath, '1', 5, true)).rejects.toThrow(
         'Check index 5 out of range for task 1'
       );
     });
@@ -603,7 +603,7 @@ describe('plan.ts', () => {
 
   describe('isAllChecksPassed', () => {
     it('returns true when all checks passed', () => {
-      const task: PlanTask = {
+      const task: TaskEntry = {
         id: '1',
         description: 'Task',
         checks: [
@@ -617,7 +617,7 @@ describe('plan.ts', () => {
     });
 
     it('returns false when any check not passed', () => {
-      const task: PlanTask = {
+      const task: TaskEntry = {
         id: '1',
         description: 'Task',
         checks: [
@@ -631,7 +631,7 @@ describe('plan.ts', () => {
     });
 
     it('returns true when no checks defined', () => {
-      const task: PlanTask = {
+      const task: TaskEntry = {
         id: '1',
         description: 'Task',
         passes: false,
@@ -641,7 +641,7 @@ describe('plan.ts', () => {
     });
 
     it('returns true when checks array is empty', () => {
-      const task: PlanTask = {
+      const task: TaskEntry = {
         id: '1',
         description: 'Task',
         checks: [],
@@ -694,7 +694,7 @@ describe('plan.ts', () => {
 
   describe('updateCheckWithEvidence', () => {
     it('updates check with screenshot evidence', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -704,9 +704,9 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      const updated = await updateCheckWithEvidence(planPath, '1', 0, {
+      const updated = await updateCheckWithEvidence(taskPath, '1', 0, {
         screenshot: 'https://r2.example.com/screenshot.png',
       });
       expect(updated[0].checks![0].screenshot).toBe('https://r2.example.com/screenshot.png');
@@ -714,7 +714,7 @@ describe('plan.ts', () => {
     });
 
     it('updates check with video evidence', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -724,9 +724,9 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      const updated = await updateCheckWithEvidence(planPath, '1', 0, {
+      const updated = await updateCheckWithEvidence(taskPath, '1', 0, {
         video: 'https://r2.example.com/flow.mp4',
       });
       expect(updated[0].checks![0].video).toBe('https://r2.example.com/flow.mp4');
@@ -734,7 +734,7 @@ describe('plan.ts', () => {
     });
 
     it('throws error when task not found', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -742,15 +742,15 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
       await expect(
-        updateCheckWithEvidence(planPath, '999', 0, { screenshot: 'url' })
+        updateCheckWithEvidence(taskPath, '999', 0, { screenshot: 'url' })
       ).rejects.toThrow('Task not found: 999');
     });
 
     it('throws error when check index out of range', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -758,17 +758,17 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
       await expect(
-        updateCheckWithEvidence(planPath, '1', 5, { screenshot: 'url' })
+        updateCheckWithEvidence(taskPath, '1', 5, { screenshot: 'url' })
       ).rejects.toThrow('Check index 5 out of range for task 1');
     });
   });
 
   describe('syncAutoChecksFromVerification', () => {
     it('updates auto checks from verification and keeps manual/browser untouched', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -783,9 +783,9 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      const updated = await syncAutoChecksFromVerification(planPath, '1', {
+      const updated = await syncAutoChecksFromVerification(taskPath, '1', {
         testsRun: true,
         testsFailed: 0,
         lintPassed: true,
@@ -801,7 +801,7 @@ describe('plan.ts', () => {
     });
 
     it('uses granular jest/rspec results when provided', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -812,9 +812,9 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      const updated = await syncAutoChecksFromVerification(planPath, '1', {
+      const updated = await syncAutoChecksFromVerification(taskPath, '1', {
         testsRun: true,
         testsFailed: 0,
         jestPassed: true,
@@ -828,7 +828,7 @@ describe('plan.ts', () => {
     });
 
     it('treats missing counterpart as not-run when only one granular result is provided', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -839,9 +839,9 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      const updated = await syncAutoChecksFromVerification(planPath, '1', {
+      const updated = await syncAutoChecksFromVerification(taskPath, '1', {
         testsRun: true,
         testsFailed: 0,
         jestPassed: true,
@@ -854,7 +854,7 @@ describe('plan.ts', () => {
     });
 
     it('sets auto:jest/auto:rspec to false when tests are not run', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -865,9 +865,9 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
-      const updated = await syncAutoChecksFromVerification(planPath, '1', {
+      const updated = await syncAutoChecksFromVerification(taskPath, '1', {
         testsRun: false,
         testsFailed: 0,
         lintPassed: true,
@@ -879,7 +879,7 @@ describe('plan.ts', () => {
     });
 
     it('throws error when task not found', async () => {
-      const plan: Plan = [
+      const tasks: TaskList = [
         {
           id: '1',
           description: 'Task',
@@ -887,10 +887,10 @@ describe('plan.ts', () => {
           passes: false,
         },
       ];
-      await savePlan(planPath, plan);
+      await saveTasks(taskPath, tasks);
 
       await expect(
-        syncAutoChecksFromVerification(planPath, '999', {
+        syncAutoChecksFromVerification(taskPath, '999', {
           testsRun: true,
           testsFailed: 0,
           lintPassed: true,

@@ -87,9 +87,9 @@ export interface VerificationSummary {
 }
 
 /**
- * PLAN.json の個別タスク
+ * TASK.json の個別タスク
  */
-export interface PlanTask {
+export interface TaskEntry {
   /** タスクID（例: "1", "review-1"） */
   id: string;
   /** タスクの説明 */
@@ -107,31 +107,31 @@ export interface PlanTask {
 }
 
 /**
- * PLAN.json 全体の型
+ * TASK.json 全体の型
  */
-export type Plan = PlanTask[];
+export type TaskList = TaskEntry[];
 
 /**
- * PLAN.json が存在するか確認
+ * TASK.json が存在するか確認
  */
-export function planExists(path: string): boolean {
+export function taskFileExists(path: string): boolean {
   return existsSync(path);
 }
 
 /**
- * PLAN.json を読み込んでパースする
+ * TASK.json を読み込んでパースする
  * @throws {Error} ファイルが存在しない場合、またはパースに失敗した場合
  */
-export async function loadPlan(path: string): Promise<Plan> {
-  if (!planExists(path)) {
-    throw new Error(`PLAN.json not found: ${path}`);
+export async function loadTasks(path: string): Promise<TaskList> {
+  if (!taskFileExists(path)) {
+    throw new Error(`TASK.json not found: ${path}`);
   }
 
   const content = await readFile(path, 'utf-8');
   const parsed: unknown = JSON.parse(content);
 
   if (!Array.isArray(parsed)) {
-    throw new Error('PLAN.json must be an array');
+    throw new Error('TASK.json must be an array');
   }
 
   // 各タスクを検証
@@ -139,13 +139,13 @@ export async function loadPlan(path: string): Promise<Plan> {
     validateTask(task);
   }
 
-  return parsed as Plan;
+  return parsed as TaskList;
 }
 
 /**
- * PLAN.json を保存する
+ * TASK.json を保存する
  */
-export async function savePlan(path: string, plan: Plan): Promise<void> {
+export async function saveTasks(path: string, plan: TaskList): Promise<void> {
   const content = JSON.stringify(plan, null, 2) + '\n';
   await writeFile(path, content, 'utf-8');
 }
@@ -157,8 +157,8 @@ export async function updateTaskStatus(
   path: string,
   taskId: string,
   passes: boolean
-): Promise<Plan> {
-  const plan = await loadPlan(path);
+): Promise<TaskList> {
+  const plan = await loadTasks(path);
   const task = plan.find((t) => t.id === taskId);
 
   if (!task) {
@@ -166,7 +166,7 @@ export async function updateTaskStatus(
   }
 
   task.passes = passes;
-  await savePlan(path, plan);
+  await saveTasks(path, plan);
   return plan;
 }
 
@@ -174,14 +174,14 @@ export async function updateTaskStatus(
  * 未完了タスクを取得する（passes: false）
  * 元の順序を維持（先頭から順に実行）
  */
-export function getPendingTasks(plan: Plan): PlanTask[] {
+export function getPendingTasks(plan: TaskList): TaskEntry[] {
   return plan.filter((task) => !task.passes);
 }
 
 /**
  * 次に実行すべきタスクを取得する
  */
-export function getNextTask(plan: Plan): PlanTask | undefined {
+export function getNextTask(plan: TaskList): TaskEntry | undefined {
   const pending = getPendingTasks(plan);
   return pending[0];
 }
@@ -189,24 +189,24 @@ export function getNextTask(plan: Plan): PlanTask | undefined {
 /**
  * すべてのタスクが完了しているか確認
  */
-export function isAllTasksCompleted(plan: Plan): boolean {
+export function isAllTasksCompleted(plan: TaskList): boolean {
   return plan.every((task) => task.passes);
 }
 
 /**
  * 新しいタスクを追加する
  */
-export async function addTasks(path: string, tasks: PlanTask[]): Promise<Plan> {
-  const plan = await loadPlan(path);
+export async function addTasks(path: string, tasks: TaskEntry[]): Promise<TaskList> {
+  const plan = await loadTasks(path);
   plan.push(...tasks);
-  await savePlan(path, plan);
+  await saveTasks(path, plan);
   return plan;
 }
 
 /**
  * タスクオブジェクトを検証する
  */
-function validateTask(task: unknown): asserts task is PlanTask {
+function validateTask(task: unknown): asserts task is TaskEntry {
   if (typeof task !== 'object' || task === null) {
     throw new Error('Task must be an object');
   }
@@ -298,21 +298,21 @@ function validateTask(task: unknown): asserts task is PlanTask {
 /**
  * レビュータスクかどうか
  */
-export function isReviewTask(task: PlanTask): boolean {
+export function isReviewTask(task: TaskEntry): boolean {
   return task.reviewType !== undefined;
 }
 
 /**
  * 実装タスク（reviewType 未指定）を取得
  */
-export function getImplementationTasks(plan: Plan): PlanTask[] {
+export function getImplementationTasks(plan: TaskList): TaskEntry[] {
   return plan.filter((task) => !isReviewTask(task));
 }
 
 /**
  * 現在のレビュー世代（実装タスク数）を取得
  */
-export function getCurrentReviewGeneration(plan: Plan): number {
+export function getCurrentReviewGeneration(plan: TaskList): number {
   return getImplementationTasks(plan).length;
 }
 
@@ -324,7 +324,7 @@ export function getCurrentReviewGeneration(plan: Plan): number {
  * - 実装タスクが全て完了している
  * - 当該 generation に reviewType=product/code の両方が存在しない
  */
-export function createMissingReviewTasks(plan: Plan): PlanTask[] {
+export function createMissingReviewTasks(plan: TaskList): TaskEntry[] {
   const implementationTasks = getImplementationTasks(plan);
   if (implementationTasks.length === 0) {
     return [];
@@ -357,7 +357,7 @@ function createReviewTask(
   existingIds: Set<string>,
   generation: number,
   type: ReviewType
-): PlanTask {
+): TaskEntry {
   const baseId = `review-${type}-g${generation}`;
   let id = baseId;
   let suffix = 2;
@@ -389,8 +389,8 @@ export async function updateCheckStatus(
   taskId: string,
   checkIndex: number,
   passed: boolean
-): Promise<Plan> {
-  const plan = await loadPlan(path);
+): Promise<TaskList> {
+  const plan = await loadTasks(path);
   const task = plan.find((t) => t.id === taskId);
 
   if (!task) {
@@ -406,14 +406,14 @@ export async function updateCheckStatus(
   }
 
   task.checks[checkIndex].passed = passed;
-  await savePlan(path, plan);
+  await saveTasks(path, plan);
   return plan;
 }
 
 /**
  * タスクのすべてのチェック項目が完了しているか確認
  */
-export function isAllChecksPassed(task: PlanTask): boolean {
+export function isAllChecksPassed(task: TaskEntry): boolean {
   if (!task.checks || task.checks.length === 0) {
     return true;
   }
@@ -438,8 +438,8 @@ export async function updateCheckWithEvidence(
   taskId: string,
   checkIndex: number,
   evidence: { screenshot?: string; video?: string }
-): Promise<Plan> {
-  const plan = await loadPlan(path);
+): Promise<TaskList> {
+  const plan = await loadTasks(path);
   const task = plan.find((t) => t.id === taskId);
 
   if (!task) {
@@ -463,7 +463,7 @@ export async function updateCheckWithEvidence(
   }
   check.passed = true;
 
-  await savePlan(path, plan);
+  await saveTasks(path, plan);
   return plan;
 }
 
@@ -474,8 +474,8 @@ export async function syncAutoChecksFromVerification(
   path: string,
   taskId: string,
   verification: VerificationSummary
-): Promise<Plan> {
-  const plan = await loadPlan(path);
+): Promise<TaskList> {
+  const plan = await loadTasks(path);
   const task = plan.find((t) => t.id === taskId);
 
   if (!task) {
@@ -493,7 +493,7 @@ export async function syncAutoChecksFromVerification(
     }
   }
 
-  await savePlan(path, plan);
+  await saveTasks(path, plan);
   return plan;
 }
 
@@ -617,32 +617,32 @@ function inferReviewGenerationFromTaskId(taskId: unknown): number | undefined {
 }
 
 /**
- * PLAN修正の記録
+ * TASK修正の記録
  */
-export interface PlanModification {
+export interface TaskModification {
   timestamp: string;
   type: 'add' | 'update' | 'delete';
   taskId: string;
   reason: string;
-  previousState?: PlanTask;
+  previousState?: TaskEntry;
 }
 
 /**
- * PLAN.json を修正し、修正履歴を記録
+ * TASK.json を修正し、修正履歴を記録
  */
-export async function modifyPlan(
+export async function modifyTasks(
   path: string,
   modification: {
     type: 'add' | 'update' | 'delete';
     taskId: string;
     reason: string;
-    task?: PlanTask;
+    task?: TaskEntry;
   }
-): Promise<{ plan: Plan; modification: PlanModification }> {
-  const plan = await loadPlan(path);
+): Promise<{ tasks: TaskList; modification: TaskModification }> {
+  const plan = await loadTasks(path);
   const timestamp = new Date().toISOString();
 
-  const record: PlanModification = {
+  const record: TaskModification = {
     timestamp,
     type: modification.type,
     taskId: modification.taskId,
@@ -680,7 +680,7 @@ export async function modifyPlan(
     }
   }
 
-  await savePlan(path, plan);
+  await saveTasks(path, plan);
 
-  return { plan, modification: record };
+  return { tasks: plan, modification: record };
 }

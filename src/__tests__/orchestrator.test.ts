@@ -1,5 +1,5 @@
 import {
-  buildFollowupPlanTasks,
+  buildFollowupTaskEntries,
   buildManagerDecisionMessage,
   buildManagerRunMessage,
   buildWorkerFinishMessage,
@@ -8,28 +8,20 @@ import {
   formatTaskLabel,
   getReviewTasksToAdd,
   resolveTaskIdByDescription,
-  resolveTaskIdForPlan,
+  resolveTaskIdForTaskList,
   resolveTaskIdWithFallback,
   shouldBlockCompletion,
   upsertLearningsSection,
 } from '../orchestrator.js';
-import type { WorkOrder } from '../state/work-order.js';
+import type { TaskEntry } from '../state/task.js';
 import type { WorkerResult, ManagerDecision } from '../agents/types.js';
 
 describe('orchestrator.ts', () => {
   describe('display message helpers', () => {
-    const baseWorkOrder: WorkOrder = {
-      iteration: 1,
-      taskId: 'task-1',
+    const baseTask: TaskEntry = {
+      id: 'task-1',
       description: 'Implement login flow',
-      instructions: [],
-      context: {
-        relatedFiles: [],
-        patterns: null,
-        gotchas: null,
-      },
-      successCriteria: [],
-      createdAt: '2026-02-18T00:00:00Z',
+      passes: false,
     };
 
     function createWorkerResult(
@@ -102,7 +94,7 @@ describe('orchestrator.ts', () => {
     it('builds manager decision messages for all decision types', () => {
       const dispatchDecision: ManagerDecision = {
         type: 'dispatch_task',
-        workOrder: baseWorkOrder,
+        taskId: 'task-1',
       };
       const escalateDecision: ManagerDecision = {
         type: 'escalate',
@@ -129,7 +121,7 @@ describe('orchestrator.ts', () => {
         feedback: 'needs more',
       };
 
-      expect(buildManagerDecisionMessage(dispatchDecision)).toContain(
+      expect(buildManagerDecisionMessage(dispatchDecision, baseTask.description)).toContain(
         'Manager 決定: [task-1] Implement login flow を Worker に指示'
       );
       expect(buildManagerDecisionMessage(escalateDecision)).toBe(
@@ -147,14 +139,14 @@ describe('orchestrator.ts', () => {
     });
 
     it('builds worker run message with task label', () => {
-      expect(buildWorkerRunMessage(baseWorkOrder)).toBe(
+      expect(buildWorkerRunMessage(baseTask)).toBe(
         'Worker 実行中: [task-1] Implement login flow...'
       );
     });
 
     it('builds worker finish message with summary fallback', () => {
       const result = createWorkerResult('failed', 'FAILED', '');
-      expect(buildWorkerFinishMessage(baseWorkOrder, result)).toBe(
+      expect(buildWorkerFinishMessage(baseTask, result)).toBe(
         'Worker 完了: [task-1] Implement login flow FAILED - summary unavailable'
       );
     });
@@ -165,14 +157,14 @@ describe('orchestrator.ts', () => {
       const blockedResult = createWorkerResult('blocked', 'BLOCKED', 'need credentials');
       const failedResult = createWorkerResult('failed', 'FAILED', 'test failed');
 
-      expect(buildWorkerFinishMessage(baseWorkOrder, successResult)).toContain('SUCCESS - done');
-      expect(buildWorkerFinishMessage(baseWorkOrder, partialResult)).toContain(
+      expect(buildWorkerFinishMessage(baseTask, successResult)).toContain('SUCCESS - done');
+      expect(buildWorkerFinishMessage(baseTask, partialResult)).toContain(
         'PARTIAL - partial done'
       );
-      expect(buildWorkerFinishMessage(baseWorkOrder, blockedResult)).toContain(
+      expect(buildWorkerFinishMessage(baseTask, blockedResult)).toContain(
         'BLOCKED - need credentials'
       );
-      expect(buildWorkerFinishMessage(baseWorkOrder, failedResult)).toContain(
+      expect(buildWorkerFinishMessage(baseTask, failedResult)).toContain(
         'FAILED - test failed'
       );
     });
@@ -241,9 +233,9 @@ describe('orchestrator.ts', () => {
     });
   });
 
-  describe('buildFollowupPlanTasks', () => {
+  describe('buildFollowupTaskEntries', () => {
     it('returns empty array when discovered tasks are empty', () => {
-      const result = buildFollowupPlanTasks([], 'task-1', []);
+      const result = buildFollowupTaskEntries([], 'task-1', []);
       expect(result).toEqual([]);
     });
 
@@ -253,7 +245,7 @@ describe('orchestrator.ts', () => {
         { id: 'task-1-followup-1', description: 'existing follow-up', passes: false },
       ];
 
-      const result = buildFollowupPlanTasks(plan, 'task-1', [
+      const result = buildFollowupTaskEntries(plan, 'task-1', [
         {
           description: '重大な決済エラー',
           priority: 'high',
@@ -326,9 +318,9 @@ describe('orchestrator.ts', () => {
     });
   });
 
-  describe('resolveTaskIdForPlan', () => {
+  describe('resolveTaskIdForTaskList', () => {
     it('returns exact match task id as-is', () => {
-      const result = resolveTaskIdForPlan(
+      const result = resolveTaskIdForTaskList(
         [{ id: 'task-10', description: 'impl', passes: false }],
         'task-10'
       );
@@ -336,7 +328,7 @@ describe('orchestrator.ts', () => {
     });
 
     it('maps numeric id to task-prefixed id when uniquely matched', () => {
-      const result = resolveTaskIdForPlan(
+      const result = resolveTaskIdForTaskList(
         [{ id: 'task-10', description: 'impl', passes: false }],
         '10'
       );
@@ -344,7 +336,7 @@ describe('orchestrator.ts', () => {
     });
 
     it('maps task-prefixed id to numeric id when uniquely matched', () => {
-      const result = resolveTaskIdForPlan(
+      const result = resolveTaskIdForTaskList(
         [{ id: '10', description: 'impl', passes: false }],
         'task-10'
       );
@@ -352,7 +344,7 @@ describe('orchestrator.ts', () => {
     });
 
     it('keeps original id when mapping is ambiguous', () => {
-      const result = resolveTaskIdForPlan(
+      const result = resolveTaskIdForTaskList(
         [
           { id: '10', description: 'impl', passes: false },
           { id: 'task-10', description: 'impl prefixed', passes: false },
@@ -363,7 +355,7 @@ describe('orchestrator.ts', () => {
     });
 
     it('keeps original id when no match is found', () => {
-      const result = resolveTaskIdForPlan(
+      const result = resolveTaskIdForTaskList(
         [{ id: 'task-11', description: 'impl', passes: false }],
         '10'
       );
@@ -371,7 +363,7 @@ describe('orchestrator.ts', () => {
     });
 
     it('maps numeric id to zero-padded task id when uniquely matched', () => {
-      const result = resolveTaskIdForPlan(
+      const result = resolveTaskIdForTaskList(
         [{ id: 'task-013', description: 'impl', passes: false }],
         '13'
       );

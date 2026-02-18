@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { CodexEngine, type CodexEngineOptions } from '../engines/codex.js';
 import { loadPromptRaw } from '../prompts/loader.js';
-import type { WorkOrder } from '../state/work-order.js';
+import type { TaskEntry } from '../state/task.js';
 import type { WorkReport } from '../state/work-report.js';
 import type { Agent, WorkerInput, WorkerResult, AgentMode } from './types.js';
 
@@ -44,18 +44,28 @@ export class WorkerAgent implements Agent {
    */
   private async buildPrompt(input: WorkerInput): Promise<string> {
     const template = await loadPromptRaw('worker');
-    const { workOrder, codebasePatterns, prd } = input;
+    const { iteration, task, codebasePatterns, prd } = input;
 
     // プレースホルダーを置換
     let prompt = template
-      .replace('{ITERATION}', String(workOrder.iteration))
-      .replace('{TASK_ID}', workOrder.taskId)
-      .replace('{DESCRIPTION}', workOrder.description);
+      .replace('{ITERATION}', String(iteration))
+      .replace('{TASK_ID}', task.id)
+      .replace('{DESCRIPTION}', task.description);
 
-    // WORK_ORDER セクション
+    // TASK コンテキスト
     prompt = prompt.replace(
-      '{WORK_ORDER_JSON}',
-      JSON.stringify(workOrder, null, 2)
+      '{TASK_CONTEXT_JSON}',
+      JSON.stringify(
+        {
+          taskId: task.id,
+          description: task.description,
+          checks: task.checks ?? [],
+          reviewType: task.reviewType ?? null,
+          reviewGeneration: task.reviewGeneration ?? null,
+        },
+        null,
+        2
+      )
     );
 
     // Codebase Patterns セクション
@@ -73,17 +83,18 @@ export class WorkerAgent implements Agent {
     }
 
     // タスクモードガイド（実装 / product review / code review）
-    prompt = prompt.replace('{TASK_MODE_GUIDE}', this.buildTaskModeGuide(workOrder.taskId));
+    prompt = prompt.replace('{TASK_MODE_GUIDE}', this.buildTaskModeGuide(task));
 
     return prompt;
   }
 
-  private buildTaskModeGuide(taskId: string): string {
-    const mode = this.detectReviewMode(taskId);
+  private buildTaskModeGuide(task: Pick<TaskEntry, 'id' | 'reviewType'>): string {
+    const mode = this.detectReviewMode(task);
     if (mode === 'product') {
       return [
         '- このタスクは **Product Review** です。実装はせず、PRD.md と現在実装の整合性を監査してください。',
         '- PRD の各要件について「満たしている根拠（ファイル/関数/テスト）」を確認してください。',
+        '- 通常ケースだけでなく、失敗しやすい条件や境界条件を想定した確認を含めてください。',
         '- 要件未達や仕様乖離は `discoveredTasks` に追加し、再現条件と影響を記載してください。',
         '- 指摘があってもレビュー実行自体が完了していれば `status` は `SUCCESS` にしてください。',
       ].join('\n');
@@ -93,16 +104,21 @@ export class WorkerAgent implements Agent {
       return [
         '- このタスクは **Code Review** です。実装はせず、コード観点の監査を実施してください。',
         '- レビュー範囲は **Changed files中心**（`git diff` 対象 + 必要な関連箇所）で確認してください。',
+        '- 通常ケースだけでなく、失敗しやすい条件や境界条件を想定した確認を含めてください。',
         '- P1/P2 相当の問題（バグ、セキュリティ、重大ロジック不整合、保守性の重大劣化）を優先して検出してください。',
         '- 指摘事項は `discoveredTasks` に追加し、優先度と根拠を明記してください。',
         '- 指摘があってもレビュー実行自体が完了していれば `status` は `SUCCESS` にしてください。',
       ].join('\n');
     }
 
-    return '- このタスクは通常の実装タスクです。WORK_ORDER に従って実装・検証・報告を行ってください。';
+    return '- このタスクは通常の実装タスクです。TASK.json の目的と checks を満たすように実装・検証・報告を行ってください。';
   }
 
-  private detectReviewMode(taskId: string): 'product' | 'code' | null {
+  private detectReviewMode(task: Pick<TaskEntry, 'id' | 'reviewType'>): 'product' | 'code' | null {
+    if (task.reviewType === 'product' || task.reviewType === 'code') {
+      return task.reviewType;
+    }
+    const taskId = task.id;
     if (taskId.startsWith('review-product-g')) {
       return 'product';
     }
@@ -129,13 +145,13 @@ export class WorkerAgent implements Agent {
 
     // 実行ログをファイルに保存
     const logFilePath = await this.saveExecutionLog(
-      input.workOrder.iteration,
-      input.workOrder.taskId,
+      input.iteration,
+      input.task.id,
       result.output,
       result.error
     );
 
-    const report = this.parseWorkReport(input.workOrder, result.output, result.success);
+    const report = this.parseWorkReport(input.iteration, input.task, result.output, result.success);
     report.logFilePath = logFilePath;
 
     if (report.status === 'SUCCESS') {
@@ -181,7 +197,8 @@ ${error ? `=== Error ===\n${error}` : ''}
    * Codex の出力から WorkReport を生成する
    */
   private parseWorkReport(
-    workOrder: WorkOrder,
+    iteration: number,
+    task: Pick<TaskEntry, 'id' | 'checks'>,
     output: string,
     engineSuccess: boolean
   ): WorkReport {
@@ -189,8 +206,8 @@ ${error ? `=== Error ===\n${error}` : ''}
 
     // デフォルトの WorkReport
     const report: WorkReport = {
-      iteration: workOrder.iteration,
-      taskId: workOrder.taskId,
+      iteration,
+      taskId: task.id,
       status: engineSuccess ? 'SUCCESS' : 'FAILED',
       summary: '',
       filesChanged: [],
@@ -255,8 +272,11 @@ ${error ? `=== Error ===\n${error}` : ''}
     }
 
     // 成功基準の結果を生成（未設定の場合）
-    if (report.successCriteriaResults.length === 0 && workOrder.successCriteria) {
-      report.successCriteriaResults = workOrder.successCriteria.map((criterion) => ({
+    const criteriaFromChecks = (task.checks ?? [])
+      .map((check) => check.text.trim())
+      .filter((text) => text.length > 0);
+    if (report.successCriteriaResults.length === 0 && criteriaFromChecks.length > 0) {
+      report.successCriteriaResults = criteriaFromChecks.map((criterion) => ({
         criterion,
         passed: report.status === 'SUCCESS',
       }));

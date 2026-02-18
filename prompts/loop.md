@@ -1,14 +1,14 @@
 ## Melos 統一ループ - イテレーション {ITERATION} / {MAX_ITERATIONS}
 
 **PRD**: @PRD.md
-**Plan file**: @{PLAN_FILE}
+**Task file**: @{TASK_FILE}
 **Progress file**: @{PROGRESS_FILE}
 
 ---
 
-## Plan File Format
+## Task File Format
 
-プランファイルはJSON形式で `passes` フィールドと `checks` フィールドを持つ:
+タスクファイルはJSON形式で `passes` フィールドと `checks` フィールドを持つ:
 
 ```json
 [
@@ -118,7 +118,7 @@
    - 検証完了した項目は `passed: true` に更新
    - 全チェック完了後に `passes: true` に設定
 
-4. **Update plan file**: `passes: true` に設定
+4. **Update task file**: `passes: true` に設定
 
 5. **Record in {PROGRESS_FILE}**: 何をしたか、重要な判断
 
