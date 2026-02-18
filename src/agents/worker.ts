@@ -121,7 +121,7 @@ export class WorkerAgent implements Agent {
     const options: CodexEngineOptions = {
       cwd: this.config.cwd,
       model: this.config.model,
-      reasoningEffort: this.config.reasoningEffort || 'high',
+      reasoningEffort: this.config.reasoningEffort || 'medium',
       execMode: true,
     };
 

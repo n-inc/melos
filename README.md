@@ -61,7 +61,7 @@ npx melos watch
   },
   "worker": {
     "model": "gpt-5.3-codex",
-    "effort": "high"
+    "effort": "medium"
   }
 }
 ```
@@ -91,7 +91,7 @@ Manager に Claude Sonnet、Worker に Codex を使う場合：
   },
   "worker": {
     "model": "gpt-5.3-codex",
-    "effort": "high"
+    "effort": "medium"
   }
 }
 ```

@@ -156,7 +156,7 @@ export class Orchestrator {
   private currentSpinner: Spinner | null = null;
   private static readonly DEFAULT_WORKER_MODEL = 'gpt-5.3-codex';
   private static readonly DEFAULT_MANAGER_EFFORT = 'high';
-  private static readonly DEFAULT_WORKER_EFFORT = 'high';
+  private static readonly DEFAULT_WORKER_EFFORT = 'medium';
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
