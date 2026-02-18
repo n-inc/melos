@@ -140,7 +140,8 @@ Manager は `TASK.json` を更新しながら、要件達成まで反復実行�
 - Worker が `PARTIAL` / `FAILED` / `BLOCKED` の場合は、必要に応じて `TASK.json` を調整して再実行を継続する
 - `reviewType: "product"` と `reviewType: "code"` を独立して完了管理する
 - 最終レビューでは通常ケースに加えて、失敗しやすい条件や境界条件も確認する
-- 実装・検証タスクの実行モデルは Claude を指定して扱う
+- `TASK.json` の `task.model`（`claude` / `codex`）指定がある場合は最優先で従う
+- `task.model` 未指定の実装・検証タスクは Claude を指定して扱う
 - `browser` を含む動作確認は切り出して Claude に依頼する
 - 状況に応じて `HANDOFF.md` を出力できる
 

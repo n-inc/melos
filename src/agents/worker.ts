@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { CodexEngine, type CodexEngineOptions } from '../engines/codex.js';
+import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
 import { loadPromptRaw } from '../prompts/loader.js';
 import type { TaskEntry } from '../state/task.js';
 import type { WorkReport } from '../state/work-report.js';
@@ -19,6 +20,10 @@ export interface WorkerAgentConfig {
   model?: string;
   /** 推論努力レベル */
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+  /** Claude モデル名（task.model=claude のときに使用、任意） */
+  claudeModel?: string;
+  /** Claude effort レベル（task.model=claude のときに使用、任意） */
+  claudeEffort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 /**
@@ -32,11 +37,13 @@ export class WorkerAgent implements Agent {
   readonly mode: AgentMode = 'worker';
 
   private engine: CodexEngine;
+  private claudeEngine: ClaudeEngine;
   private config: WorkerAgentConfig;
 
   constructor(config: WorkerAgentConfig) {
     this.config = config;
     this.engine = new CodexEngine();
+    this.claudeEngine = new ClaudeEngine();
   }
 
   /**
@@ -133,15 +140,12 @@ export class WorkerAgent implements Agent {
    */
   async run(input: WorkerInput): Promise<WorkerResult> {
     const prompt = await this.buildPrompt(input);
+    const taskModel = input.task.model;
+    const executeWithClaude = taskModel === 'claude';
 
-    const options: CodexEngineOptions = {
-      cwd: this.config.cwd,
-      model: this.config.model,
-      reasoningEffort: this.config.reasoningEffort || 'medium',
-      execMode: true,
-    };
-
-    const result = await this.engine.execute(prompt, options);
+    const result = executeWithClaude
+      ? await this.claudeEngine.execute(prompt, this.buildClaudeOptions())
+      : await this.engine.execute(prompt, this.buildCodexOptions());
 
     // 実行ログをファイルに保存
     const logFilePath = await this.saveExecutionLog(
@@ -307,7 +311,11 @@ ${error ? `=== Error ===\n${error}` : ''}
    * Codex が利用可能か確認する
    */
   async isAvailable(): Promise<boolean> {
-    return this.engine.isAvailable();
+    const [codexAvailable, claudeAvailable] = await Promise.all([
+      this.engine.isAvailable(),
+      this.claudeEngine.isAvailable(),
+    ]);
+    return codexAvailable || claudeAvailable;
   }
 
   /**
@@ -315,5 +323,39 @@ ${error ? `=== Error ===\n${error}` : ''}
    */
   abort(): void {
     this.engine.abort();
+    this.claudeEngine.abort();
+  }
+
+  private buildCodexOptions(): CodexEngineOptions {
+    return {
+      cwd: this.config.cwd,
+      model: this.config.model,
+      reasoningEffort: this.config.reasoningEffort || 'medium',
+      execMode: true,
+    };
+  }
+
+  private buildClaudeOptions(): ClaudeEngineOptions {
+    return {
+      cwd: this.config.cwd,
+      model: this.resolveClaudeModel(),
+      effort: this.config.claudeEffort,
+      skipPermissions: true,
+      printMode: true,
+    };
+  }
+
+  private resolveClaudeModel(): string | undefined {
+    const candidate = this.config.claudeModel;
+    if (!candidate || candidate.trim().length === 0) {
+      return undefined;
+    }
+
+    // task.model=claude 指定時に Codex 系モデル名を誤って渡さない
+    if (candidate.toLowerCase().includes('codex')) {
+      return undefined;
+    }
+
+    return candidate;
   }
 }

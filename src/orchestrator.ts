@@ -171,6 +171,8 @@ export class Orchestrator {
       promptsDir: join(config.cwd, 'prompts'),
       model: config.workerModel,
       reasoningEffort: config.workerReasoningEffort,
+      claudeModel: config.managerModel,
+      claudeEffort: config.managerEffort,
     };
     this.worker = new WorkerAgent(workerConfig);
 

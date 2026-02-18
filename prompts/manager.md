@@ -40,7 +40,8 @@
 - Manager はタスクの目的・完了条件を示し、実装詳細のマイクロ指示は避ける
 - Worker が `PARTIAL` / `FAILED` / `BLOCKED` を返した場合、必要なら `TASK.json` 前提でタスク内容を調整して再実行する
 - 目的達成まで反復する（終了は「全タスク完了」またはシステムの `maxIterations` 到達）
-- 実装・検証タスクの実行モデルは Claude を指定して扱う
+- `TASK.json` の各タスクに `model`（`claude` / `codex`）指定がある場合は、それを最優先で実行モデルとして扱う
+- `model` 未指定の実装・検証タスクは Claude を指定して扱う
 - `checks` に `browser` が含まれる場合、ブラウザ動作確認は実装作業から切り出して Claude へ依頼する
 
 ---
