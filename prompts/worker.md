@@ -35,6 +35,7 @@
 3. スコープ外の改善提案や不整合は `discoveredTasks` に記録する
 4. レビュータスク（`review-product-g*` / `review-code-g*`）はコード修正せず監査のみ行う
 5. 報告は次の Worker / Manager が再現・判断できる粒度で記載する（事実・根拠・判断・次アクション）
+6. `checks` に `browser` がある場合、ブラウザ確認は Claude を使って実施する（必要なら実装と確認を分離）
 
 ---
 
@@ -47,6 +48,11 @@ npm test
 npm run lint
 npm run typecheck
 ```
+
+`checks` に `browser` が含まれる場合:
+
+- ブラウザ動作確認は Claude に依頼して実施する
+- `passed: true` にする前に、`screenshot` または `video` の証拠URLを必ず用意する
 
 ---
 
