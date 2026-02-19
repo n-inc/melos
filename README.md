@@ -141,8 +141,9 @@ Manager は `TASK.json` を更新しながら、要件達成まで反復実行�
 - `reviewType: "product"` と `reviewType: "code"` を独立して完了管理する
 - 最終レビューでは通常ケースに加えて、失敗しやすい条件や境界条件も確認する
 - `TASK.json` の `task.model`（`claude` / `codex`）指定がある場合は最優先で従う
-- `task.model` 未指定の実装・検証タスクは Claude を指定して扱う
-- `browser` を含む動作確認は切り出して Claude に依頼する
+- `task.model` 未指定の実装・検証タスクは Codex を指定して扱う
+- フロントエンド実装（UI デザイン、スタイリング、レイアウト調整）が主目的のタスクは `task.model: "claude"` を明示する
+- `browser` を含む動作確認は実装から切り出し、`task.model: "claude"` を明示したブラウザ確認タスクとして扱う
 - 状況に応じて `HANDOFF.md` を出力できる
 
 詳細ルールは `prompts/manager.md` を参照してください。

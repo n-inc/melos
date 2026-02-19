@@ -258,4 +258,131 @@ describe('WorkerAgent', () => {
       (capturedCodexOptions as { reasoningEffort?: string }).reasoningEffort
     ).toBe('high');
   });
+
+  it('uses Claude engine for frontend design tasks when model is omitted', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: `${process.cwd()}/prompts`,
+      model: 'gpt-5.3-codex',
+      claudeModel: 'sonnet',
+      claudeEffort: 'high',
+    });
+
+    let codexExecuteCount = 0;
+    let claudeExecuteCount = 0;
+
+    (agent as unknown as {
+      engine: {
+        execute: (
+          prompt: string,
+          options?: unknown
+        ) => Promise<{ success: boolean; output: string; exitCode: number }>;
+      };
+    }).engine = {
+      execute: async () => {
+        codexExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+
+    (agent as unknown as {
+      claudeEngine: {
+        execute: (
+          prompt: string,
+          options?: unknown
+        ) => Promise<{ success: boolean; output: string; exitCode: number }>;
+      };
+    }).claudeEngine = {
+      execute: async () => {
+        claudeExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+
+    (agent as unknown as {
+      saveExecutionLog: (
+        iteration: number,
+        taskId: string,
+        output: string,
+        error?: string
+      ) => Promise<string>;
+    }).saveExecutionLog = async () => '/tmp/worker-test.log';
+
+    await agent.run({
+      iteration: 1,
+      task: {
+        id: 'task-ui-design',
+        description: 'フロントエンドのUIデザインを実装し、CSSレイアウトを調整する',
+        passes: false,
+      },
+      codebasePatterns: null,
+      prd: null,
+    });
+
+    expect(claudeExecuteCount).toBe(1);
+    expect(codexExecuteCount).toBe(0);
+  });
+
+  it('keeps Codex engine for non-frontend tasks when model is omitted', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: `${process.cwd()}/prompts`,
+      model: 'gpt-5.3-codex',
+      claudeModel: 'sonnet',
+    });
+
+    let codexExecuteCount = 0;
+    let claudeExecuteCount = 0;
+
+    (agent as unknown as {
+      engine: {
+        execute: (
+          prompt: string,
+          options?: unknown
+        ) => Promise<{ success: boolean; output: string; exitCode: number }>;
+      };
+    }).engine = {
+      execute: async () => {
+        codexExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+
+    (agent as unknown as {
+      claudeEngine: {
+        execute: (
+          prompt: string,
+          options?: unknown
+        ) => Promise<{ success: boolean; output: string; exitCode: number }>;
+      };
+    }).claudeEngine = {
+      execute: async () => {
+        claudeExecuteCount++;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+
+    (agent as unknown as {
+      saveExecutionLog: (
+        iteration: number,
+        taskId: string,
+        output: string,
+        error?: string
+      ) => Promise<string>;
+    }).saveExecutionLog = async () => '/tmp/worker-test.log';
+
+    await agent.run({
+      iteration: 1,
+      task: {
+        id: 'task-backend-api',
+        description: 'バックエンドAPIの認可ロジックを修正する',
+        passes: false,
+      },
+      codebasePatterns: null,
+      prd: null,
+    });
+
+    expect(codexExecuteCount).toBe(1);
+    expect(claudeExecuteCount).toBe(0);
+  });
 });

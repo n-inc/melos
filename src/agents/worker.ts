@@ -140,8 +140,7 @@ export class WorkerAgent implements Agent {
    */
   async run(input: WorkerInput): Promise<WorkerResult> {
     const prompt = await this.buildPrompt(input);
-    const taskModel = input.task.model;
-    const executeWithClaude = taskModel === 'claude';
+    const executeWithClaude = this.shouldExecuteWithClaude(input.task);
 
     const result = executeWithClaude
       ? await this.claudeEngine.execute(prompt, this.buildClaudeOptions())
@@ -357,5 +356,75 @@ ${error ? `=== Error ===\n${error}` : ''}
     }
 
     return candidate;
+  }
+
+  private shouldExecuteWithClaude(
+    task: Pick<TaskEntry, 'id' | 'description' | 'model' | 'checks' | 'reviewType'>
+  ): boolean {
+    if (task.model === 'claude') {
+      return true;
+    }
+    if (task.model === 'codex') {
+      return false;
+    }
+
+    // レビュータスクは通常の実装ルートに含めない
+    if (this.detectReviewMode(task) !== null) {
+      return false;
+    }
+
+    return this.isFrontendDesignTask(task);
+  }
+
+  private isFrontendDesignTask(
+    task: Pick<TaskEntry, 'description' | 'checks'>
+  ): boolean {
+    const checkTexts =
+      task.checks
+        ?.map((check) => check.text)
+        .filter((text): text is string => typeof text === 'string') ?? [];
+    const searchableText = [task.description, ...checkTexts].join('\n').toLowerCase();
+
+    const frontendKeywords = [
+      'frontend',
+      'front-end',
+      'web',
+      'ui',
+      'ux',
+      'screen',
+      'page',
+      'component',
+      'フロントエンド',
+      '画面',
+      'ページ',
+      'コンポーネント',
+      'ui/ux',
+    ];
+    const designKeywords = [
+      'design',
+      'styling',
+      'style',
+      'layout',
+      'css',
+      'scss',
+      'tailwind',
+      'theme',
+      'visual',
+      'デザイン',
+      'スタイル',
+      'レイアウト',
+      '見た目',
+      'テーマ',
+      'トークン',
+    ];
+
+    const hasFrontendSignal = frontendKeywords.some((keyword) =>
+      searchableText.includes(keyword)
+    );
+    const hasDesignSignal = designKeywords.some((keyword) =>
+      searchableText.includes(keyword)
+    );
+
+    return hasFrontendSignal && hasDesignSignal;
   }
 }

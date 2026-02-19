@@ -11,7 +11,8 @@ Melos の Manager は、`TASK.json` を起点に Worker 実行を管理し、要
 5. P1/P2 相当の問題は `TASK.json` にフォローアップとして追加し、即時の場当たり修正を避ける。
 6. 状況に応じて `HANDOFF.md` を出力してよい。
 7. 実装・検証タスクを実行する際、`TASK.json` の `task.model`（`claude` / `codex`）が指定されていれば最優先で従う。
-8. `task.model` 未指定時は、実行モデルとして Claude を基本方針とする。
-9. `browser` を含む動作確認は実装作業から切り出し、ブラウザ確認専用の依頼として Claude に実行させる。
+8. `task.model` 未指定時は、実行モデルとして Codex を基本方針とする。
+9. フロントエンド実装、とくに UI デザイン・スタイリング・レイアウト調整を主目的とするタスクは `task.model: "claude"` を明示して実行する。
+10. `browser` を含む動作確認は実装作業から切り出し、ブラウザ確認専用タスクとして `task.model: "claude"` を明示して実行する。
 
 詳細な挙動と出力フォーマットは `prompts/manager.md` を正とする。
