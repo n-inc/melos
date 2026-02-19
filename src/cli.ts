@@ -89,7 +89,7 @@ export function createProgram(): Command {
     )
     .option(
       '--reasoning-effort <level>',
-      'Codex 推論努力レベル (minimal | low | medium | high | xhigh)'
+      'Codex 推論努力レベル (minimal | low | medium | high | xhigh、デフォルト: high)'
     )
     .option(
       '--effort <level>',
@@ -127,7 +127,7 @@ export function createProgram(): Command {
     )
     .option(
       '--reasoning-effort <level>',
-      'Codex 推論努力レベル (minimal | low | medium | high | xhigh)'
+      'Codex 推論努力レベル (minimal | low | medium | high | xhigh、デフォルト: high)'
     )
     .option(
       '--effort <level>',

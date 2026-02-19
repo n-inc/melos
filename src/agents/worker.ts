@@ -329,7 +329,7 @@ ${error ? `=== Error ===\n${error}` : ''}
     return {
       cwd: this.config.cwd,
       model: this.config.model,
-      reasoningEffort: this.config.reasoningEffort || 'medium',
+      reasoningEffort: this.config.reasoningEffort || 'high',
       execMode: true,
     };
   }

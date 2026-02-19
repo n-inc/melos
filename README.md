@@ -38,7 +38,7 @@ npx melos watch
 | `--model <model>` | 共通モデル候補（`manager.*` / `worker.*` が優先） | - |
 | `--max-iterations <n>` | 最大イテレーション数（1〜1000） | `30` |
 | `--effort <level>` | Claude effort レベル（`low` / `medium` / `high` / `max`） | `max` |
-| `--reasoning-effort <level>` | Codex 推論努力レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） | - |
+| `--reasoning-effort <level>` | Codex 推論努力レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） | `high` |
 | `--thinking-budget <n>` | Claude thinking budget（旧モデル向け、1024〜31999） | - |
 | `--dry-run` | ドライラン（計画のみ、Worker 実行しない） | - |
 | `--plain` | プレーン出力モード（スピナー無効） | - |
@@ -61,7 +61,7 @@ npx melos watch
   },
   "worker": {
     "model": "gpt-5.3-codex",
-    "effort": "medium"
+    "effort": "high"
   }
 }
 ```
@@ -91,7 +91,7 @@ Manager に Claude Sonnet、Worker に Codex を使う場合：
   },
   "worker": {
     "model": "gpt-5.3-codex",
-    "effort": "medium"
+    "effort": "high"
   }
 }
 ```

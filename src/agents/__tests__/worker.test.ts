@@ -69,7 +69,7 @@ describe('WorkerAgent', () => {
     expect(prompt).toContain('P1/P2');
   });
 
-  it('uses medium as default reasoning effort when not configured', async () => {
+  it('uses high as default reasoning effort when not configured', async () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
       promptsDir: `${process.cwd()}/prompts`,
@@ -114,7 +114,7 @@ describe('WorkerAgent', () => {
 
     expect(
       (capturedOptions as { reasoningEffort?: string }).reasoningEffort
-    ).toBe('medium');
+    ).toBe('high');
   });
 
   it('uses Claude engine when task.model is claude', async () => {
