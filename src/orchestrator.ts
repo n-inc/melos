@@ -7,8 +7,10 @@ import { WorkerAgent, type WorkerAgentConfig } from './agents/worker.js';
 import type { ManagerInput, WorkerInput, ManagerDecision, WorkerResult } from './agents/types.js';
 import {
   loadTasks,
+  saveTasks,
   taskFileExists,
   addTasks,
+  createInitialReviewTasks,
   createMissingReviewTasks,
   getPendingTasks,
   isReviewTask,
@@ -24,6 +26,7 @@ import {
   saveWorkReport,
   loadWorkReport,
 } from './state/work-report.js';
+import type { ExecutionMode } from './state/progress.js';
 import {
   type Escalation,
   saveEscalation,
@@ -60,6 +63,8 @@ export interface OrchestratorConfig {
   workerModel?: string;
   /** Worker 推論努力レベル */
   workerReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+  /** 実行モード */
+  executionMode?: ExecutionMode;
   /** ドライラン（計画のみ、Worker実行しない） */
   dryRun?: boolean;
 }
@@ -256,11 +261,12 @@ export class Orchestrator {
     const managerInput: ManagerInput = {
       iteration: this.state.iteration,
       maxIterations: this.config.maxIterations,
-      tasks: this.state.tasks,
+      tasks: this.getTasksForManagerInput(),
       prd: this.state.prd,
       progress: this.state.progress,
       lastWorkReport: this.state.lastWorkReport,
       pendingEscalation: this.state.pendingEscalation,
+      executionMode: this.config.executionMode ?? 'default',
     };
 
     let decision: ManagerDecision;
@@ -497,6 +503,11 @@ export class Orchestrator {
     // 保留中のエスカレーション
     this.state.pendingEscalation = await loadEscalation(this.config.melosDir);
 
+    if (this.config.executionMode === 'review-only') {
+      await this.ensureReviewOnlyTaskPolicy();
+      await this.ensureInitialReviewTasks();
+    }
+
     await this.ensureRequiredReviewTasks();
   }
 
@@ -599,7 +610,11 @@ export class Orchestrator {
       log('CYAN', `フォローアップタスクを TASK.json に ${followupTasks.length} 件追加`);
     }
 
-    const reviewTasks = getReviewTasksToAdd(plan, !!this.state.prd);
+    const reviewTasks = getReviewTasksToAdd(
+      plan,
+      !!this.state.prd,
+      { reviewOnly: this.config.executionMode === 'review-only' }
+    );
     if (reviewTasks.length > 0) {
       plan = await addTasks(this.config.taskFile, reviewTasks);
       log('CYAN', `レビュータスクを TASK.json に ${reviewTasks.length} 件追加`);
@@ -618,16 +633,36 @@ export class Orchestrator {
     return latestPlan;
   }
 
+  private getTasksForManagerInput(): TaskList | null {
+    if (!this.state.tasks) {
+      return null;
+    }
+    if (this.config.executionMode !== 'review-only') {
+      return this.state.tasks;
+    }
+    return this.state.tasks.filter((task) => task.reviewType !== 'product');
+  }
+
   private resolveTaskForExecution(
     requestedTaskId: string,
     latestTasks: TaskList | null
   ): TaskEntry {
     const resolvedTaskId = resolveTaskIdWithFallback(latestTasks, requestedTaskId);
+    const prioritizedTaskId = this.config.executionMode === 'review-only'
+      ? getReviewOnlyPreferredTaskId(latestTasks, resolvedTaskId)
+      : resolvedTaskId;
+
     if (latestTasks) {
-      const matchedTask = latestTasks.find((task) => task.id === resolvedTaskId);
+      const matchedTask = latestTasks.find((task) => task.id === prioritizedTaskId);
       if (matchedTask) {
         if (resolvedTaskId !== requestedTaskId) {
           log('YELLOW', `taskId を補正: "${requestedTaskId}" -> "${resolvedTaskId}"`);
+        }
+        if (prioritizedTaskId !== resolvedTaskId) {
+          log(
+            'YELLOW',
+            `review-only 優先順位で taskId を補正: "${resolvedTaskId}" -> "${prioritizedTaskId}"`
+          );
         }
         return matchedTask;
       }
@@ -703,13 +738,55 @@ export class Orchestrator {
       return;
     }
 
-    const reviewTasks = getReviewTasksToAdd(this.state.tasks, !!this.state.prd);
+    const reviewTasks = getReviewTasksToAdd(
+      this.state.tasks,
+      !!this.state.prd,
+      { reviewOnly: this.config.executionMode === 'review-only' }
+    );
     if (reviewTasks.length === 0) {
       return;
     }
 
     this.state.tasks = await addTasks(this.config.taskFile, reviewTasks);
     log('CYAN', `レビュータスクを TASK.json に ${reviewTasks.length} 件追加`);
+  }
+
+  private async ensureReviewOnlyTaskPolicy(): Promise<void> {
+    if (!this.state.tasks || !taskFileExists(this.config.taskFile)) {
+      return;
+    }
+
+    const { updatedPlan, closedTaskIds } = closePendingProductReviewsForReviewOnly(this.state.tasks);
+    if (closedTaskIds.length === 0) {
+      return;
+    }
+
+    await saveTasks(this.config.taskFile, updatedPlan);
+    this.state.tasks = updatedPlan;
+    log(
+      'CYAN',
+      `review-only: Product Review タスクを ${closedTaskIds.length} 件クローズして無効化`
+    );
+  }
+
+  private async ensureInitialReviewTasks(): Promise<void> {
+    const reviewTasks = createInitialReviewTasks(
+      this.state.tasks,
+      !!this.state.prd,
+      { reviewOnly: this.config.executionMode === 'review-only' }
+    );
+    if (reviewTasks.length === 0) {
+      return;
+    }
+
+    if (taskFileExists(this.config.taskFile)) {
+      this.state.tasks = await addTasks(this.config.taskFile, reviewTasks);
+    } else {
+      await saveTasks(this.config.taskFile, reviewTasks);
+      this.state.tasks = reviewTasks;
+    }
+
+    log('CYAN', `レビュータスクを TASK.json に ${reviewTasks.length} 件追加 (review-only)`);
   }
 
   /**
@@ -1008,6 +1085,82 @@ export function resolveTaskIdByDescription(
   return null;
 }
 
+/**
+ * review-only モードでのレビュー実行優先順位を適用する
+ *
+ * ルール:
+ * - product review が指定された場合は code review を最優先で選ぶ
+ * - code review が存在しない場合は product 以外の未完了タスクへ退避する
+ * - それも無ければ product 以外の既存タスクへ退避する
+ * - 最後まで候補がない場合のみ requestedTaskId を返す
+ */
+export function getReviewOnlyPreferredTaskId(
+  plan: TaskList | null,
+  requestedTaskId: string
+): string {
+  if (!plan || plan.length === 0) {
+    return requestedTaskId;
+  }
+
+  const requestedTask = plan.find((task) => task.id === requestedTaskId);
+  if (!requestedTask || requestedTask.reviewType !== 'product') {
+    return requestedTaskId;
+  }
+
+  if (requestedTask.reviewGeneration !== undefined) {
+    const pendingSameGenerationCodeReview = plan.find(
+      (task) =>
+        !task.passes &&
+        task.reviewType === 'code' &&
+        task.reviewGeneration === requestedTask.reviewGeneration
+    );
+    if (pendingSameGenerationCodeReview) {
+      return pendingSameGenerationCodeReview.id;
+    }
+  }
+
+  const pendingCodeReview = plan.find(
+    (task) => !task.passes && task.reviewType === 'code'
+  );
+  if (pendingCodeReview) {
+    return pendingCodeReview.id;
+  }
+
+  const pendingNonProductTask = plan.find(
+    (task) => !task.passes && task.reviewType !== 'product'
+  );
+  if (pendingNonProductTask) {
+    return pendingNonProductTask.id;
+  }
+
+  const anyCodeReview = plan.find((task) => task.reviewType === 'code');
+  if (anyCodeReview) {
+    return anyCodeReview.id;
+  }
+
+  const anyNonProductTask = plan.find((task) => task.reviewType !== 'product');
+  return anyNonProductTask?.id ?? requestedTaskId;
+}
+
+export function closePendingProductReviewsForReviewOnly(plan: TaskList): {
+  updatedPlan: TaskList;
+  closedTaskIds: string[];
+} {
+  const closedTaskIds: string[] = [];
+  const updatedPlan = plan.map((task) => {
+    if (task.reviewType === 'product' && !task.passes) {
+      closedTaskIds.push(task.id);
+      return { ...task, passes: true };
+    }
+    return task;
+  });
+
+  return {
+    updatedPlan: closedTaskIds.length > 0 ? updatedPlan : plan,
+    closedTaskIds,
+  };
+}
+
 function toCanonicalTaskKey(taskId: string): string | null {
   const numericOnly = taskId.match(/^\d+$/);
   if (numericOnly) {
@@ -1034,11 +1187,21 @@ function normalizeDescription(value: string): string {
 /**
  * PRD が存在する場合に限り、不足しているレビュータスクを返す
  */
-export function getReviewTasksToAdd(plan: TaskList | null, hasPrd: boolean): TaskEntry[] {
-  if (!hasPrd || !plan) {
+export function getReviewTasksToAdd(
+  plan: TaskList | null,
+  hasPrd: boolean,
+  options?: { reviewOnly?: boolean }
+): TaskEntry[] {
+  if (!plan) {
     return [];
   }
-  return createMissingReviewTasks(plan);
+  if (!hasPrd && !options?.reviewOnly) {
+    return [];
+  }
+  return createMissingReviewTasks(plan, {
+    reviewOnly: options?.reviewOnly,
+    hasPrd,
+  });
 }
 
 /**

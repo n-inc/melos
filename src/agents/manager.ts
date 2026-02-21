@@ -29,6 +29,15 @@ export interface ManagerAgentConfig {
 /** Codex 系モデル名パターン */
 const CODEX_MODEL_PATTERN = /codex/i;
 
+const REVIEW_ONLY_INSTRUCTIONS = `### Review-Only モード固有ルール
+
+- **Product Review は行わない**: review-only では \`reviewType: "code"\` のみを対象にし、\`reviewType: "product"\` は dispatch しない
+- **「レビュー」はコードレビューのみを指す**: PRD との整合性確認や Product Review はこのモードでは実施しない
+- **実装タスクは dispatch しない**: 既存の未完了実装タスクがあっても無視し、レビュータスクまたはレビュー起因の修正タスクのみを dispatch する
+- **レビュー→修正→再レビュー**: レビューで P1/P2 が見つかった場合、Worker が discoveredTasks に報告 → それを修正タスクとして追加 → 修正後に次世代レビューへ
+- **完了条件**: レビューが CLEAN（discoveredTasks が空の SUCCESS）になったら HANDOFF.md を出力
+- **修正タスクの粒度**: P1 は個別タスク、P2 はまとめて 1 タスクにする（既存の buildFollowupTaskEntries ルールに従う）`;
+
 /**
  * Manager Agent
  *
@@ -59,6 +68,14 @@ export class ManagerAgent implements Agent {
     let prompt = template
       .replace('{ITERATION}', String(input.iteration))
       .replace('{MAX_ITERATIONS}', String(input.maxIterations));
+
+    const executionMode = input.executionMode ?? 'default';
+    prompt = prompt
+      .replace('{EXECUTION_MODE}', executionMode)
+      .replace(
+        '{MODE_INSTRUCTIONS}',
+        executionMode === 'review-only' ? REVIEW_ONLY_INSTRUCTIONS : ''
+      );
 
     // TASK セクション
     if (input.tasks) {
@@ -389,10 +406,13 @@ ${progress || '(なし)'}
 
 ## タスク分解のルール
 
-1. **論理的な完結性**: 1タスクで論理的に完結する単位
-2. **コンテキストの共有**: 関連する変更は同じタスクにまとめる
-3. **検証可能性**: タスク完了時に検証できる単位
-4. **失敗時の影響**: 失敗しても巻き戻しやすい単位
+タスクは「検証可能な最小デリバリー単位」で分解する。
+
+1. **単独検証可能**: 各タスクの checks は他タスクの完了に依存せず単独で検証できること
+2. **依存は順序で表現**: 先行タスクの成果物を前提にしてよいが、checks は自己完結させる
+3. **分割の判断**: バックエンドが単体テストで検証できるならフロント分離可。検証できない中間成果物だけのタスクは作らない
+
+各タスクには必ず具体的な checks を付与し、「このタスクだけで検証合格できるか？」を確認する。
 
 ## 出力形式
 

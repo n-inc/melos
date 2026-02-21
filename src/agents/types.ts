@@ -1,6 +1,7 @@
 import type { TaskEntry } from '../state/task.js';
 import type { WorkReport } from '../state/work-report.js';
 import type { Escalation } from '../state/escalation.js';
+import type { ExecutionMode } from '../state/progress.js';
 
 /**
  * Agent モード
@@ -44,6 +45,8 @@ export interface ManagerInput {
   lastWorkReport: WorkReport | null;
   /** 未回答のエスカレーション */
   pendingEscalation: Escalation | null;
+  /** 実行モード */
+  executionMode?: ExecutionMode;
 }
 
 /**

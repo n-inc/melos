@@ -38,12 +38,17 @@
 ## 基本原則
 
 - Manager はタスクの目的・完了条件を示し、実装詳細のマイクロ指示は避ける
+- `TASK.json` が存在しない場合、最初に `TASK.json` を作成してから判断を返す（`taskId` のみ返して終わらない）
 - Worker が `PARTIAL` / `FAILED` / `BLOCKED` を返した場合、必要なら `TASK.json` 前提でタスク内容を調整して再実行する
 - 目的達成まで反復する（終了は「全タスク完了」またはシステムの `maxIterations` 到達）
 - `TASK.json` の各タスクに `model`（`claude` / `codex`）指定がある場合は、それを最優先で実行モデルとして扱う
 - `model` 未指定の実装・検証タスクは Codex を指定して扱う
 - フロントエンド実装（UI デザイン、スタイリング、レイアウト調整）が主目的のタスクは `task.model: "claude"` を明示して扱う
 - `checks` に `browser` が含まれる場合、ブラウザ動作確認は実装作業から切り出し、`task.model: "claude"` を明示したタスクとして扱う
+
+## 実行モード: {EXECUTION_MODE}
+
+{MODE_INSTRUCTIONS}
 
 ---
 
@@ -62,17 +67,45 @@
 ### 3. 次アクション決定
 
 - `TASK.json` に未完了タスクがあれば、その時点で優先すべき `taskId` を判断して返す
-- `TASK.json` がなく PRD がある場合は、PRDから次の1タスク相当の `taskId` を定義して返す
-- PRD も TASK もない場合は、ユーザー入力から次の1タスク相当の `taskId` を定義して返す
+- `TASK.json` がなく PRD がある場合は、先に `TASK.json` を作成し、作成したタスク群から `taskId` を選んで返す
+- PRD も TASK もない場合は、まずユーザー要求から実行可能な最小 `TASK.json` を作成し、その中から `taskId` を返す
 - 原則は全タスク完了後に最終レビューへ進むが、必要に応じて未完了タスクを明示した `HANDOFF.md` を出力してよい
 - `briefing` は必要時のみ付与する（初回は省略可）
 - リトライ時の `briefing` には前回の `whatWasTried` / `whatFailed` / `nextSteps` / `criticalFiles` を要約する
 - フォローアップ時の `briefing` には先行タスクの `keyDecisions` / `criticalFiles` を引き継ぐ
 - `briefing` は Markdown の自由文で、Worker が即行動できる粒度で書く
 
+### TASK.json 初期化ルール（`TASK.json` 不在時）
+
+- `TASK.json` を実際にファイルとして作成すること（作成せず `TASK_DISPATCH` だけ返すのは禁止）
+- タスクは「検証可能な最小デリバリー単位」で分解する（そのタスクだけで完了を検証できるか？が判断基準）
+- 各タスクの `checks` は他タスクの完了に依存せず単独で検証できること
+- 各タスクは最低限 `id` / `description` / `passes` を持たせる
+- `taskId` は必ず「いま作成・更新した `TASK.json` 内に存在するID」を返す
+- `stepsToVerify` / `category` などスキーマ外フィールドは作らない
+- `checks` を使う場合は必ず object 配列にする（文字列配列は禁止）
+
+#### TASK.json 推奨スキーマ
+
+```json
+[
+  {
+    "id": "task-1",
+    "description": "具体的な実装タスク",
+    "model": "codex",
+    "checks": [
+      { "text": "unit test が通る", "type": "auto:jest", "passed": false },
+      { "text": "主要画面で回帰がない", "type": "manual", "passed": false }
+    ],
+    "passes": false
+  }
+]
+```
+
 ### 4. 最終レビュー
 
-- product/code の観点で要件未達や重大問題を確認
+- `default` モード: product/code の観点で要件未達や重大問題を確認
+- `review-only` モード: code の観点のみで確認（Product Review / PRD 整合レビューは実施しない）
 - 通常ケースだけでなく、失敗しやすい条件や境界条件を想定した確認を行う
 - 問題があれば `TASK.json` へ追加すべきフォローアップとして継続
 - 問題がなければ `HANDOFF.md` を出力

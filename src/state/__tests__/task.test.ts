@@ -14,6 +14,7 @@ import {
   isAllTasksCompleted,
   isAllChecksPassed,
   hasValidEvidence,
+  createInitialReviewTasks,
   createMissingReviewTasks,
   addTasks,
   VALID_CHECK_TYPES,
@@ -285,7 +286,7 @@ describe('task.ts', () => {
       const invalidTypeLoaded = await loadTasks(taskPath);
       expect(invalidTypeLoaded[0].checks![0].type).toBe('manual');
 
-      // Invalid: checks item missing passed
+      // Missing passed: should default to false
       await writeFile(taskPath, JSON.stringify([
         {
           id: '1',
@@ -294,9 +295,42 @@ describe('task.ts', () => {
           passes: false,
         },
       ]));
-      await expect(loadTasks(taskPath)).rejects.toThrow(
-        'Task.checks[0].passed must be a boolean'
-      );
+      const missingPassedLoaded = await loadTasks(taskPath);
+      expect(missingPassedLoaded[0].checks![0].passed).toBe(false);
+    });
+
+    it('converts legacy string checks into manual check objects', async () => {
+      await writeFile(taskPath, JSON.stringify([
+        {
+          id: '1',
+          description: 'Task',
+          checks: ['first check', 'second check'],
+          passes: false,
+        },
+      ]));
+
+      const loaded = await loadTasks(taskPath);
+      expect(loaded[0].checks).toEqual([
+        { text: 'first check', type: 'manual', passed: false },
+        { text: 'second check', type: 'manual', passed: false },
+      ]);
+    });
+
+    it('converts legacy stepsToVerify into checks when checks are missing', async () => {
+      await writeFile(taskPath, JSON.stringify([
+        {
+          id: '1',
+          description: 'Task',
+          stepsToVerify: ['step A', 'step B'],
+          passes: false,
+        },
+      ]));
+
+      const loaded = await loadTasks(taskPath);
+      expect(loaded[0].checks).toEqual([
+        { text: 'step A', type: 'manual', passed: false },
+        { text: 'step B', type: 'manual', passed: false },
+      ]);
     });
 
     it('validates all check types', () => {
@@ -443,6 +477,93 @@ describe('task.ts', () => {
     });
   });
 
+  describe('createInitialReviewTasks', () => {
+    it('creates only code review when TASK is missing and PRD is absent', () => {
+      const result = createInitialReviewTasks(null, false);
+      expect(result).toHaveLength(1);
+      expect(result[0].reviewType).toBe('code');
+      expect(result[0].reviewGeneration).toBe(1);
+    });
+
+    it('creates code and product reviews when TASK is missing and PRD exists', () => {
+      const result = createInitialReviewTasks(null, true);
+      expect(result).toHaveLength(2);
+      expect(result.map((task) => task.reviewType)).toEqual(['code', 'product']);
+      expect(result.map((task) => task.reviewGeneration)).toEqual([1, 1]);
+    });
+
+    it('creates only code review when implementation tasks are incomplete', () => {
+      const tasks: TaskList = [
+        { id: '1', description: 'impl', passes: false },
+      ];
+
+      const result = createInitialReviewTasks(tasks, true);
+      expect(result).toHaveLength(1);
+      expect(result[0].reviewType).toBe('code');
+      expect(result[0].reviewGeneration).toBe(1);
+    });
+
+    it('creates code and product reviews when implementation tasks are complete', () => {
+      const tasks: TaskList = [
+        { id: '1', description: 'impl 1', passes: true },
+        { id: '2', description: 'impl 2', passes: true },
+      ];
+
+      const result = createInitialReviewTasks(tasks, true);
+      expect(result).toHaveLength(2);
+      expect(result.map((task) => task.reviewType)).toEqual(['code', 'product']);
+      expect(result.map((task) => task.reviewGeneration)).toEqual([2, 2]);
+    });
+
+    it('does not create duplicate reviews when current generation already has them', () => {
+      const tasks: TaskList = [
+        { id: '1', description: 'impl', passes: true },
+        {
+          id: 'review-code-g1',
+          description: 'code review',
+          passes: false,
+          reviewType: 'code',
+          reviewGeneration: 1,
+        },
+        {
+          id: 'review-product-g1',
+          description: 'product review',
+          passes: false,
+          reviewType: 'product',
+          reviewGeneration: 1,
+        },
+      ];
+
+      expect(createInitialReviewTasks(tasks, true)).toEqual([]);
+    });
+
+    it('in review-only mode, recreates only code review tasks when current generation reviews are already complete', () => {
+      const tasks: TaskList = [
+        { id: '1', description: 'impl', passes: true },
+        {
+          id: 'review-code-g1',
+          description: 'code review',
+          passes: true,
+          reviewType: 'code',
+          reviewGeneration: 1,
+        },
+        {
+          id: 'review-product-g1',
+          description: 'product review',
+          passes: true,
+          reviewType: 'product',
+          reviewGeneration: 1,
+        },
+      ];
+
+      const result = createInitialReviewTasks(tasks, true, { reviewOnly: true });
+      expect(result).toHaveLength(1);
+      expect(result.map((task) => task.id)).toEqual(['review-code-g1-2']);
+      expect(result.map((task) => task.reviewType)).toEqual(['code']);
+      expect(result.map((task) => task.reviewGeneration)).toEqual([1]);
+    });
+  });
+
   describe('createMissingReviewTasks', () => {
     it('creates product/code review tasks when implementation tasks are all done', () => {
       const tasks: TaskList = [
@@ -530,6 +651,47 @@ describe('task.ts', () => {
       const result = createMissingReviewTasks(tasks);
       expect(result).toHaveLength(2);
       expect(result.map((t) => t.reviewGeneration)).toEqual([2, 2]);
+    });
+
+    it('in review-only mode, ignores pending base tasks and generates code review from completed follow-up', () => {
+      const tasks: TaskList = [
+        { id: '1', description: 'legacy impl', passes: false },
+        { id: '1-followup-1', description: 'follow-up fix', passes: true },
+      ];
+
+      const result = createMissingReviewTasks(tasks, { reviewOnly: true, hasPrd: false });
+      expect(result).toHaveLength(1);
+      expect(result[0].reviewType).toBe('code');
+      expect(result[0].reviewGeneration).toBe(2);
+    });
+
+    it('in review-only mode, creates only code review even when PRD exists', () => {
+      const tasks: TaskList = [
+        { id: '1', description: 'legacy impl', passes: false },
+        { id: '1-followup-1', description: 'follow-up fix', passes: true },
+      ];
+
+      const result = createMissingReviewTasks(tasks, { reviewOnly: true, hasPrd: true });
+      expect(result).toHaveLength(1);
+      expect(result[0].reviewType).toBe('code');
+      expect(result[0].reviewGeneration).toBe(2);
+    });
+
+    it('in review-only mode, waits until all follow-up tasks complete', () => {
+      const tasks: TaskList = [
+        { id: '1', description: 'legacy impl', passes: true },
+        { id: '1-followup-1', description: 'follow-up fix', passes: false },
+      ];
+
+      expect(createMissingReviewTasks(tasks, { reviewOnly: true })).toEqual([]);
+    });
+
+    it('in review-only mode, does not create reviews when no follow-up tasks exist', () => {
+      const tasks: TaskList = [
+        { id: '1', description: 'legacy impl', passes: true },
+      ];
+
+      expect(createMissingReviewTasks(tasks, { reviewOnly: true })).toEqual([]);
     });
   });
 

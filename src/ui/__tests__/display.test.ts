@@ -128,6 +128,11 @@ describe('display.ts', () => {
     let originalMelosSpinner: string | undefined;
     let originalMelosNoSpinner: string | undefined;
     let originalClaudeCode: string | undefined;
+    let originalCodexCi: string | undefined;
+    let originalCodexShell: string | undefined;
+    let originalCfBundleIdentifier: string | undefined;
+    let originalTerm: string | undefined;
+    const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
 
     beforeEach(() => {
       stderrOutput = [];
@@ -135,10 +140,18 @@ describe('display.ts', () => {
       originalMelosSpinner = process.env.MELOS_SPINNER;
       originalMelosNoSpinner = process.env.MELOS_NO_SPINNER;
       originalClaudeCode = process.env.CLAUDECODE;
+      originalCodexCi = process.env.CODEX_CI;
+      originalCodexShell = process.env.CODEX_SHELL;
+      originalCfBundleIdentifier = process.env.__CFBundleIdentifier;
+      originalTerm = process.env.TERM;
 
       process.env.MELOS_SPINNER = '1';
       delete process.env.MELOS_NO_SPINNER;
       delete process.env.CLAUDECODE;
+      delete process.env.CODEX_CI;
+      delete process.env.CODEX_SHELL;
+      delete process.env.__CFBundleIdentifier;
+      delete process.env.TERM;
 
       process.stderr.write = ((chunk: string) => {
         stderrOutput.push(chunk);
@@ -165,6 +178,30 @@ describe('display.ts', () => {
         delete process.env.CLAUDECODE;
       } else {
         process.env.CLAUDECODE = originalClaudeCode;
+      }
+
+      if (originalCodexCi === undefined) {
+        delete process.env.CODEX_CI;
+      } else {
+        process.env.CODEX_CI = originalCodexCi;
+      }
+
+      if (originalCodexShell === undefined) {
+        delete process.env.CODEX_SHELL;
+      } else {
+        process.env.CODEX_SHELL = originalCodexShell;
+      }
+
+      if (originalCfBundleIdentifier === undefined) {
+        delete process.env.__CFBundleIdentifier;
+      } else {
+        process.env.__CFBundleIdentifier = originalCfBundleIdentifier;
+      }
+
+      if (originalTerm === undefined) {
+        delete process.env.TERM;
+      } else {
+        process.env.TERM = originalTerm;
       }
     });
 
@@ -197,6 +234,32 @@ describe('display.ts', () => {
       const output = stderrOutput.join('');
       expect(output).toContain('✗');
       expect(output).toContain('失敗しました');
+    });
+
+    test('TERM=dumb ではスピナーを無効化して行出力にフォールバックする', () => {
+      delete process.env.MELOS_SPINNER;
+      process.env.TERM = 'dumb';
+
+      const spinner = createSpinner('処理中');
+      spinner.succeed('完了');
+
+      const output = stripAnsi(stderrOutput.join(''));
+      expect(output).toContain('処理中...');
+      expect(output).toContain('✓ 完了');
+      expect(output).not.toContain('⠋');
+    });
+
+    test('Codex環境ではスピナーを無効化して行出力にフォールバックする', () => {
+      delete process.env.MELOS_SPINNER;
+      process.env.CODEX_SHELL = '1';
+
+      const spinner = createSpinner('処理中');
+      spinner.fail('失敗');
+
+      const output = stripAnsi(stderrOutput.join(''));
+      expect(output).toContain('処理中...');
+      expect(output).toContain('✗ 失敗');
+      expect(output).not.toContain('⠋');
     });
   });
 

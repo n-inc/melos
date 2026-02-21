@@ -4,8 +4,10 @@ import {
   buildManagerRunMessage,
   buildWorkerFinishMessage,
   buildWorkerRunMessage,
+  closePendingProductReviewsForReviewOnly,
   formatLearningsForProgress,
   formatTaskLabel,
+  getReviewOnlyPreferredTaskId,
   getReviewTasksToAdd,
   resolveTaskIdByDescription,
   resolveTaskIdForTaskList,
@@ -423,6 +425,114 @@ describe('orchestrator.ts', () => {
     });
   });
 
+  describe('getReviewOnlyPreferredTaskId', () => {
+    it('prefers pending code review when product review is requested in same generation', () => {
+      const result = getReviewOnlyPreferredTaskId(
+        [
+          {
+            id: 'review-product-g6-2',
+            description: 'product review',
+            passes: false,
+            reviewType: 'product',
+            reviewGeneration: 6,
+          },
+          {
+            id: 'review-code-g6-2',
+            description: 'code review',
+            passes: false,
+            reviewType: 'code',
+            reviewGeneration: 6,
+          },
+        ],
+        'review-product-g6-2'
+      );
+      expect(result).toBe('review-code-g6-2');
+    });
+
+    it('falls back to another pending code review when same generation code review is complete', () => {
+      const result = getReviewOnlyPreferredTaskId(
+        [
+          {
+            id: 'review-product-g6-2',
+            description: 'product review',
+            passes: false,
+            reviewType: 'product',
+            reviewGeneration: 6,
+          },
+          {
+            id: 'review-code-g6-2',
+            description: 'code review',
+            passes: true,
+            reviewType: 'code',
+            reviewGeneration: 6,
+          },
+          {
+            id: 'review-code-g5-3',
+            description: 'code review old generation',
+            passes: false,
+            reviewType: 'code',
+            reviewGeneration: 5,
+          },
+        ],
+        'review-product-g6-2'
+      );
+      expect(result).toBe('review-code-g5-3');
+    });
+
+    it('falls back to pending non-product task when pending code review does not exist', () => {
+      const result = getReviewOnlyPreferredTaskId(
+        [
+          {
+            id: 'review-product-g6-2',
+            description: 'product review',
+            passes: false,
+            reviewType: 'product',
+            reviewGeneration: 6,
+          },
+          {
+            id: 'task-1-followup-1',
+            description: 'follow-up implementation',
+            passes: false,
+          },
+        ],
+        'review-product-g6-2'
+      );
+      expect(result).toBe('task-1-followup-1');
+    });
+  });
+
+  describe('closePendingProductReviewsForReviewOnly', () => {
+    it('marks only pending product review tasks as complete', () => {
+      const { updatedPlan, closedTaskIds } = closePendingProductReviewsForReviewOnly([
+        {
+          id: 'review-product-g1',
+          description: 'product review',
+          passes: false,
+          reviewType: 'product',
+          reviewGeneration: 1,
+        },
+        {
+          id: 'review-code-g1',
+          description: 'code review',
+          passes: false,
+          reviewType: 'code',
+          reviewGeneration: 1,
+        },
+        {
+          id: 'task-1-followup-1',
+          description: 'follow-up implementation',
+          passes: false,
+        },
+      ]);
+
+      expect(closedTaskIds).toEqual(['review-product-g1']);
+      const updatedProductTask = updatedPlan.find((task) => task.id === 'review-product-g1');
+      const updatedCodeTask = updatedPlan.find((task) => task.id === 'review-code-g1');
+      expect(updatedProductTask?.passes).toBe(true);
+      expect(updatedCodeTask?.passes).toBe(false);
+    });
+  });
+
   describe('getReviewTasksToAdd', () => {
     it('returns empty when PRD does not exist', () => {
       const result = getReviewTasksToAdd(
@@ -440,6 +550,21 @@ describe('orchestrator.ts', () => {
 
       expect(result).toHaveLength(2);
       expect(result.map((task) => task.reviewType)).toEqual(['product', 'code']);
+    });
+
+    it('returns code review in review-only mode without PRD when follow-up tasks are complete', () => {
+      const result = getReviewTasksToAdd(
+        [
+          { id: '1', description: 'legacy impl', passes: false },
+          { id: '1-followup-1', description: 'follow-up fix', passes: true },
+        ],
+        false,
+        { reviewOnly: true }
+      );
+
+      expect(result).toHaveLength(1);
+      expect(result[0].reviewType).toBe('code');
+      expect(result[0].reviewGeneration).toBe(2);
     });
   });
 });

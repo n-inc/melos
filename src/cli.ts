@@ -14,6 +14,7 @@ import {
   type OrchestratorConfig,
 } from './orchestrator.js';
 import { loadConfig, type MelosConfig } from './config/index.js';
+import type { ExecutionMode } from './state/progress.js';
 
 /**
  * CLI オプション
@@ -35,6 +36,8 @@ export interface CLIOptions {
   plain?: boolean;
   /** ドライラン（計画のみ、Worker実行しない） */
   dryRun?: boolean;
+  /** レビューループ専用モード */
+  reviewOnly?: boolean;
 }
 
 /** Claude 専用モデル名（Worker では無効） */
@@ -111,6 +114,10 @@ export function createProgram(): Command {
       '--dry-run',
       'ドライラン（計画のみ、Worker実行しない）'
     )
+    .option(
+      '--review-only',
+      'レビューのみモード（コードレビュー→修正のループ）'
+    )
     .helpOption('-h, --help', 'ヘルプを表示');
 
   program
@@ -148,6 +155,10 @@ export function createProgram(): Command {
     .option(
       '--dry-run',
       'ドライラン（計画のみ、Worker実行しない）'
+    )
+    .option(
+      '--review-only',
+      'レビューのみモード（コードレビュー→修正のループ）'
     )
     .action(async (options: CLIOptions) => {
       await handleCommandAction(() => executeWithOptions(options));
@@ -200,7 +211,8 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   const workerModel = resolveWorkerModel(options, fileConfig);
   const workerReasoningEffort =
     reasoningEffort ?? fileConfig.worker?.effort ?? fileConfig.worker?.reasoningEffort;
-  const maxIterations = options.maxIterations ?? fileConfig.maxIterations ?? 30;
+  const executionMode = resolveExecutionMode(options);
+  const maxIterations = resolveMaxIterations(options, fileConfig, executionMode);
   const taskFilePath = join(cwd, 'TASK.json');
   const legacyPlanPath = join(cwd, 'PLAN.json');
 
@@ -222,6 +234,7 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     managerEffort,
     workerModel,
     workerReasoningEffort,
+    executionMode,
     dryRun: options.dryRun,
   };
 
@@ -297,6 +310,21 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
       }
     }
   }
+}
+
+export function resolveExecutionMode(
+  options: Pick<CLIOptions, 'reviewOnly'>
+): ExecutionMode {
+  return options.reviewOnly ? 'review-only' : 'default';
+}
+
+export function resolveMaxIterations(
+  options: Pick<CLIOptions, 'maxIterations'>,
+  fileConfig: Pick<MelosConfig, 'maxIterations'>,
+  executionMode: ExecutionMode
+): number {
+  const modeDefaultMaxIterations = executionMode === 'review-only' ? 10 : 30;
+  return options.maxIterations ?? fileConfig.maxIterations ?? modeDefaultMaxIterations;
 }
 
 /**

@@ -55,8 +55,9 @@ const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', 
 /**
  * スピナーを有効にするかどうかを判定
  * - MELOS_NO_SPINNER=1: 強制無効
- * - CLAUDECODE=1: Claude Code環境では自動無効
  * - MELOS_SPINNER=1: 強制有効
+ * - CLAUDECODE=1 / CODEX_*: 自動無効
+ * - TERM=dumb: 自動無効（\r による同一行更新が効かないため）
  * - それ以外: TTY検出（stderr.isTTY）
  */
 function shouldEnableSpinner(): boolean {
@@ -64,14 +65,27 @@ function shouldEnableSpinner(): boolean {
   if (process.env.MELOS_NO_SPINNER === '1') {
     return false;
   }
-  // Claude Code環境では自動的に無効化（ptyを使うためisTTYでは検出できない）
-  if (process.env.CLAUDECODE === '1') {
-    return false;
-  }
   // 環境変数で明示的に有効化
   if (process.env.MELOS_SPINNER === '1') {
     return true;
   }
+
+  // Claude/Codex 環境では自動的に無効化
+  // pty経由だと isTTY が true でも \r による同一行更新が効かず、ログが増殖するため
+  if (
+    process.env.CLAUDECODE === '1' ||
+    process.env.CODEX_CI === '1' ||
+    process.env.CODEX_SHELL === '1' ||
+    process.env.__CFBundleIdentifier === 'com.openai.codex'
+  ) {
+    return false;
+  }
+
+  // dumb terminal では同一行更新が機能しないためスピナー無効
+  if ((process.env.TERM ?? '').toLowerCase() === 'dumb') {
+    return false;
+  }
+
   // TTY検出（デフォルト動作）
   return process.stderr.isTTY === true;
 }
@@ -402,19 +416,29 @@ export function createSpinner(
   // TTY時は通常のスピナー表示
   let frameIndex = 0;
   let intervalId: NodeJS.Timeout | null = null;
-  let lastLineLength = 0;
 
   const render = () => {
     const frame = SPINNER_FRAMES[frameIndex % SPINNER_FRAMES.length];
     const elapsed = formatElapsed(startTime);
-    const line = `${Colors.CYAN}${frame}${Colors.NC} ${message} ${Colors.DIM}${elapsed}${Colors.NC}`;
+    const terminalWidth =
+      process.stderr.columns ?? process.stdout.columns ?? 80;
+    const frameWidth = getDisplayWidth(frame);
+    const elapsedWidth = getDisplayWidth(elapsed);
+    const maxMessageWidth = Math.max(
+      0,
+      terminalWidth - frameWidth - elapsedWidth - 2
+    );
+    const spinnerMessage =
+      maxMessageWidth > 0 && getDisplayWidth(message) > maxMessageWidth
+        ? truncateByWidth(message, maxMessageWidth)
+        : message;
+    const spacer = spinnerMessage.length > 0 ? ' ' : '';
+    const line = `${Colors.CYAN}${frame}${Colors.NC} ${spinnerMessage}${spacer}${Colors.DIM}${elapsed}${Colors.NC}`;
 
     // 前の行をクリア
-    process.stderr.write('\r' + ' '.repeat(lastLineLength) + '\r');
+    process.stderr.write('\x1b[2K\r');
     process.stderr.write(line);
 
-    // ANSIコードを除いた実際の文字数を計算
-    lastLineLength = line.replace(/\x1b\[[0-9;]*m/g, '').length;
     frameIndex++;
   };
 
@@ -428,7 +452,7 @@ export function createSpinner(
       intervalId = null;
     }
     // 行をクリア
-    process.stderr.write('\r' + ' '.repeat(lastLineLength) + '\r');
+    process.stderr.write('\x1b[2K\r');
   };
 
   const succeed = (msg?: string) => {

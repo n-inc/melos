@@ -180,7 +180,46 @@ describe('ManagerAgent.buildPrompt', () => {
 
     expect(prompt).toContain('Iteration 3 / 42');
     expect(prompt).toContain('"id": "task-1"');
+    expect(prompt).toContain('TASK.json 初期化ルール');
     expect(prompt).not.toContain('{TASK_JSON}');
+  });
+
+  it('injects review-only execution mode instructions into manager prompt', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: `${process.cwd()}/prompts`,
+    });
+
+    const prompt = await (
+      agent as unknown as {
+        buildPrompt: (input: {
+          iteration: number;
+          maxIterations: number;
+          tasks: Array<{ id: string; description: string; passes: boolean }> | null;
+          prd: string | null;
+          progress: string | null;
+          lastWorkReport: null;
+          pendingEscalation: null;
+          executionMode?: 'default' | 'review-only';
+        }) => Promise<string>;
+      }
+    ).buildPrompt({
+      iteration: 1,
+      maxIterations: 10,
+      tasks: [{ id: 'review-code-g1', description: 'review', passes: false }],
+      prd: null,
+      progress: null,
+      lastWorkReport: null,
+      pendingEscalation: null,
+      executionMode: 'review-only',
+    });
+
+    expect(prompt).toContain('## 実行モード: review-only');
+    expect(prompt).toContain('Review-Only モード固有ルール');
+    expect(prompt).toContain('Product Review は行わない');
+    expect(prompt).toContain('「レビュー」はコードレビューのみを指す');
+    expect(prompt).not.toContain('{EXECUTION_MODE}');
+    expect(prompt).not.toContain('{MODE_INSTRUCTIONS}');
   });
 });
 

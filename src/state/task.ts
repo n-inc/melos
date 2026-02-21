@@ -221,6 +221,8 @@ function validateTask(task: unknown): asserts task is TaskEntry {
     throw new Error('Task.description must be a string');
   }
 
+  normalizeLegacyChecks(t);
+
   // checks の検証
   if (t.checks !== undefined) {
     if (!Array.isArray(t.checks)) {
@@ -237,7 +239,7 @@ function validateTask(task: unknown): asserts task is TaskEntry {
       // チェックタイプは厳密一致で落とさず、既知値へ正規化（未知値は manual にフォールバック）
       check.type = normalizeCheckType(check.type);
       if (typeof check.passed !== 'boolean') {
-        throw new Error(`Task.checks[${i}].passed must be a boolean`);
+        check.passed = false;
       }
       // 証拠フィールドの検証（オプショナル）
       if (check.screenshot !== undefined && typeof check.screenshot !== 'string') {
@@ -295,6 +297,25 @@ function validateTask(task: unknown): asserts task is TaskEntry {
   }
 }
 
+function normalizeLegacyChecks(task: Record<string, unknown>): void {
+  if (task.checks === undefined && Array.isArray(task.stepsToVerify)) {
+    task.checks = task.stepsToVerify
+      .filter((step): step is string => typeof step === 'string' && step.trim().length > 0)
+      .map((text) => ({ text, type: 'manual', passed: false }));
+  }
+
+  if (!Array.isArray(task.checks)) {
+    return;
+  }
+
+  task.checks = task.checks.map((check) => {
+    if (typeof check === 'string' && check.trim().length > 0) {
+      return { text: check, type: 'manual', passed: false };
+    }
+    return check;
+  });
+}
+
 /**
  * レビュータスクかどうか
  */
@@ -317,21 +338,89 @@ export function getCurrentReviewGeneration(plan: TaskList): number {
 }
 
 /**
+ * review-only モード開始時の初期レビュータスクを生成する
+ */
+export function createInitialReviewTasks(
+  plan: TaskList | null,
+  hasPrd: boolean,
+  options: { reviewOnly?: boolean } = {}
+): TaskEntry[] {
+  const existingPlan = plan ?? [];
+  const existingIds = new Set(existingPlan.map((task) => task.id));
+  const implementationTasks = getImplementationTasks(existingPlan);
+  const allImplementationTasksCompleted =
+    implementationTasks.length === 0 ||
+    implementationTasks.every((task) => task.passes);
+  const generation = Math.max(implementationTasks.length, 1);
+  const hasPendingReviewTask = existingPlan.some(
+    (task) => isReviewTask(task) && !task.passes
+  );
+  const shouldRegenerateReview = options.reviewOnly && !hasPendingReviewTask;
+  const reviewOnly = options.reviewOnly === true;
+
+  const hasCodeReview = existingPlan.some(
+    (task) =>
+      task.reviewType === 'code' &&
+      task.reviewGeneration === generation &&
+      (shouldRegenerateReview ? !task.passes : true)
+  );
+  const hasProductReview = existingPlan.some(
+    (task) =>
+      task.reviewType === 'product' &&
+      task.reviewGeneration === generation &&
+      (shouldRegenerateReview ? !task.passes : true)
+  );
+
+  const tasks: TaskEntry[] = [];
+  if (!hasCodeReview) {
+    tasks.push(createReviewTask(existingIds, generation, 'code'));
+  }
+  if (!reviewOnly && hasPrd && allImplementationTasksCompleted && !hasProductReview) {
+    tasks.push(createReviewTask(existingIds, generation, 'product'));
+  }
+
+  return tasks;
+}
+
+export interface CreateMissingReviewTasksOptions {
+  /** review-only モードかどうか */
+  reviewOnly?: boolean;
+  /** PRD が存在するかどうか */
+  hasPrd?: boolean;
+}
+
+/**
  * 必須レビュー（product/code）で不足しているタスクを生成する
  *
  * 生成条件:
  * - 実装タスクが1件以上ある
- * - 実装タスクが全て完了している
- * - 当該 generation に reviewType=product/code の両方が存在しない
+ * - default: 実装タスクが全て完了している
+ * - review-only: followup 実装タスクが全て完了している
+ * - 当該 generation に必要な reviewType が存在しない
+ *   - default: product + code（PRD なしは code のみ）
+ *   - review-only: code のみ
  */
-export function createMissingReviewTasks(plan: TaskList): TaskEntry[] {
+export function createMissingReviewTasks(
+  plan: TaskList,
+  options: CreateMissingReviewTasksOptions = {}
+): TaskEntry[] {
   const implementationTasks = getImplementationTasks(plan);
   if (implementationTasks.length === 0) {
     return [];
   }
 
-  if (implementationTasks.some((task) => !task.passes)) {
-    return [];
+  if (!options.reviewOnly) {
+    if (implementationTasks.some((task) => !task.passes)) {
+      return [];
+    }
+  } else {
+    const followupTasks = implementationTasks.filter(isFollowupImplementationTask);
+    if (followupTasks.length === 0) {
+      return [];
+    }
+    if (followupTasks.some((task) => !task.passes)) {
+      return [];
+    }
   }
 
   const generation = implementationTasks.length;
@@ -342,7 +431,12 @@ export function createMissingReviewTasks(plan: TaskList): TaskEntry[] {
     }
   }
 
-  const missingTypes = VALID_REVIEW_TYPES.filter((type) => !existingTypes.has(type));
+  const targetReviewTypes: ReviewType[] = options.reviewOnly
+    ? ['code']
+    : options.hasPrd === false
+      ? ['code']
+      : VALID_REVIEW_TYPES;
+  const missingTypes = targetReviewTypes.filter((type) => !existingTypes.has(type));
   if (missingTypes.length === 0) {
     return [];
   }
@@ -379,6 +473,10 @@ function createReviewTask(
     reviewType: type,
     reviewGeneration: generation,
   };
+}
+
+function isFollowupImplementationTask(task: TaskEntry): boolean {
+  return task.id.toLowerCase().includes('followup');
 }
 
 /**

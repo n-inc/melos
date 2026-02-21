@@ -18,6 +18,7 @@ npm install
 ### plan モード（デフォルト）
 
 TASK.json のタスクを順次実行します。
+`TASK.json` が存在しない場合は、`PRD.md` を元に初期タスクを生成してから実行します。
 
 ```bash
 npx melos
