@@ -347,12 +347,9 @@ export class Orchestrator {
 
       case 'complete': {
         this.currentSpinner.succeed(buildManagerDecisionMessage(decision));
-        const pendingTasks = this.state.tasks ? getPendingTasks(this.state.tasks) : [];
-        if (pendingTasks.length > 0) {
-          log(
-            'YELLOW',
-            `未完了タスク ${pendingTasks.length} 件が残っていますが、Manager 判断により HANDOFF を出力します`
-          );
+        const readyToComplete = await this.ensureReadyForCompletion();
+        if (!readyToComplete) {
+          return { reason: 'continue' };
         }
 
         // HANDOFF.md を保存
@@ -789,6 +786,52 @@ export class Orchestrator {
     log('CYAN', `レビュータスクを TASK.json に ${reviewTasks.length} 件追加 (review-only)`);
   }
 
+  private async ensureReadyForCompletion(): Promise<boolean> {
+    const latestTasks = await this.loadLatestTaskListForResolution();
+    const pendingTasks = latestTasks ? getPendingTasks(latestTasks) : [];
+    if (pendingTasks.length > 0) {
+      log(
+        'YELLOW',
+        `未完了タスク ${pendingTasks.length} 件が残っているため、完了判定を保留して継続します`
+      );
+      return false;
+    }
+
+    if (this.config.executionMode !== 'review-only') {
+      return true;
+    }
+
+    if (isCleanCodeReviewReport(this.state.lastWorkReport, latestTasks)) {
+      return true;
+    }
+
+    const reviewTasks = createInitialReviewTasks(
+      latestTasks,
+      !!this.state.prd,
+      { reviewOnly: true }
+    );
+    if (reviewTasks.length === 0) {
+      log(
+        'YELLOW',
+        'review-only: 最終 code review が未確認のため継続します（レビュータスク生成なし）'
+      );
+      return false;
+    }
+
+    if (taskFileExists(this.config.taskFile)) {
+      this.state.tasks = await addTasks(this.config.taskFile, reviewTasks);
+    } else {
+      await saveTasks(this.config.taskFile, reviewTasks);
+      this.state.tasks = reviewTasks;
+    }
+
+    log(
+      'CYAN',
+      `review-only: 完了前の全体コード再レビューとして ${reviewTasks.length} 件追加`
+    );
+    return false;
+  }
+
   /**
    * エスカレーションに回答する
    */
@@ -966,6 +1009,28 @@ export function shouldBlockCompletion(plan: TaskList | null): {
     pendingTaskIds: pendingTasks.map((task) => task.id),
     pendingReviewTaskIds,
   };
+}
+
+export function isCleanCodeReviewReport(
+  report: WorkReport | null,
+  plan: TaskList | null
+): boolean {
+  if (!report || !plan) {
+    return false;
+  }
+  if (report.status !== 'SUCCESS') {
+    return false;
+  }
+  if ((report.discoveredTasks?.length ?? 0) > 0) {
+    return false;
+  }
+
+  const task = plan.find((entry) => entry.id === report.taskId);
+  if (!task || task.reviewType !== 'code') {
+    return false;
+  }
+
+  return task.passes === true;
 }
 
 /**

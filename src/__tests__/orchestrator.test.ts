@@ -9,6 +9,7 @@ import {
   formatTaskLabel,
   getReviewOnlyPreferredTaskId,
   getReviewTasksToAdd,
+  isCleanCodeReviewReport,
   resolveTaskIdByDescription,
   resolveTaskIdForTaskList,
   resolveTaskIdWithFallback,
@@ -327,6 +328,111 @@ describe('orchestrator.ts', () => {
       expect(result.blocked).toBe(true);
       expect(result.pendingTaskIds).toEqual(['review-product-g1']);
       expect(result.pendingReviewTaskIds).toEqual(['review-product-g1']);
+    });
+  });
+
+  describe('isCleanCodeReviewReport', () => {
+    it('returns true only when last report is a clean successful code review', () => {
+      const result = isCleanCodeReviewReport(
+        {
+          iteration: 4,
+          taskId: 'review-code-g4',
+          status: 'SUCCESS',
+          summary: 'clean',
+          filesChanged: [],
+          verification: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          successCriteriaResults: [],
+          issues: [],
+          discoveredTasks: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: '2026-02-21T00:00:00.000Z',
+        },
+        [
+          {
+            id: 'review-code-g4',
+            description: 'code review',
+            passes: true,
+            reviewType: 'code',
+            reviewGeneration: 4,
+          },
+        ]
+      );
+      expect(result).toBe(true);
+    });
+
+    it('returns false when discoveredTasks remain even if status is SUCCESS', () => {
+      const result = isCleanCodeReviewReport(
+        {
+          iteration: 4,
+          taskId: 'review-code-g4',
+          status: 'SUCCESS',
+          summary: 'findings',
+          filesChanged: [],
+          verification: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          successCriteriaResults: [],
+          issues: [],
+          discoveredTasks: [{ description: 'issue', priority: 'high' }],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: '2026-02-21T00:00:00.000Z',
+        },
+        [
+          {
+            id: 'review-code-g4',
+            description: 'code review',
+            passes: true,
+            reviewType: 'code',
+            reviewGeneration: 4,
+          },
+        ]
+      );
+      expect(result).toBe(false);
+    });
+
+    it('returns false when last report task is not a code review task', () => {
+      const result = isCleanCodeReviewReport(
+        {
+          iteration: 4,
+          taskId: 'task-7',
+          status: 'SUCCESS',
+          summary: 'fixed',
+          filesChanged: [],
+          verification: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          successCriteriaResults: [],
+          issues: [],
+          discoveredTasks: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: '2026-02-21T00:00:00.000Z',
+        },
+        [
+          {
+            id: 'task-7',
+            description: 'follow-up fix',
+            passes: true,
+          },
+        ]
+      );
+      expect(result).toBe(false);
     });
   });
 

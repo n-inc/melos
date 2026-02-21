@@ -35,6 +35,7 @@ const REVIEW_ONLY_INSTRUCTIONS = `### Review-Only モード固有ルール
 - **「レビュー」はコードレビューのみを指す**: PRD との整合性確認や Product Review はこのモードでは実施しない
 - **実装タスクは dispatch しない**: 既存の未完了実装タスクがあっても無視し、レビュータスクまたはレビュー起因の修正タスクのみを dispatch する
 - **レビュー→修正→再レビュー**: レビューで P1/P2 が見つかった場合、Worker が discoveredTasks に報告 → それを修正タスクとして追加 → 修正後に次世代レビューへ
+- **修正後は必ず再レビューを挟む**: 修正タスクが完了した直後に完了判定せず、全体の code review を再度実行してから完了判定する
 - **完了条件**: レビューが CLEAN（discoveredTasks が空の SUCCESS）になったら HANDOFF.md を出力
 - **修正タスクの粒度**: P1 は個別タスク、P2 はまとめて 1 タスクにする（既存の buildFollowupTaskEntries ルールに従う）`;
 
