@@ -68,6 +68,26 @@ export interface DiscoveredTask {
 }
 
 /**
+ * 実装中の主要な判断
+ */
+export interface KeyDecision {
+  /** 判断内容 */
+  decision: string;
+  /** 判断理由 */
+  rationale: string;
+}
+
+/**
+ * 重要ファイルとその文脈
+ */
+export interface CriticalFile {
+  /** ファイルパス */
+  path: string;
+  /** 重要な理由/文脈 */
+  context: string;
+}
+
+/**
  * Worker → Manager への報告
  */
 export interface WorkReport {
@@ -91,6 +111,12 @@ export interface WorkReport {
   discoveredTasks: DiscoveredTask[];
   /** 学習した内容 */
   learnings: string[];
+  /** 実装中にした主要な判断とその理由 */
+  keyDecisions?: KeyDecision[];
+  /** 次の担当者がまず読むべき重要ファイル */
+  criticalFiles?: CriticalFile[];
+  /** PARTIAL/FAILED 時の具体的な次のアクション */
+  nextSteps?: string[];
   /** ヘルプが必要か（BLOCKED時に使用） */
   requestsHelp: boolean;
   /** ヘルプが必要な理由 */
@@ -162,6 +188,9 @@ export function createWorkReport(params: {
   issues?: string[];
   discoveredTasks?: DiscoveredTask[];
   learnings?: string[];
+  keyDecisions?: KeyDecision[];
+  criticalFiles?: CriticalFile[];
+  nextSteps?: string[];
   requestsHelp?: boolean;
   helpReason?: string;
   logFilePath?: string;
@@ -189,6 +218,9 @@ export function createWorkReport(params: {
     issues: params.issues ?? [],
     discoveredTasks: params.discoveredTasks ?? [],
     learnings: params.learnings ?? [],
+    keyDecisions: params.keyDecisions,
+    criticalFiles: params.criticalFiles,
+    nextSteps: params.nextSteps,
     requestsHelp: params.requestsHelp ?? false,
     helpReason: params.helpReason,
     logFilePath: params.logFilePath,

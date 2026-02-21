@@ -158,6 +158,34 @@ describe('work-report.ts', () => {
         'Avoid approach B',
       ]);
     });
+
+    it('creates a WorkReport with key decisions and critical files', () => {
+      const report = createWorkReport({
+        iteration: 1,
+        taskId: 'task-1',
+        status: 'PARTIAL',
+        summary: 'Need retry',
+        keyDecisions: [
+          {
+            decision: 'Use session-based auth',
+            rationale: 'Reuse existing middleware and storage',
+          },
+        ],
+        criticalFiles: [
+          {
+            path: 'src/auth/session.ts',
+            context: 'Core token refresh and validation flow',
+          },
+        ],
+        nextSteps: ['Add refresh token expiry test'],
+      });
+
+      expect(report.keyDecisions).toHaveLength(1);
+      expect(report.keyDecisions?.[0].decision).toBe('Use session-based auth');
+      expect(report.criticalFiles).toHaveLength(1);
+      expect(report.criticalFiles?.[0].path).toBe('src/auth/session.ts');
+      expect(report.nextSteps).toEqual(['Add refresh token expiry test']);
+    });
   });
 
   describe('saveWorkReport and loadWorkReport', () => {

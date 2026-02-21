@@ -10,6 +10,12 @@
 {TASK_CONTEXT_JSON}
 ```
 
+## Manager からのブリーフィング
+
+{WORKER_BRIEFING}
+
+---
+
 ## PRD.md（要件定義）
 
 {PRD_CONTENT}
@@ -90,6 +96,16 @@ npm run typecheck
   "learnings": [
     "Context: ... | Finding: ... | Next Action: ..."
   ],
+  "keyDecisions": [
+    { "decision": "認証にJWTではなくセッションを採用", "rationale": "既存のRails sessionと一貫性を保つため" }
+  ],
+  "criticalFiles": [
+    { "path": "src/auth/session.ts", "context": "セッション管理の中核。リトライ時はここから読む" }
+  ],
+  "nextSteps": [
+    "src/auth/session.test.ts のエッジケーステストを追加する",
+    "rate limiting ミドルウェアを session endpoint に適用する"
+  ],
   "requestsHelp": false
 }
 ```
@@ -100,6 +116,9 @@ npm run typecheck
 2. 成功/失敗の理由を書く（`passed: false` の項目は `note` 必須）
 3. `learnings` は「前提 → 発見 → 次回の活用」を1行で書く
 4. `PARTIAL` / `FAILED` / `BLOCKED` の場合、次の担当者が即着手できる情報を残す
+5. `keyDecisions` は「何を選んだか + なぜそうしたか」をセットで書く（設計トレードオフを優先）
+6. `criticalFiles` は次の担当者が先に読むべきファイルを 3-5 件、`context` 付きで書く
+7. `nextSteps` は `PARTIAL` / `FAILED` では必須。最初の 1-2 手で実行できる具体アクションを書く
 
 `discoveredTasks` 例:
 

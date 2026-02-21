@@ -33,6 +33,24 @@ describe('ManagerAgent.parseDecision', () => {
     }
   });
 
+  it('parses task dispatch briefing from fenced JSON', () => {
+    const output = [
+      '```json',
+      '{',
+      '  "taskId": "task-1",',
+      '  "briefing": "## Retry\\nFocus on session edge cases"',
+      '}',
+      '```',
+    ].join('\n');
+
+    const decision = parseDecision(output);
+    expect(decision.type).toBe('dispatch_task');
+    if (decision.type === 'dispatch_task') {
+      expect(decision.taskId).toBe('task-1');
+      expect(decision.briefing).toContain('Retry');
+    }
+  });
+
   it('parses task dispatch from raw JSON with logs', () => {
     const output = [
       'thinking',

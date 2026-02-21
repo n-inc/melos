@@ -31,6 +31,24 @@ describe('WorkerAgent', () => {
     expect(prompt).not.toContain('{TASK_MODE_GUIDE}');
   });
 
+  it('injects manager briefing into prompt', async () => {
+    const prompt = await buildPrompt({
+      iteration: 1,
+      task: {
+        id: 'task-briefing',
+        description: 'retry task',
+        passes: false,
+      },
+      codebasePatterns: null,
+      prd: null,
+      briefing: '## Retry Context\n- focus on auth refresh edge case',
+    });
+
+    expect(prompt).toContain('## Manager からのブリーフィング');
+    expect(prompt).toContain('focus on auth refresh edge case');
+    expect(prompt).not.toContain('{WORKER_BRIEFING}');
+  });
+
   it('uses product review guide for review-product task ids', async () => {
     const prompt = await buildPrompt({
       iteration: 2,
@@ -384,5 +402,73 @@ describe('WorkerAgent', () => {
 
     expect(codexExecuteCount).toBe(1);
     expect(claudeExecuteCount).toBe(0);
+  });
+
+  describe('parseWorkReport', () => {
+    const parseWorkReport = (output: string) => {
+      const agent = new WorkerAgent({
+        cwd: process.cwd(),
+        promptsDir: `${process.cwd()}/prompts`,
+      });
+
+      return (
+        agent as unknown as {
+          parseWorkReport: (
+            iteration: number,
+            task: { id: string; checks?: Array<{ text: string }> },
+            output: string,
+            engineSuccess: boolean
+          ) => {
+            keyDecisions?: Array<{ decision: string; rationale: string }>;
+            criticalFiles?: Array<{ path: string; context: string }>;
+            nextSteps?: string[];
+            status: string;
+          };
+        }
+      ).parseWorkReport(1, { id: 'task-1', checks: [] }, output, true);
+    };
+
+    it('parses keyDecisions / criticalFiles / nextSteps from WORK_REPORT JSON', () => {
+      const output = [
+        '```json',
+        '{',
+        '  "status": "PARTIAL",',
+        '  "summary": "partial",',
+        '  "keyDecisions": [',
+        '    { "decision": "Use session", "rationale": "Align with existing architecture" }',
+        '  ],',
+        '  "criticalFiles": [',
+        '    { "path": "src/auth/session.ts", "context": "Core refresh flow" }',
+        '  ],',
+        '  "nextSteps": [',
+        '    "Add edge-case tests"',
+        '  ]',
+        '}',
+        '```',
+      ].join('\n');
+
+      const report = parseWorkReport(output);
+      expect(report.status).toBe('PARTIAL');
+      expect(report.keyDecisions?.[0].decision).toBe('Use session');
+      expect(report.criticalFiles?.[0].path).toBe('src/auth/session.ts');
+      expect(report.nextSteps).toEqual(['Add edge-case tests']);
+    });
+
+    it('keeps backward compatibility when new handoff fields are absent', () => {
+      const output = [
+        '```json',
+        '{',
+        '  "status": "SUCCESS",',
+        '  "summary": "done"',
+        '}',
+        '```',
+      ].join('\n');
+
+      const report = parseWorkReport(output);
+      expect(report.status).toBe('SUCCESS');
+      expect(report.keyDecisions).toBeUndefined();
+      expect(report.criticalFiles).toBeUndefined();
+      expect(report.nextSteps).toBeUndefined();
+    });
   });
 });

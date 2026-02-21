@@ -11,7 +11,7 @@ export type AgentMode = 'manager' | 'worker';
  * Manager の判断結果
  */
 export type ManagerDecision =
-  | { type: 'dispatch_task'; taskId: string }
+  | { type: 'dispatch_task'; taskId: string; briefing?: string }
   | { type: 'review_complete'; approved: boolean; feedback?: string }
   | { type: 'escalate'; escalation: Escalation }
   | { type: 'complete'; handoffContent: string }
@@ -58,6 +58,8 @@ export interface WorkerInput {
   codebasePatterns: string | null;
   /** PRD.md の内容 */
   prd: string | null;
+  /** Manager が合成したタスク固有ブリーフィング */
+  briefing?: string;
 }
 
 /**

@@ -153,7 +153,11 @@ export class ManagerAgent implements Agent {
       }
 
       if (this.isTaskDispatchCandidate(parsed)) {
-        return { type: 'dispatch_task', taskId: parsed.taskId };
+        return {
+          type: 'dispatch_task',
+          taskId: parsed.taskId,
+          briefing: typeof parsed.briefing === 'string' ? parsed.briefing : undefined,
+        };
       }
 
       if (this.isEscalationCandidate(parsed)) {
@@ -283,7 +287,12 @@ export class ManagerAgent implements Agent {
 
   private isTaskDispatchCandidate(
     value: unknown
-  ): value is { taskId: string; reason?: string; description?: string } {
+  ): value is {
+    taskId: string;
+    reason?: string;
+    description?: string;
+    briefing?: string;
+  } {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return false;
     }
@@ -292,7 +301,7 @@ export class ManagerAgent implements Agent {
       return false;
     }
 
-    const allowedKeys = new Set(['taskId', 'reason', 'description']);
+    const allowedKeys = new Set(['taskId', 'reason', 'description', 'briefing']);
     return Object.keys(candidate).every((key) => allowedKeys.has(key));
   }
 

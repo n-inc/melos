@@ -295,7 +295,7 @@ export class Orchestrator {
         }
 
         // Worker にタスクを実行させる
-        const workerResult = await this.runWorker(taskToRun);
+        const workerResult = await this.runWorker(taskToRun, decision.briefing);
 
         // 結果を保存
         this.state.lastWorkReport = workerResult.report;
@@ -390,7 +390,7 @@ export class Orchestrator {
   /**
    * Worker を実行する
    */
-  private async runWorker(task: TaskEntry): Promise<WorkerResult> {
+  private async runWorker(task: TaskEntry, briefing?: string): Promise<WorkerResult> {
     const elapsed = formatElapsed(this.loopStartTime);
     printIterationHeader(
       this.state.iteration,
@@ -408,6 +408,7 @@ export class Orchestrator {
       task,
       codebasePatterns: this.state.progress,
       prd: this.state.prd,
+      briefing,
     };
 
     let result: WorkerResult;
@@ -461,8 +462,11 @@ export class Orchestrator {
     }
 
     // 学習内容を PROGRESS.md に追記
-    if (result.report.learnings && result.report.learnings.length > 0) {
-      await this.appendLearnings(task.id, result.report.learnings);
+    if (
+      (result.report.learnings?.length ?? 0) > 0 ||
+      (result.report.keyDecisions?.length ?? 0) > 0
+    ) {
+      await this.appendLearnings(task.id, result.report);
     }
 
     return result;
@@ -519,10 +523,24 @@ export class Orchestrator {
    */
   private async appendLearnings(
     taskId: string,
-    learnings: string[]
+    report: WorkReport
   ): Promise<void> {
+    const allLearnings = [...(report.learnings || [])];
+
+    if (report.keyDecisions?.length) {
+      for (const keyDecision of report.keyDecisions) {
+        allLearnings.push(
+          `Context: ${taskId} | Finding: ${keyDecision.decision} - ${keyDecision.rationale} | Next Action: この判断を関連タスクで踏襲`
+        );
+      }
+    }
+
+    if (allLearnings.length === 0) {
+      return;
+    }
+
     const now = new Date().toISOString().split('T')[0];
-    const learningLines = formatLearningsForProgress(taskId, learnings, now).split('\n');
+    const learningLines = formatLearningsForProgress(taskId, allLearnings, now).split('\n');
     const existing = existsSync(this.config.progressFile)
       ? await readFile(this.config.progressFile, 'utf-8')
       : '# Progress Log\n';

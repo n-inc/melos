@@ -51,7 +51,7 @@ export class WorkerAgent implements Agent {
    */
   private async buildPrompt(input: WorkerInput): Promise<string> {
     const template = await loadPromptRaw('worker');
-    const { iteration, task, codebasePatterns, prd } = input;
+    const { iteration, task, codebasePatterns, prd, briefing } = input;
 
     // プレースホルダーを置換
     let prompt = template
@@ -87,6 +87,13 @@ export class WorkerAgent implements Agent {
       prompt = prompt.replace('{PRD_CONTENT}', prd);
     } else {
       prompt = prompt.replace('{PRD_CONTENT}', '(PRD.md が存在しません)');
+    }
+
+    // Manager ブリーフィング
+    if (briefing) {
+      prompt = prompt.replace('{WORKER_BRIEFING}', briefing);
+    } else {
+      prompt = prompt.replace('{WORKER_BRIEFING}', '(なし)');
     }
 
     // タスクモードガイド（実装 / product review / code review）
@@ -254,6 +261,9 @@ ${error ? `=== Error ===\n${error}` : ''}
         if (parsed.issues) report.issues = parsed.issues;
         if (parsed.discoveredTasks) report.discoveredTasks = parsed.discoveredTasks;
         if (parsed.learnings) report.learnings = parsed.learnings;
+        if (parsed.keyDecisions) report.keyDecisions = parsed.keyDecisions;
+        if (parsed.criticalFiles) report.criticalFiles = parsed.criticalFiles;
+        if (parsed.nextSteps) report.nextSteps = parsed.nextSteps;
         if (parsed.requestsHelp !== undefined) report.requestsHelp = parsed.requestsHelp;
         if (parsed.helpReason) report.helpReason = parsed.helpReason;
       } catch {

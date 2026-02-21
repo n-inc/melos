@@ -65,6 +65,10 @@
 - `TASK.json` がなく PRD がある場合は、PRDから次の1タスク相当の `taskId` を定義して返す
 - PRD も TASK もない場合は、ユーザー入力から次の1タスク相当の `taskId` を定義して返す
 - 原則は全タスク完了後に最終レビューへ進むが、必要に応じて未完了タスクを明示した `HANDOFF.md` を出力してよい
+- `briefing` は必要時のみ付与する（初回は省略可）
+- リトライ時の `briefing` には前回の `whatWasTried` / `whatFailed` / `nextSteps` / `criticalFiles` を要約する
+- フォローアップ時の `briefing` には先行タスクの `keyDecisions` / `criticalFiles` を引き継ぐ
+- `briefing` は Markdown の自由文で、Worker が即行動できる粒度で書く
 
 ### 4. 最終レビュー
 
@@ -83,6 +87,17 @@
 - `HANDOFF.md`
 
 ### タスク指示（TASK_DISPATCH）
+
+推奨形式（JSON）:
+
+```json
+{
+  "taskId": "task-1",
+  "briefing": "## リトライコンテキスト\n\n前回で PARTIAL。失敗したテストと重要ファイルを確認して再実行する。"
+}
+```
+
+互換形式（briefing なし）:
 
 ```text
 TASK_DISPATCH
