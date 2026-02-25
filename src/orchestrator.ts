@@ -83,6 +83,8 @@ export interface OrchestratorConfig {
   resumeSession?: MelosSession | null;
   /** 対話入力が可能かどうか */
   interactiveInputEnabled?: boolean;
+  /** ライフサイクルイベント通知 */
+  onLifecycleEvent?: (event: OrchestratorLifecycleEvent) => void | Promise<void>;
 }
 
 /**
@@ -100,6 +102,11 @@ export interface LoopResult {
   /** HANDOFF 内容（完了時） */
   handoffContent?: string;
 }
+
+export type OrchestratorLifecycleEvent =
+  | 'escalation_required'
+  | 'iteration_completed'
+  | 'run_completed';
 
 export type OrchestratorSteerResult =
   | { status: 'accepted' }
@@ -125,6 +132,19 @@ interface OrchestratorState {
 }
 
 const CODEX_MODEL_PATTERN = /codex/i;
+type InterruptedAgent = NonNullable<MelosSession['interruptedAgent']>;
+
+function resolveResumeInterruptedAgent(
+  session: MelosSession | null | undefined
+): InterruptedAgent | null {
+  if (session?.interruptedAgent === 'manager' || session?.interruptedAgent === 'worker') {
+    return session.interruptedAgent;
+  }
+  if (typeof session?.currentTaskId === 'string' && session.currentTaskId.trim().length > 0) {
+    return 'worker';
+  }
+  return null;
+}
 
 /**
  * カラー出力用の ANSI コード
@@ -192,6 +212,11 @@ export class Orchestrator {
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
+    const resumeInterruptedAgent = resolveResumeInterruptedAgent(config.resumeSession);
+    const resumeThreadId = config.resumeSession?.threadId;
+    const resumeTaskId = resumeInterruptedAgent === 'worker'
+      ? config.resumeSession?.currentTaskId ?? null
+      : null;
 
     // Manager Agent 初期化
     const managerConfig: ManagerAgentConfig = {
@@ -199,6 +224,7 @@ export class Orchestrator {
       promptsDir: join(config.cwd, 'prompts'),
       model: config.managerModel,
       effort: config.managerEffort,
+      resumeThreadId: resumeInterruptedAgent === 'manager' ? resumeThreadId : undefined,
     };
     this.manager = new ManagerAgent(managerConfig);
 
@@ -210,11 +236,11 @@ export class Orchestrator {
       reasoningEffort: config.workerReasoningEffort,
       claudeModel: config.managerModel,
       claudeEffort: config.managerEffort,
-      resumeThreadId: config.resumeSession?.threadId,
-      resumeTaskId: config.resumeSession?.currentTaskId,
+      resumeThreadId: resumeInterruptedAgent === 'worker' ? resumeThreadId : undefined,
+      resumeTaskId: resumeTaskId ?? undefined,
     };
     this.worker = new WorkerAgent(workerConfig);
-    this.pendingResumeTaskId = config.resumeSession?.currentTaskId ?? null;
+    this.pendingResumeTaskId = resumeTaskId;
 
     // 状態初期化
     this.state = {
@@ -225,7 +251,7 @@ export class Orchestrator {
       lastWorkReport: null,
       pendingEscalation: config.resumeSession?.pendingEscalation ?? null,
       pendingQuestion: config.resumeSession?.pendingQuestion ?? null,
-      currentTaskId: config.resumeSession?.currentTaskId ?? null,
+      currentTaskId: resumeTaskId,
       pendingSteers: (config.resumeSession?.pendingSteers ?? [])
         .map((instruction) => instruction.trim())
         .filter((instruction) => instruction.length > 0),
@@ -255,6 +281,9 @@ export class Orchestrator {
       const result = await this.runIteration();
 
       if (result.reason !== 'continue') {
+        if (result.reason === 'complete') {
+          this.emitLifecycleEvent('run_completed');
+        }
         return {
           success: result.reason === 'complete',
           completedIterations: this.state.iteration,
@@ -264,6 +293,7 @@ export class Orchestrator {
         };
       }
 
+      this.emitLifecycleEvent('iteration_completed');
       this.state.iteration++;
     }
 
@@ -613,27 +643,40 @@ export class Orchestrator {
    */
   async saveSession(): Promise<boolean> {
     const currentTaskId = this.state.currentTaskId;
+    const interruptedAgent = this.resolveInterruptedAgentForSave(currentTaskId);
     const pendingSteers = this.state.pendingSteers
       .map((instruction) => instruction.trim())
       .filter((instruction) => instruction.length > 0);
     const pendingQuestion = this.state.pendingQuestion ?? undefined;
     const pendingEscalation = this.state.pendingEscalation ?? undefined;
-    if (!currentTaskId && pendingSteers.length === 0 && !pendingQuestion && !pendingEscalation) {
+    if (
+      !interruptedAgent
+      && pendingSteers.length === 0
+      && !pendingQuestion
+      && !pendingEscalation
+    ) {
       return false;
     }
 
-    const threadId = currentTaskId
-      ? this.worker.getActiveThreadId() ?? this.manager.getActiveThreadId()
-      : undefined;
+    const threadId = interruptedAgent === 'worker'
+      ? this.worker.getActiveThreadId()
+      : interruptedAgent === 'manager'
+        ? this.manager.getActiveThreadId()
+        : null;
+    const sessionTaskId = interruptedAgent === 'worker' ? currentTaskId ?? undefined : undefined;
+    const model = interruptedAgent === 'worker'
+      ? this.config.workerModel ?? Orchestrator.DEFAULT_WORKER_MODEL
+      : interruptedAgent === 'manager'
+        ? this.config.managerModel
+        : undefined;
 
     await saveSessionState(this.config.melosDir, {
       threadId: threadId ?? undefined,
-      currentTaskId: currentTaskId ?? undefined,
+      currentTaskId: sessionTaskId,
+      interruptedAgent: interruptedAgent ?? undefined,
       iteration: this.state.iteration,
       interruptedAt: new Date().toISOString(),
-      model: currentTaskId
-        ? this.config.workerModel ?? Orchestrator.DEFAULT_WORKER_MODEL
-        : undefined,
+      model,
       pendingSteers: pendingSteers.length > 0 ? pendingSteers : undefined,
       pendingQuestion,
       pendingEscalation,
@@ -927,6 +970,21 @@ export class Orchestrator {
     return best?.task ?? null;
   }
 
+  private resolveInterruptedAgentForSave(
+    currentTaskId: string | null
+  ): InterruptedAgent | null {
+    if (this.activeAgent === 'manager') {
+      return 'manager';
+    }
+    if (this.activeAgent === 'worker') {
+      return currentTaskId ? 'worker' : null;
+    }
+    if (currentTaskId) {
+      return 'worker';
+    }
+    return null;
+  }
+
   private async ensureRequiredReviewTasks(): Promise<void> {
     if (!this.state.tasks || !taskFileExists(this.config.taskFile)) {
       return;
@@ -1032,6 +1090,7 @@ export class Orchestrator {
   private async resolvePendingQuestionFlow(prompt: AskUserPrompt): Promise<void> {
     this.state.pendingQuestion = prompt;
     this.printPendingQuestion(prompt);
+    this.emitLifecycleEvent('escalation_required');
 
     if (!this.isInteractiveInputEnabled()) {
       const auto = this.chooseAutomaticQuestionAnswer(prompt);
@@ -1239,6 +1298,29 @@ export class Orchestrator {
       return this.config.interactiveInputEnabled;
     }
     return process.stdin.isTTY;
+  }
+
+  private emitLifecycleEvent(event: OrchestratorLifecycleEvent): void {
+    const handler = this.config.onLifecycleEvent;
+    if (!handler) {
+      return;
+    }
+    try {
+      const maybePromise = handler(event);
+      if (maybePromise && typeof (maybePromise as Promise<void>).catch === 'function') {
+        void (maybePromise as Promise<void>).catch((error) => {
+          log(
+            'YELLOW',
+            `ライフサイクルイベント通知に失敗: ${error instanceof Error ? error.message : String(error)}`
+          );
+        });
+      }
+    } catch (error) {
+      log(
+        'YELLOW',
+        `ライフサイクルイベント通知に失敗: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   /**

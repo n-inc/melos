@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import {
   Orchestrator,
   type OrchestratorConfig,
+  type OrchestratorLifecycleEvent,
 } from './orchestrator.js';
 import { loadConfig, type MelosConfig } from './config/index.js';
 import type { ExecutionMode } from './state/progress.js';
@@ -20,6 +21,7 @@ import {
   loadSession,
 } from './state/session.js';
 import { createInteractiveInputController } from './ui/interactive.js';
+import { playSystemSound } from './ui/sound.js';
 
 /**
  * CLI オプション
@@ -47,6 +49,10 @@ export interface CLIOptions {
 
 /** Claude 専用モデル名（Worker では無効） */
 const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
+
+function notifyLifecycleEvent(event: OrchestratorLifecycleEvent): void {
+  playSystemSound(event);
+}
 
 /**
  * package.json からバージョンを取得
@@ -308,6 +314,7 @@ export async function executeWithOptions(
     dryRun: options.dryRun,
     resumeSession,
     interactiveInputEnabled: process.stdin.isTTY,
+    onLifecycleEvent: notifyLifecycleEvent,
   };
 
   // オーケストレーターを作成
