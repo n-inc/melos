@@ -407,17 +407,32 @@ describe('Orchestrator briefing integration', () => {
     };
     (orchestrator as unknown as { activeAgent: 'manager' | 'worker' | null }).activeAgent = null;
 
-    const result = await (
-      orchestrator as unknown as {
-        runIteration: () => Promise<{ reason: string }>;
-      }
-    ).runIteration();
+    let stdoutOutput = '';
+    const originalStdoutWrite = process.stdout.write;
+    process.stdout.write = ((chunk: Buffer | string) => {
+      stdoutOutput += chunk.toString();
+      return true;
+    }) as typeof process.stdout.write;
+
+    let result: { reason: string };
+    try {
+      result = await (
+        orchestrator as unknown as {
+          runIteration: () => Promise<{ reason: string }>;
+        }
+      ).runIteration();
+    } finally {
+      process.stdout.write = originalStdoutWrite;
+    }
 
     expect(result.reason).toBe('continue');
     expect(capturedDeferredSteers).toEqual(['keep integration tests green']);
     expect(
       (orchestrator as unknown as { state: { pendingSteers: string[] } }).state.pendingSteers
     ).toEqual([]);
+    const rendered = stdoutOutput.replace(/\x1b\[[0-9;]*m/g, '');
+    expect(rendered).toContain('保留 steer を Manager(Codex) に 1 件引き渡し');
+    expect(rendered).toContain('[1] keep integration tests green');
   });
 
   it('keeps queued steer when manager is configured with claude', async () => {
@@ -464,6 +479,75 @@ describe('Orchestrator briefing integration', () => {
     expect(
       (orchestrator as unknown as { state: { pendingSteers: string[] } }).state.pendingSteers
     ).toEqual(['remember to split large commits']);
+  });
+
+  it('prints all deferred steer entries when handing off to manager', async () => {
+    const orchestrator = new Orchestrator({
+      cwd: testDir,
+      maxIterations: 3,
+      prdFile: join(testDir, 'PRD.md'),
+      taskFile: join(testDir, 'TASK.json'),
+      progressFile: join(testDir, 'PROGRESS.md'),
+      melosDir: join(testDir, '.melos'),
+    });
+
+    (orchestrator as unknown as {
+      manager: {
+        run: () => Promise<{ type: 'review_complete'; approved: boolean }>;
+      };
+    }).manager = {
+      run: async () => ({ type: 'review_complete', approved: true }),
+    };
+
+    (orchestrator as unknown as {
+      state: {
+        iteration: number;
+        tasks: Array<{ id: string; description: string; passes: boolean }>;
+        prd: string | null;
+        progress: string | null;
+        lastWorkReport: null;
+        pendingEscalation: null;
+        currentTaskId: string | null;
+        pendingSteers: string[];
+      };
+    }).state = {
+      iteration: 1,
+      tasks: [{ id: 'task-1', description: 'manager target', passes: false }],
+      prd: null,
+      progress: null,
+      lastWorkReport: null,
+      pendingEscalation: null,
+      currentTaskId: null,
+      pendingSteers: ['first steer', 'multi line steer\nfollow-up line'],
+    };
+
+    let stdoutOutput = '';
+    const originalStdoutWrite = process.stdout.write;
+    process.stdout.write = ((chunk: Buffer | string) => {
+      stdoutOutput += chunk.toString();
+      return true;
+    }) as typeof process.stdout.write;
+
+    let result: { reason: string };
+    try {
+      result = await (
+        orchestrator as unknown as {
+          runIteration: () => Promise<{ reason: string }>;
+        }
+      ).runIteration();
+    } finally {
+      process.stdout.write = originalStdoutWrite;
+    }
+
+    expect(result.reason).toBe('continue');
+    expect(
+      (orchestrator as unknown as { state: { pendingSteers: string[] } }).state.pendingSteers
+    ).toEqual([]);
+    const rendered = stdoutOutput.replace(/\x1b\[[0-9;]*m/g, '');
+    expect(rendered).toContain('保留 steer を Manager(Codex) に 2 件引き渡し');
+    expect(rendered).toContain('[1] first steer');
+    expect(rendered).toContain('[2] multi line steer');
+    expect(rendered).toContain('      follow-up line');
   });
 
   it('saves pending steers to SESSION.json even when no task is running', async () => {

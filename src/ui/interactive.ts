@@ -23,7 +23,6 @@ const CYAN = '\x1b[0;36m';
 const YELLOW = '\x1b[1;33m';
 const RED = '\x1b[0;31m';
 const RESET = '\x1b[0m';
-const PROMPT_IDLE_MS = 150;
 
 /**
  * 実行中にユーザー入力を受け取り steer へ渡す
@@ -32,15 +31,13 @@ export function createInteractiveInputController(
   options: CreateInteractiveInputControllerOptions
 ): InteractiveInputController {
   const input = options.input ?? process.stdin;
-  const output = options.output ?? process.stderr;
+  const output = options.output ?? process.stdout;
   const prompt = options.prompt ?? 'melos> ';
 
   let started = false;
   let buffer = '';
   let queue: Promise<void> = Promise.resolve();
   let promptVisible = false;
-  let promptRefreshScheduled = false;
-  let promptRefreshTimer: NodeJS.Timeout | null = null;
   let internalWrite = false;
   let originalWrite: ((chunk: unknown, ...args: unknown[]) => boolean) | null = null;
 
@@ -70,20 +67,12 @@ export function createInteractiveInputController(
     promptVisible = false;
   };
 
-  const schedulePromptRefresh = () => {
-    if (!started || promptRefreshScheduled) {
+  const refreshPrompt = () => {
+    if (!started) {
       return;
     }
-    promptRefreshScheduled = true;
-    if (promptRefreshTimer) {
-      clearTimeout(promptRefreshTimer);
-    }
-    promptRefreshTimer = setTimeout(() => {
-      promptRefreshScheduled = false;
-      promptRefreshTimer = null;
-      printPrompt();
-    }, PROMPT_IDLE_MS);
-    promptRefreshTimer.unref();
+    promptVisible = false;
+    printPrompt();
   };
 
   const wrapOutputWrite = () => {
@@ -114,8 +103,7 @@ export function createInteractiveInputController(
       }
 
       if (text.includes('\n')) {
-        promptVisible = false;
-        schedulePromptRefresh();
+        refreshPrompt();
       }
       return result;
     }) as typeof output.write;
@@ -153,7 +141,7 @@ export function createInteractiveInputController(
     } else {
       writeDirect(`${RED}[steer] 送信失敗: ${result.message}${RESET}\n`);
     }
-    schedulePromptRefresh();
+    refreshPrompt();
   };
 
   const handleData = (chunk: Buffer | string) => {
@@ -176,7 +164,7 @@ export function createInteractiveInputController(
         clearPromptLine();
         const message = error instanceof Error ? error.message : String(error);
         writeDirect(`${RED}[steer] 送信失敗: ${message}${RESET}\n`);
-        schedulePromptRefresh();
+        refreshPrompt();
       });
     }
   };
@@ -188,9 +176,9 @@ export function createInteractiveInputController(
     started = true;
     wrapOutputWrite();
     writeDirect(
-      `${DIM}実行中入力: ${prompt}<instruction> で steer/質問回答を送信できます${RESET}\n`
+      `${DIM}実行中入力: ${prompt}<instruction> で steer/質問回答を送信できます（Claude Worker中はManagerへ保留して引き渡し）${RESET}\n`
     );
-    schedulePromptRefresh();
+    printPrompt();
     input.on('data', handleData);
   };
 
@@ -200,10 +188,6 @@ export function createInteractiveInputController(
     }
     started = false;
     input.removeListener('data', handleData);
-    if (promptRefreshTimer) {
-      clearTimeout(promptRefreshTimer);
-      promptRefreshTimer = null;
-    }
     restoreOutputWrite();
     output.write('\n');
   };

@@ -17,6 +17,8 @@ import type {
   SteerResult,
 } from './types.js';
 
+const DEFAULT_CLAUDE_MODEL = 'opus';
+
 /**
  * Worker Agent 設定
  */
@@ -441,85 +443,25 @@ ${error ? `=== Error ===\n${error}` : ''}
   private resolveClaudeModel(): string | undefined {
     const candidate = this.config.claudeModel;
     if (!candidate || candidate.trim().length === 0) {
-      return undefined;
+      return DEFAULT_CLAUDE_MODEL;
     }
 
     // task.model=claude 指定時に Codex 系モデル名を誤って渡さない
     if (candidate.toLowerCase().includes('codex')) {
-      return undefined;
+      return DEFAULT_CLAUDE_MODEL;
     }
 
     return candidate;
   }
 
   private shouldExecuteWithClaude(
-    task: Pick<TaskEntry, 'id' | 'description' | 'model' | 'checks' | 'reviewType'>
+    task: Pick<TaskEntry, 'model'>
   ): boolean {
     if (task.model === 'claude') {
       return true;
     }
-    if (task.model === 'codex') {
-      return false;
-    }
-
-    // レビュータスクは通常の実装ルートに含めない
-    if (this.detectReviewMode(task) !== null) {
-      return false;
-    }
-
-    return this.isFrontendDesignTask(task);
-  }
-
-  private isFrontendDesignTask(
-    task: Pick<TaskEntry, 'description' | 'checks'>
-  ): boolean {
-    const checkTexts =
-      task.checks
-        ?.map((check) => check.text)
-        .filter((text): text is string => typeof text === 'string') ?? [];
-    const searchableText = [task.description, ...checkTexts].join('\n').toLowerCase();
-
-    const frontendKeywords = [
-      'frontend',
-      'front-end',
-      'web',
-      'ui',
-      'ux',
-      'screen',
-      'page',
-      'component',
-      'フロントエンド',
-      '画面',
-      'ページ',
-      'コンポーネント',
-      'ui/ux',
-    ];
-    const designKeywords = [
-      'design',
-      'styling',
-      'style',
-      'layout',
-      'css',
-      'scss',
-      'tailwind',
-      'theme',
-      'visual',
-      'デザイン',
-      'スタイル',
-      'レイアウト',
-      '見た目',
-      'テーマ',
-      'トークン',
-    ];
-
-    const hasFrontendSignal = frontendKeywords.some((keyword) =>
-      searchableText.includes(keyword)
-    );
-    const hasDesignSignal = designKeywords.some((keyword) =>
-      searchableText.includes(keyword)
-    );
-
-    return hasFrontendSignal && hasDesignSignal;
+    // task.model 未指定時の既定は Codex
+    return false;
   }
 }
 

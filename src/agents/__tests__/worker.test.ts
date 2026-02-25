@@ -205,6 +205,66 @@ describe('WorkerAgent', () => {
     expect((capturedClaudeOptions as { model?: string }).model).toBe('sonnet');
   });
 
+  it('falls back to opus when claude model is omitted or codex-like', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: `${process.cwd()}/prompts`,
+      model: 'gpt-5.3-codex',
+      claudeModel: 'gpt-5.3-codex',
+      claudeEffort: 'high',
+    });
+
+    let capturedClaudeOptions: unknown;
+
+    (agent as unknown as {
+      engine: {
+        execute: (
+          prompt: string,
+          options?: unknown
+        ) => Promise<{ success: boolean; output: string; exitCode: number }>;
+      };
+    }).engine = {
+      execute: async () => ({ success: true, output: 'ok', exitCode: 0 }),
+    };
+
+    (agent as unknown as {
+      claudeEngine: {
+        execute: (
+          prompt: string,
+          options?: unknown
+        ) => Promise<{ success: boolean; output: string; exitCode: number }>;
+      };
+    }).claudeEngine = {
+      execute: async (_prompt: string, options?: unknown) => {
+        capturedClaudeOptions = options;
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+
+    (agent as unknown as {
+      saveExecutionLog: (
+        iteration: number,
+        taskId: string,
+        output: string,
+        error?: string
+      ) => Promise<string>;
+    }).saveExecutionLog = async () => '/tmp/worker-test.log';
+
+    await agent.run({
+      iteration: 1,
+      task: {
+        id: 'task-claude-fallback',
+        description: 'run with claude fallback',
+        model: 'claude',
+        passes: false,
+      },
+      codebasePatterns: null,
+      prd: null,
+    });
+
+    expect((capturedClaudeOptions as { model?: string }).model).toBe('opus');
+  });
+
   it('uses Codex engine when task.model is codex', async () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
@@ -277,7 +337,7 @@ describe('WorkerAgent', () => {
     ).toBe('high');
   });
 
-  it('uses Claude engine for frontend design tasks when model is omitted', async () => {
+  it('uses Codex engine even for frontend design tasks when model is omitted', async () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
       promptsDir: `${process.cwd()}/prompts`,
@@ -337,8 +397,8 @@ describe('WorkerAgent', () => {
       prd: null,
     });
 
-    expect(claudeExecuteCount).toBe(1);
-    expect(codexExecuteCount).toBe(0);
+    expect(codexExecuteCount).toBe(1);
+    expect(claudeExecuteCount).toBe(0);
   });
 
   it('keeps Codex engine for non-frontend tasks when model is omitted', async () => {

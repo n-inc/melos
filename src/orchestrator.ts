@@ -132,6 +132,8 @@ interface OrchestratorState {
 }
 
 const CODEX_MODEL_PATTERN = /codex/i;
+const DEFAULT_CODEX_MODEL_ID = 'gpt-5.3-codex';
+const DEFAULT_CLAUDE_MODEL_ID = 'opus';
 type InterruptedAgent = NonNullable<MelosSession['interruptedAgent']>;
 
 function resolveResumeInterruptedAgent(
@@ -165,6 +167,76 @@ const Colors = {
  */
 function log(color: keyof typeof Colors, message: string): void {
   process.stderr.write(`${Colors[color]}${message}${Colors.NC}\n`);
+}
+
+function logStdout(color: keyof typeof Colors, message: string): void {
+  process.stdout.write(`${Colors[color]}${message}${Colors.NC}\n`);
+}
+
+function formatDeferredSteerLogLines(deferredSteers: string[]): string[] {
+  const lines = [
+    `保留 steer を Manager(Codex) に ${deferredSteers.length} 件引き渡し`,
+  ];
+
+  for (const [index, steer] of deferredSteers.entries()) {
+    const steerLines = steer.split(/\r?\n/);
+    lines.push(`  [${index + 1}] ${steerLines[0] ?? ''}`);
+    for (const line of steerLines.slice(1)) {
+      lines.push(`      ${line}`);
+    }
+  }
+
+  return lines;
+}
+
+function formatModelDisplayName(modelId: string): string {
+  const normalized = modelId.trim();
+  const lower = normalized.toLowerCase();
+  const codexMatch = /^gpt-(\d+(?:\.\d+)*)-codex$/.exec(lower);
+  if (codexMatch) {
+    return `Codex ${codexMatch[1]}`;
+  }
+  if (lower === 'codex') {
+    return 'Codex';
+  }
+  if (lower === 'opus') {
+    return 'Opus 4.6';
+  }
+  if (lower === 'sonnet') {
+    return 'Sonnet';
+  }
+  if (lower === 'haiku') {
+    return 'Haiku';
+  }
+  return normalized;
+}
+
+function resolveWorkerExecutionEngine(task: Pick<TaskEntry, 'model'>): 'codex' | 'claude' {
+  return task.model === 'claude' ? 'claude' : 'codex';
+}
+
+function resolveWorkerClaudeModelLabel(model: string | undefined): string {
+  const candidate = typeof model === 'string' ? model.trim() : '';
+  if (candidate.length === 0 || candidate.toLowerCase().includes('codex')) {
+    return formatModelDisplayName(DEFAULT_CLAUDE_MODEL_ID);
+  }
+  return formatModelDisplayName(candidate);
+}
+
+function resolveManagerExecutionEngine(model: string | undefined): 'codex' | 'claude' {
+  if (typeof model !== 'string' || model.trim().length === 0) {
+    return 'codex';
+  }
+  return CODEX_MODEL_PATTERN.test(model) ? 'codex' : 'claude';
+}
+
+function resolveManagerModelLabel(model: string | undefined): string {
+  const executionEngine = resolveManagerExecutionEngine(model);
+  if (typeof model === 'string' && model.trim().length > 0) {
+    return formatModelDisplayName(model);
+  }
+  const fallback = executionEngine === 'codex' ? DEFAULT_CODEX_MODEL_ID : DEFAULT_CLAUDE_MODEL_ID;
+  return formatModelDisplayName(fallback);
 }
 
 /**
@@ -206,7 +278,7 @@ export class Orchestrator {
   private activeAgent: 'manager' | 'worker' | null = null;
   private pendingResumeTaskId: string | null;
   private pendingQuestionAnswerResolver: (() => void) | null = null;
-  private static readonly DEFAULT_WORKER_MODEL = 'gpt-5.3-codex';
+  private static readonly DEFAULT_WORKER_MODEL = DEFAULT_CODEX_MODEL_ID;
   private static readonly DEFAULT_MANAGER_EFFORT = 'high';
   private static readonly DEFAULT_WORKER_EFFORT = 'high';
 
@@ -346,12 +418,13 @@ export class Orchestrator {
     }
 
     const elapsed = formatElapsed(this.loopStartTime);
+    const managerModel = resolveManagerModelLabel(this.config.managerModel);
     printIterationHeader(
       this.state.iteration,
       this.config.maxIterations,
       'manager',
       elapsed,
-      this.config.managerModel ?? '(default)',
+      managerModel,
       this.config.managerEffort ?? Orchestrator.DEFAULT_MANAGER_EFFORT
     );
 
@@ -398,10 +471,10 @@ export class Orchestrator {
       : [];
     if (deferredSteersForManager.length > 0) {
       managerInput.deferredSteers = deferredSteersForManager;
-      log(
-        'CYAN',
-        `保留 steer を Manager(Codex) に ${deferredSteersForManager.length} 件引き渡し`
-      );
+      const handoffLines = formatDeferredSteerLogLines(deferredSteersForManager);
+      for (const line of handoffLines) {
+        logStdout('CYAN', line);
+      }
     }
 
     let decision: ManagerDecision;
@@ -527,15 +600,28 @@ export class Orchestrator {
    * Worker を実行する
    */
   private async runWorker(task: TaskEntry, briefing?: string): Promise<WorkerResult> {
+    const workerExecutionEngine = resolveWorkerExecutionEngine(task);
+    const workerModel = workerExecutionEngine === 'claude'
+      ? resolveWorkerClaudeModelLabel(this.config.managerModel)
+      : formatModelDisplayName(this.config.workerModel ?? Orchestrator.DEFAULT_WORKER_MODEL);
+    const workerEffort = workerExecutionEngine === 'claude'
+      ? this.config.managerEffort ?? Orchestrator.DEFAULT_MANAGER_EFFORT
+      : this.config.workerReasoningEffort ?? Orchestrator.DEFAULT_WORKER_EFFORT;
     const elapsed = formatElapsed(this.loopStartTime);
     printIterationHeader(
       this.state.iteration,
       this.config.maxIterations,
       'worker',
       elapsed,
-      this.config.workerModel ?? Orchestrator.DEFAULT_WORKER_MODEL,
-      this.config.workerReasoningEffort ?? Orchestrator.DEFAULT_WORKER_EFFORT
+      workerModel,
+      workerEffort
     );
+    if (workerExecutionEngine === 'claude') {
+      log(
+        'YELLOW',
+        'Worker 実行エンジン: Claude (task.model=claude)。steer は Manager(Codex) に保留されます'
+      );
+    }
 
     this.currentSpinner = createSpinner(buildWorkerRunMessage(task));
     const streamRenderer = createStreamRenderer();
@@ -873,11 +959,7 @@ export class Orchestrator {
     if (this.state.pendingSteers.length === 0) {
       return false;
     }
-    const model = this.config.managerModel;
-    if (typeof model !== 'string' || model.trim().length === 0) {
-      return true;
-    }
-    return CODEX_MODEL_PATTERN.test(model);
+    return resolveManagerExecutionEngine(this.config.managerModel) === 'codex';
   }
 
   private resolveTaskForExecution(

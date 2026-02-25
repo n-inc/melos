@@ -34,6 +34,34 @@ describe('interactive input controller', () => {
     expect(rendered).toContain('[steer] 送信しました');
   });
 
+  it('uses stdout by default and prints interactive hint', async () => {
+    const input = new PassThrough();
+    let rendered = '';
+    const originalStdoutWrite = process.stdout.write;
+    process.stdout.write = ((chunk: Buffer | string) => {
+      rendered += chunk.toString();
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      const controller = createInteractiveInputController({
+        input: input as unknown as NodeJS.ReadStream,
+        onSubmit: async () => ({ status: 'accepted' }),
+      });
+
+      controller.start();
+      input.write('send note\n');
+      await wait(10);
+      controller.stop();
+    } finally {
+      process.stdout.write = originalStdoutWrite;
+    }
+
+    expect(rendered).toContain('実行中入力:');
+    expect(rendered).toContain('Claude Worker中はManagerへ保留して引き渡し');
+    expect(rendered).toContain('[steer] 送信しました');
+  });
+
   it('prints unavailable status when no active turn', async () => {
     const input = new PassThrough();
     const output = new PassThrough();

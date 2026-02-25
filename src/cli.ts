@@ -363,7 +363,7 @@ export async function executeWithOptions(
     stdinResumedByMelos = true;
     interactiveInputController = createInteractiveInputController({
       input: process.stdin,
-      output: process.stderr,
+      output: process.stdout,
       onSubmit: async (instruction) => {
         return await orchestrator.steer(instruction);
       },
