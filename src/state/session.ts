@@ -10,6 +10,7 @@ import type { Escalation } from './escalation.js';
 export interface MelosSession {
   threadId?: string;
   currentTaskId?: string;
+  interruptedAgent?: 'manager' | 'worker';
   iteration: number;
   interruptedAt: string;
   model?: string;

@@ -29,6 +29,8 @@ export interface ManagerAgentConfig {
   model?: string;
   /** effort レベル */
   effort?: 'low' | 'medium' | 'high' | 'max';
+  /** resume 時に再利用する threadId */
+  resumeThreadId?: string;
 }
 
 /** Codex 系モデル名パターン */
@@ -58,11 +60,13 @@ export class ManagerAgent implements Agent {
   private codexEngine: AppServerEngine;
   private config: ManagerAgentConfig;
   private activeEngine: 'codex' | 'claude' | null = null;
+  private resumeThreadId: string | null;
 
   constructor(config: ManagerAgentConfig) {
     this.config = config;
     this.claudeEngine = new ClaudeEngine();
     this.codexEngine = new AppServerEngine();
+    this.resumeThreadId = config.resumeThreadId ?? null;
   }
 
   /**
@@ -673,11 +677,16 @@ ${JSON.stringify(workReport, null, 2)}
   ): Promise<EngineResult> {
     if (this.shouldUseCodexEngine(this.config.model)) {
       this.activeEngine = 'codex';
+      const threadId = this.resumeThreadId ?? undefined;
+      if (threadId) {
+        this.resumeThreadId = null;
+      }
       const options: AppServerEngineOptions = {
         cwd: this.config.cwd,
         model: this.config.model,
         reasoningEffort: this.mapEffortForCodex(effort),
         execMode: true,
+        threadId,
         onStream: callbacks.onAgentMessageDelta,
         onCommandOutput: callbacks.onCommandOutputDelta,
         onEvent: callbacks.onAppServerEvent,

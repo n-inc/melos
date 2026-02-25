@@ -27,6 +27,7 @@ describe('session state', () => {
     await saveSession(melosDir, {
       threadId: 'thr_123',
       currentTaskId: 'task-5',
+      interruptedAgent: 'worker',
       iteration: 3,
       interruptedAt: '2026-02-22T00:00:00.000Z',
       model: 'gpt-5.3-codex',
@@ -36,6 +37,7 @@ describe('session state', () => {
     await expect(loadSession(melosDir)).resolves.toEqual({
       threadId: 'thr_123',
       currentTaskId: 'task-5',
+      interruptedAgent: 'worker',
       iteration: 3,
       interruptedAt: '2026-02-22T00:00:00.000Z',
       model: 'gpt-5.3-codex',
@@ -46,6 +48,7 @@ describe('session state', () => {
     await saveSession(melosDir, {
       threadId: 'thr_123',
       currentTaskId: 'task-5',
+      interruptedAgent: 'worker',
       iteration: 3,
       interruptedAt: '2026-02-22T00:00:00.000Z',
       model: 'gpt-5.3-codex',
@@ -71,6 +74,24 @@ describe('session state', () => {
       iteration: 7,
       interruptedAt: '2026-02-25T00:00:00.000Z',
       pendingSteers: ['fix flaky tests', 'avoid force push'],
+    });
+  });
+
+  it('saves and loads manager interruption metadata', async () => {
+    await saveSession(melosDir, {
+      threadId: 'thr_manager',
+      interruptedAgent: 'manager',
+      iteration: 8,
+      interruptedAt: '2026-02-25T12:00:00.000Z',
+      model: 'gpt-5.3-codex',
+    });
+
+    await expect(loadSession(melosDir)).resolves.toEqual({
+      threadId: 'thr_manager',
+      interruptedAgent: 'manager',
+      iteration: 8,
+      interruptedAt: '2026-02-25T12:00:00.000Z',
+      model: 'gpt-5.3-codex',
     });
   });
 });

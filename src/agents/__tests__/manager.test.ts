@@ -360,4 +360,31 @@ describe('ManagerAgent engine selection', () => {
     expect(codexExecuteCount).toBe(1);
     expect(claudeExecuteCount).toBe(0);
   });
+
+  it('passes resume threadId to Codex only once', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: `${process.cwd()}/prompts`,
+      model: 'gpt-5.3-codex',
+      resumeThreadId: 'thr_resume_manager',
+    });
+    const capturedOptions: Array<{ threadId?: string }> = [];
+    (agent as unknown as { codexEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).codexEngine = {
+      execute: async (_prompt: string, options?: unknown) => {
+        capturedOptions.push(options as { threadId?: string });
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+    (agent as unknown as { claudeEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).claudeEngine = {
+      execute: async () => {
+        return { success: true, output: 'ok', exitCode: 0 };
+      },
+    };
+
+    await executeWithConfiguredEngine(agent);
+    await executeWithConfiguredEngine(agent);
+
+    expect(capturedOptions[0]?.threadId).toBe('thr_resume_manager');
+    expect(capturedOptions[1]?.threadId).toBeUndefined();
+  });
 });
