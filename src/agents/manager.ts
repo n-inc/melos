@@ -1,5 +1,8 @@
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
-import { CodexEngine, type CodexEngineOptions } from '../engines/codex.js';
+import {
+  AppServerEngine,
+  type AppServerEngineOptions,
+} from '../engines/app-server.js';
 import type { EngineResult } from '../engines/base.js';
 import { loadPromptRaw } from '../prompts/loader.js';
 import type { TaskEntry } from '../state/task.js';
@@ -7,9 +10,11 @@ import type { WorkReport } from '../state/work-report.js';
 import type { Escalation } from '../state/escalation.js';
 import type {
   Agent,
+  AskUserPrompt,
   ManagerDecision,
   ManagerInput,
   AgentMode,
+  SteerResult,
 } from './types.js';
 
 /**
@@ -50,13 +55,14 @@ export class ManagerAgent implements Agent {
   readonly mode: AgentMode = 'manager';
 
   private claudeEngine: ClaudeEngine;
-  private codexEngine: CodexEngine;
+  private codexEngine: AppServerEngine;
   private config: ManagerAgentConfig;
+  private activeEngine: 'codex' | 'claude' | null = null;
 
   constructor(config: ManagerAgentConfig) {
     this.config = config;
     this.claudeEngine = new ClaudeEngine();
-    this.codexEngine = new CodexEngine();
+    this.codexEngine = new AppServerEngine();
   }
 
   /**
@@ -122,6 +128,16 @@ export class ManagerAgent implements Agent {
       prompt = prompt.replace('{ESCALATION_JSON}', 'null');
     }
 
+    const deferredSteers = (input.deferredSteers ?? [])
+      .map((instruction) => instruction.trim())
+      .filter((instruction) => instruction.length > 0);
+    if (deferredSteers.length > 0) {
+      const steerLines = deferredSteers
+        .map((instruction, index) => `${index + 1}. ${instruction}`)
+        .join('\n');
+      prompt += `\n\n## Deferred User Steering (FIFO)\n以下は Claude 実行中に保留された追加指示です。今回の判断に反映してください。\n\n${steerLines}\n`;
+    }
+
     return prompt;
   }
 
@@ -133,7 +149,12 @@ export class ManagerAgent implements Agent {
 
     const result = await this.executeWithConfiguredEngine(
       prompt,
-      this.config.effort || 'high'
+      this.config.effort || 'high',
+      {
+        onAgentMessageDelta: input.onAgentMessageDelta,
+        onCommandOutputDelta: input.onCommandOutputDelta,
+        onAppServerEvent: input.onAppServerEvent,
+      }
     );
 
     if (!result.success) {
@@ -153,6 +174,22 @@ export class ManagerAgent implements Agent {
   abort(): void {
     this.claudeEngine.abort();
     this.codexEngine.abort();
+  }
+
+  getActiveThreadId(): string | null {
+    return this.codexEngine.getActiveThreadId();
+  }
+
+  async steer(instruction: string): Promise<SteerResult> {
+    if (this.activeEngine === null) {
+      return 'unavailable';
+    }
+    if (this.activeEngine === 'claude') {
+      return 'unsupported';
+    }
+
+    const accepted = await this.codexEngine.steer(instruction);
+    return accepted ? 'accepted' : 'unavailable';
   }
 
   /**
@@ -186,6 +223,11 @@ export class ManagerAgent implements Agent {
     const taskDispatchId = this.extractTaskDispatchTaskId(output);
     if (taskDispatchId) {
       return { type: 'dispatch_task', taskId: taskDispatchId };
+    }
+
+    const askUserPrompt = this.extractAskUserPrompt(output);
+    if (askUserPrompt) {
+      return { type: 'ask_user', prompt: askUserPrompt };
     }
 
     // HANDOFF.md の出力を探す（```markdown ブロック内または実際の完了レポート）
@@ -372,6 +414,122 @@ export class ManagerAgent implements Agent {
     return lastTaskId;
   }
 
+  /**
+   * ASK_USER 固定テキスト形式から質問を抽出する
+   *
+   * 対応形式:
+   * ASK_USER
+   * Context: task-1
+   * Question: Which option should we use?
+   * Options:
+   * - A: keep current
+   * - B: switch behavior
+   * Recommendation: B
+   * AllowFreeText: true
+   */
+  private extractAskUserPrompt(output: string): AskUserPrompt | null {
+    const lines = output.split(/\r?\n/);
+    let lastPrompt: AskUserPrompt | null = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().toUpperCase() !== 'ASK_USER') {
+        continue;
+      }
+
+      const parsed = this.parseAskUserPromptFromLines(lines, i + 1);
+      if (parsed) {
+        lastPrompt = parsed;
+      }
+    }
+
+    return lastPrompt;
+  }
+
+  private parseAskUserPromptFromLines(
+    lines: string[],
+    startIndex: number
+  ): AskUserPrompt | null {
+    let question: string | null = null;
+    let context: string | undefined;
+    let recommendation: string | undefined;
+    let allowFreeText: boolean | undefined;
+    const options: Array<{ label: string; description: string }> = [];
+    let readingOptions = false;
+
+    for (let i = startIndex; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.length === 0) {
+        continue;
+      }
+      if (line.startsWith('```')) {
+        break;
+      }
+      if (line.toUpperCase() === 'TASK_DISPATCH' || line.toUpperCase() === 'ASK_USER') {
+        break;
+      }
+      if (line === '<promise>COMPLETE</promise>' || /^#\s/.test(line)) {
+        break;
+      }
+
+      const questionMatch = line.match(/^question\s*:\s*(.+)$/i);
+      if (questionMatch) {
+        question = questionMatch[1].trim();
+        readingOptions = false;
+        continue;
+      }
+
+      const contextMatch = line.match(/^context\s*:\s*(.+)$/i);
+      if (contextMatch) {
+        context = contextMatch[1].trim();
+        readingOptions = false;
+        continue;
+      }
+
+      const recommendationMatch = line.match(/^recommendation\s*:\s*(.+)$/i);
+      if (recommendationMatch) {
+        recommendation = recommendationMatch[1].trim();
+        readingOptions = false;
+        continue;
+      }
+
+      const allowFreeTextMatch = line.match(/^allowfreetext\s*:\s*(.+)$/i);
+      if (allowFreeTextMatch) {
+        const raw = allowFreeTextMatch[1].trim().toLowerCase();
+        allowFreeText = raw !== 'false';
+        readingOptions = false;
+        continue;
+      }
+
+      if (/^options\s*:\s*$/i.test(line)) {
+        readingOptions = true;
+        continue;
+      }
+
+      if (readingOptions) {
+        const optionMatch = line.match(/^-+\s*([^:]+)\s*:\s*(.+)$/);
+        if (optionMatch) {
+          options.push({
+            label: optionMatch[1].trim(),
+            description: optionMatch[2].trim(),
+          });
+          continue;
+        }
+      }
+    }
+
+    if (!question || question.length === 0) {
+      return null;
+    }
+
+    return {
+      question,
+      context,
+      options: options.length > 0 ? options : undefined,
+      recommendation,
+      allowFreeText,
+    };
+  }
+
   private cleanTaskIdCandidate(value: string): string {
     return value.trim().replace(/^['"`]|['"`]$/g, '');
   }
@@ -506,18 +664,30 @@ ${JSON.stringify(workReport, null, 2)}
    */
   private executeWithConfiguredEngine(
     prompt: string,
-    effort: NonNullable<ManagerAgentConfig['effort']>
+    effort: NonNullable<ManagerAgentConfig['effort']>,
+    callbacks: {
+      onAgentMessageDelta?: (chunk: string) => void;
+      onCommandOutputDelta?: (chunk: string) => void;
+      onAppServerEvent?: (method: string, params: unknown) => void;
+    } = {}
   ): Promise<EngineResult> {
     if (this.shouldUseCodexEngine(this.config.model)) {
-      const options: CodexEngineOptions = {
+      this.activeEngine = 'codex';
+      const options: AppServerEngineOptions = {
         cwd: this.config.cwd,
         model: this.config.model,
         reasoningEffort: this.mapEffortForCodex(effort),
         execMode: true,
+        onStream: callbacks.onAgentMessageDelta,
+        onCommandOutput: callbacks.onCommandOutputDelta,
+        onEvent: callbacks.onAppServerEvent,
       };
-      return this.codexEngine.execute(prompt, options);
+      return this.codexEngine.execute(prompt, options).finally(() => {
+        this.activeEngine = null;
+      });
     }
 
+    this.activeEngine = 'claude';
     const options: ClaudeEngineOptions = {
       cwd: this.config.cwd,
       model: this.config.model,
@@ -525,7 +695,9 @@ ${JSON.stringify(workReport, null, 2)}
       skipPermissions: true,
       printMode: true,
     };
-    return this.claudeEngine.execute(prompt, options);
+    return this.claudeEngine.execute(prompt, options).finally(() => {
+      this.activeEngine = null;
+    });
   }
 
   /**
@@ -545,7 +717,7 @@ ${JSON.stringify(workReport, null, 2)}
    */
   private mapEffortForCodex(
     effort: NonNullable<ManagerAgentConfig['effort']>
-  ): NonNullable<CodexEngineOptions['reasoningEffort']> {
+  ): NonNullable<AppServerEngineOptions['reasoningEffort']> {
     if (effort === 'max') {
       return 'xhigh';
     }

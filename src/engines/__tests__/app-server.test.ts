@@ -1,0 +1,247 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { AppServerEngine } from '../app-server.js';
+import { JsonRpcTransport } from '../jsonrpc-transport.js';
+
+class MockTransport {
+  readonly requests: Array<{ method: string; params: unknown; timeoutMs?: number }> = [];
+  readonly notifications: Array<{ method: string; params: unknown }> = [];
+  private readonly notificationHandlers = new Set<
+    (method: string, params: unknown) => void | Promise<void>
+  >();
+  private serverRequestHandler:
+    | ((request: { method: string; id: string | number; params?: unknown }) => unknown | Promise<unknown>)
+    | null = null;
+  requestHandler: (
+    method: string,
+    params: unknown,
+    timeoutMs?: number
+  ) => Promise<unknown> = async () => ({});
+
+  start(): void {
+    // no-op
+  }
+
+  close(): void {
+    this.notificationHandlers.clear();
+  }
+
+  setServerRequestHandler(
+    handler: (request: { method: string; id: string | number; params?: unknown }) => unknown | Promise<unknown>
+  ): void {
+    this.serverRequestHandler = handler;
+  }
+
+  onNotification(
+    handler: (method: string, params: unknown) => void | Promise<void>
+  ): () => void {
+    this.notificationHandlers.add(handler);
+    return () => {
+      this.notificationHandlers.delete(handler);
+    };
+  }
+
+  notify(method: string, params?: unknown): void {
+    this.notifications.push({ method, params });
+  }
+
+  async request<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
+    this.requests.push({ method, params, timeoutMs });
+    return await this.requestHandler(method, params, timeoutMs) as T;
+  }
+
+  async emitNotification(method: string, params: unknown): Promise<void> {
+    for (const handler of this.notificationHandlers) {
+      await handler(method, params);
+    }
+  }
+
+  async handleServerRequest(method: string, id: number, params?: unknown): Promise<unknown> {
+    if (!this.serverRequestHandler) {
+      throw new Error('no server request handler');
+    }
+    return await this.serverRequestHandler({ method, id, params });
+  }
+}
+
+function createFakeChildProcess(): ChildProcessWithoutNullStreams {
+  const emitter = new EventEmitter() as EventEmitter & {
+    stdin: PassThrough;
+    stdout: PassThrough;
+    stderr: PassThrough;
+    killed: boolean;
+    kill: (signal?: NodeJS.Signals) => boolean;
+  };
+  emitter.stdin = new PassThrough();
+  emitter.stdout = new PassThrough();
+  emitter.stderr = new PassThrough();
+  emitter.killed = false;
+  emitter.kill = () => {
+    emitter.killed = true;
+    setImmediate(() => {
+      emitter.emit('close', 0);
+    });
+    return true;
+  };
+  return emitter as unknown as ChildProcessWithoutNullStreams;
+}
+
+describe('AppServerEngine', () => {
+  it('executes a turn and streams agent deltas', async () => {
+    const transport = new MockTransport();
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        return { thread: { id: 'thr_1' } };
+      }
+      if (method === 'turn/start') {
+        setImmediate(async () => {
+          await transport.emitNotification('item/agentMessage/delta', {
+            threadId: 'thr_1',
+            turnId: 'turn_1',
+            itemId: 'item_1',
+            delta: 'hello ',
+          });
+          await transport.emitNotification('item/agentMessage/delta', {
+            threadId: 'thr_1',
+            turnId: 'turn_1',
+            itemId: 'item_1',
+            delta: 'world',
+          });
+          await transport.emitNotification('turn/completed', {
+            threadId: 'thr_1',
+            turn: {
+              id: 'turn_1',
+              status: 'completed',
+              error: null,
+            },
+          });
+        });
+        return { turn: { id: 'turn_1' } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: () => createFakeChildProcess(),
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    const chunks: string[] = [];
+    const events: string[] = [];
+    const result = await engine.execute('test prompt', {
+      cwd: process.cwd(),
+      onStream: (chunk) => {
+        chunks.push(chunk);
+      },
+      onEvent: (method) => {
+        events.push(method);
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('hello world');
+    expect(chunks).toEqual(['hello ', 'world']);
+    expect(events).toEqual(['item/agentMessage/delta', 'item/agentMessage/delta', 'turn/completed']);
+    expect(engine.getActiveThreadId()).toBe('thr_1');
+    expect(transport.notifications.some((event) => event.method === 'initialized')).toBe(true);
+  });
+
+  it('sends turn/interrupt on abort', async () => {
+    const transport = new MockTransport();
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        return { thread: { id: 'thr_2' } };
+      }
+      if (method === 'turn/start') {
+        return { turn: { id: 'turn_2' } };
+      }
+      if (method === 'turn/interrupt') {
+        setImmediate(async () => {
+          await transport.emitNotification('turn/completed', {
+            threadId: 'thr_2',
+            turn: {
+              id: 'turn_2',
+              status: 'interrupted',
+              error: null,
+            },
+          });
+        });
+        return {};
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: () => createFakeChildProcess(),
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    const executePromise = engine.execute('long running');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    engine.abort();
+    const result = await executePromise;
+
+    const interruptCall = transport.requests.find((req) => req.method === 'turn/interrupt');
+    expect(interruptCall).toBeDefined();
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Turn interrupted');
+  });
+
+  it('sends turn/steer while a turn is active', async () => {
+    const transport = new MockTransport();
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        return { thread: { id: 'thr_3' } };
+      }
+      if (method === 'turn/start') {
+        return { turn: { id: 'turn_3' } };
+      }
+      if (method === 'turn/steer') {
+        setImmediate(async () => {
+          await transport.emitNotification('item/agentMessage/delta', {
+            threadId: 'thr_3',
+            turnId: 'turn_3',
+            itemId: 'item_3',
+            delta: 'updated',
+          });
+          await transport.emitNotification('turn/completed', {
+            threadId: 'thr_3',
+            turn: {
+              id: 'turn_3',
+              status: 'completed',
+              error: null,
+            },
+          });
+        });
+        return { turnId: 'turn_3' };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: () => createFakeChildProcess(),
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    const executePromise = engine.execute('long running');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const steerAccepted = await engine.steer('follow this direction');
+    const result = await executePromise;
+
+    const steerCall = transport.requests.find((req) => req.method === 'turn/steer');
+    expect(steerAccepted).toBe(true);
+    expect(steerCall).toBeDefined();
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('updated');
+  });
+});

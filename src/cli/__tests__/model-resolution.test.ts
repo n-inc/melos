@@ -84,5 +84,11 @@ describe('CLI model resolution', () => {
       expect(resolveMaxIterations({}, { maxIterations: 25 }, 'review-only')).toBe(25);
       expect(resolveMaxIterations({}, {}, 'default')).toBe(30);
     });
+
+    it('registers resume subcommand', () => {
+      const program = createProgram();
+      const resumeCommand = program.commands.find((command) => command.name() === 'resume');
+      expect(resumeCommand).toBeDefined();
+    });
   });
 });

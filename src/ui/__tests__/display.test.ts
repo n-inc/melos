@@ -4,7 +4,9 @@ import {
   formatElapsed,
   createProgressBar,
   createColoredProgressBar,
+  createAppServerEventLogger,
   createSpinner,
+  createStreamRenderer,
   printHandoffContent,
   printCompletion,
 } from '../display.js';
@@ -260,6 +262,115 @@ describe('display.ts', () => {
       expect(output).toContain('処理中...');
       expect(output).toContain('✗ 失敗');
       expect(output).not.toContain('⠋');
+    });
+  });
+
+  describe('createStreamRenderer', () => {
+    let stderrOutput: string[];
+    let originalWrite: typeof process.stderr.write;
+
+    beforeEach(() => {
+      stderrOutput = [];
+      originalWrite = process.stderr.write;
+      process.stderr.write = ((chunk: string) => {
+        stderrOutput.push(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+    });
+
+    afterEach(() => {
+      process.stderr.write = originalWrite;
+    });
+
+    test('renders agent deltas as plain lines', () => {
+      const renderer = createStreamRenderer();
+      renderer.writeAgentDelta('hello\nworld');
+      renderer.finish();
+
+      const output = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(output).toContain('hello');
+      expect(output).toContain('world');
+    });
+
+    test('renders command deltas as plain lines', () => {
+      const renderer = createStreamRenderer();
+      renderer.writeCommandDelta('npm test\nok');
+      renderer.finish();
+
+      const output = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(output).toContain('npm test');
+      expect(output).toContain('ok');
+    });
+  });
+
+  describe('createAppServerEventLogger', () => {
+    let stderrOutput: string[];
+    let originalWrite: typeof process.stderr.write;
+
+    beforeEach(() => {
+      stderrOutput = [];
+      originalWrite = process.stderr.write;
+      process.stderr.write = ((chunk: string) => {
+        stderrOutput.push(chunk);
+        return true;
+      }) as typeof process.stderr.write;
+    });
+
+    afterEach(() => {
+      process.stderr.write = originalWrite;
+    });
+
+    test('prints event method and params summary', () => {
+      const logger = createAppServerEventLogger('worker');
+      logger.writeEvent('turn/completed', { turn: { id: 'turn_1', status: 'completed' } });
+
+      const output = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(output).toContain('turn completed');
+      expect(output).toContain('completed');
+      expect(output).toContain('turn_1');
+    });
+
+    test('prints failed command summary and suppresses thinking delta', () => {
+      const logger = createAppServerEventLogger('worker');
+      logger.writeEvent('item/reasoning/summaryTextDelta', { delta: 'Analyzing requirements' });
+      logger.writeEvent('item/started', {
+        item: { type: 'commandExecution', command: '/bin/zsh -lc "npm test"' },
+      });
+      logger.writeEvent('item/completed', {
+        item: { type: 'commandExecution', status: 'completed', exitCode: 0, durationMs: 123 },
+      });
+      logger.writeEvent('item/completed', {
+        item: { type: 'commandExecution', status: 'failed', exitCode: 1, durationMs: 123 },
+      });
+
+      const output = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(output).not.toContain('Analyzing requirements');
+      expect(output).toContain('command: /bin/zsh -lc "npm test"');
+      expect(output).not.toContain('exit=0');
+      expect(output).toContain('command failed');
+      expect(output).toContain('exit=1');
+    });
+
+    test('prints edited diff summary when file change is available', () => {
+      const logger = createAppServerEventLogger('worker');
+      logger.writeEvent('item/completed', {
+        item: {
+          type: 'fileChange',
+          changes: [
+            {
+              path: 'src/a.ts',
+              diff: '@@ -1,3 +1,3 @@\n const keep = true;\n-old\n+new\n const tail = 1;',
+            },
+          ],
+        },
+      });
+
+      const output = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(output).toContain('Edited src/a.ts (+1 -1)');
+      expect(output).toContain('@@ -1,3 +1,3 @@');
+      expect(output).toContain('const keep = true;');
+      expect(output).toContain('-old');
+      expect(output).toContain('+new');
     });
   });
 

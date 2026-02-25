@@ -133,6 +133,17 @@ describe('orchestrator.ts', () => {
         approved: false,
         feedback: 'needs more',
       };
+      const askUserDecision: ManagerDecision = {
+        type: 'ask_user',
+        prompt: {
+          question: 'Which option should we use?',
+          options: [
+            { label: 'A', description: 'keep current behavior' },
+            { label: 'B', description: 'switch behavior' },
+          ],
+          recommendation: 'B',
+        },
+      };
 
       expect(buildManagerDecisionMessage(dispatchDecision, baseTask.description)).toContain(
         'Manager 決定: [task-1] Implement login flow を Worker に指示'
@@ -148,6 +159,9 @@ describe('orchestrator.ts', () => {
       );
       expect(buildManagerDecisionMessage(reviewDecision)).toBe(
         'Manager 決定: レビュー継続'
+      );
+      expect(buildManagerDecisionMessage(askUserDecision)).toBe(
+        'Manager 決定: ユーザー確認が必要'
       );
     });
 

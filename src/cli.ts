@@ -15,6 +15,11 @@ import {
 } from './orchestrator.js';
 import { loadConfig, type MelosConfig } from './config/index.js';
 import type { ExecutionMode } from './state/progress.js';
+import {
+  clearSession,
+  loadSession,
+} from './state/session.js';
+import { createInteractiveInputController } from './ui/interactive.js';
 
 /**
  * CLI オプション
@@ -164,6 +169,47 @@ export function createProgram(): Command {
       await handleCommandAction(() => executeWithOptions(options));
     });
 
+  program
+    .command('resume')
+    .description('中断したセッションを再開')
+    .option(
+      '--max-iterations <number>',
+      '最大イテレーション数',
+      parseMaxIterations
+    )
+    .option(
+      '--model <model>',
+      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など）'
+    )
+    .option(
+      '--reasoning-effort <level>',
+      'Codex 推論努力レベル (minimal | low | medium | high | xhigh、デフォルト: high)'
+    )
+    .option(
+      '--effort <level>',
+      'Claude effort レベル (low | medium | high | max、デフォルト: max)'
+    )
+    .option(
+      '--thinking-budget <number>',
+      'Claude thinking budget（旧モデル向け、1024〜31999）',
+      parseThinkingBudget
+    )
+    .option(
+      '--plain',
+      'プレーン出力モード（スピナー無効）'
+    )
+    .option(
+      '--dry-run',
+      'ドライラン（計画のみ、Worker実行しない）'
+    )
+    .option(
+      '--review-only',
+      'レビューのみモード（コードレビュー→修正のループ）'
+    )
+    .action(async (options: CLIOptions) => {
+      await handleCommandAction(() => executeWithOptions(options, { resume: true }));
+    });
+
   return program;
 }
 
@@ -183,13 +229,30 @@ export async function run(argv?: string[]): Promise<void> {
 /**
  * オプションを使用して実行
  */
-export async function executeWithOptions(options: CLIOptions): Promise<void> {
+export async function executeWithOptions(
+  options: CLIOptions,
+  runtimeOptions: {
+    resume?: boolean;
+  } = {}
+): Promise<void> {
+  const shouldEnableInteractiveInput = process.stdin.isTTY && !options.plain;
+  const previousMelosNoSpinner = process.env.MELOS_NO_SPINNER;
+  const autoDisabledSpinnerForInteractive =
+    shouldEnableInteractiveInput
+    && process.env.MELOS_SPINNER !== '1'
+    && process.env.MELOS_NO_SPINNER !== '1';
+
+  if (autoDisabledSpinnerForInteractive) {
+    process.env.MELOS_NO_SPINNER = '1';
+  }
+
   // --plain オプションが指定された場合、環境変数を設定
   if (options.plain) {
     process.env.MELOS_NO_SPINNER = '1';
   }
 
   const cwd = process.cwd();
+  const melosDir = join(cwd, '.melos');
 
   // 設定ファイルを読み込み
   const fileConfig = await loadConfig(cwd);
@@ -223,19 +286,28 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   }
 
   // 設定を作成
+  const resumeSession = runtimeOptions.resume
+    ? await loadSession(melosDir)
+    : null;
+  if (runtimeOptions.resume && !resumeSession) {
+    throw new Error('再開可能なセッションがありません');
+  }
+
   const config: OrchestratorConfig = {
     cwd,
     maxIterations,
     prdFile: join(cwd, 'PRD.md'),
     taskFile: taskFilePath,
     progressFile: join(cwd, 'PROGRESS.md'),
-    melosDir: join(cwd, '.melos'),
+    melosDir,
     managerModel,
     managerEffort,
     workerModel,
     workerReasoningEffort,
     executionMode,
     dryRun: options.dryRun,
+    resumeSession,
+    interactiveInputEnabled: process.stdin.isTTY,
   };
 
   // オーケストレーターを作成
@@ -253,6 +325,13 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     process.exitCode = signalExitCode;
     console.error('\n\x1b[1;33m中断されました。\x1b[0m');
     orchestrator.abort();
+    void orchestrator.saveSession().then((saved) => {
+      if (saved) {
+        console.error('\x1b[0;36m再開: npx melos resume\x1b[0m');
+      }
+    }).catch(() => {
+      // 保存失敗時も中断自体は継続
+    });
     setTimeout(() => {
       process.exit(signalExitCode ?? 130);
     }, 3000).unref();
@@ -262,6 +341,7 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
   process.on('SIGTERM', handleSignal);
 
   let stdinResumedByMelos = false;
+  let interactiveInputController: ReturnType<typeof createInteractiveInputController> | null = null;
   const handleStdinData = (chunk: Buffer | string) => {
     const data = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
     // raw mode 等で Ctrl+C がシグナルではなく ETX として届くケースに対応
@@ -274,6 +354,14 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     process.stdin.on('data', handleStdinData);
     process.stdin.resume();
     stdinResumedByMelos = true;
+    interactiveInputController = createInteractiveInputController({
+      input: process.stdin,
+      output: process.stderr,
+      onSubmit: async (instruction) => {
+        return await orchestrator.steer(instruction);
+      },
+    });
+    interactiveInputController.start();
   }
 
   // スモークテスト用リセット（開始前）
@@ -290,23 +378,29 @@ export async function executeWithOptions(options: CLIOptions): Promise<void> {
     }
 
     if (!result.success) {
-      if (result.reason === 'escalation') {
-        console.error('\x1b[1;33mエスカレーションが必要です。回答を入力してください。\x1b[0m');
-        process.exit(2);
-      }
       const detail = result.error ? ` / error: ${result.error}` : '';
       console.error(
         `\x1b[0;31m実行が失敗しました (reason: ${result.reason}${detail})\x1b[0m`
       );
       process.exit(1);
     }
+
+    await clearSession(melosDir);
   } finally {
     process.removeListener('SIGINT', handleSignal);
     process.removeListener('SIGTERM', handleSignal);
     if (process.stdin.isTTY) {
       process.stdin.removeListener('data', handleStdinData);
+      interactiveInputController?.stop();
       if (stdinResumedByMelos && !process.stdin.isPaused()) {
         process.stdin.pause();
+      }
+    }
+    if (autoDisabledSpinnerForInteractive) {
+      if (previousMelosNoSpinner === undefined) {
+        delete process.env.MELOS_NO_SPINNER;
+      } else {
+        process.env.MELOS_NO_SPINNER = previousMelosNoSpinner;
       }
     }
   }

@@ -377,6 +377,22 @@ export interface Spinner {
 }
 
 /**
+ * App Server のストリーミング表示を行うレンダラー
+ */
+export interface StreamRenderer {
+  writeAgentDelta: (chunk: string) => void;
+  writeCommandDelta: (chunk: string) => void;
+  finish: () => void;
+}
+
+/**
+ * App Server 通知イベントの表示
+ */
+export interface AppServerEventLogger {
+  writeEvent: (method: string, params: unknown) => void;
+}
+
+/**
  * スピナーを作成
  * TTYでない場合やMELOS_NO_SPINNER=1の場合は、シンプルな行出力に切り替わる
  */
@@ -480,6 +496,550 @@ export function createSpinner(
   intervalId = setInterval(render, 100);
 
   return { update, stop, succeed, fail };
+}
+
+/**
+ * App Server ストリーミング出力を見やすい形式で表示する
+ */
+export function createStreamRenderer(): StreamRenderer {
+  const showThinking = process.env.MELOS_SHOW_THINKING === '1';
+  let agentBuffer = '';
+  let commandBuffer = '';
+  let partialAgentFlushTimer: NodeJS.Timeout | null = null;
+
+  const clearStatusLine = () => {
+    process.stderr.write('\x1b[2K\r');
+  };
+
+  const shouldSuppressThinkingLine = (line: string): boolean => {
+    if (showThinking) {
+      return false;
+    }
+    const normalized = line.trim().toLowerCase();
+    return normalized === 'thinking...'
+      || normalized.startsWith('thinking:')
+      || normalized.startsWith('thinking done:');
+  };
+
+  const flushPartialAgentLine = () => {
+    if (agentBuffer.length === 0) {
+      return;
+    }
+    if (shouldSuppressThinkingLine(agentBuffer)) {
+      agentBuffer = '';
+      return;
+    }
+    clearStatusLine();
+    process.stderr.write(agentBuffer + '\n');
+    agentBuffer = '';
+  };
+
+  const schedulePartialAgentFlush = () => {
+    if (partialAgentFlushTimer) {
+      clearTimeout(partialAgentFlushTimer);
+    }
+    partialAgentFlushTimer = setTimeout(() => {
+      partialAgentFlushTimer = null;
+      flushPartialAgentLine();
+    }, 500);
+    partialAgentFlushTimer.unref();
+  };
+
+  const flushAgentLines = (forceFlushPartial: boolean) => {
+    const lines = agentBuffer.split('\n');
+    agentBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (shouldSuppressThinkingLine(line)) {
+        continue;
+      }
+      clearStatusLine();
+      process.stderr.write(line + '\n');
+    }
+
+    if (forceFlushPartial && agentBuffer.length > 0) {
+      if (!shouldSuppressThinkingLine(agentBuffer)) {
+        clearStatusLine();
+        process.stderr.write(agentBuffer + '\n');
+      }
+      agentBuffer = '';
+    }
+  };
+
+  const writeAgentDelta = (chunk: string) => {
+    if (!chunk) {
+      return;
+    }
+    agentBuffer += chunk.replace(/\r\n/g, '\n');
+    flushAgentLines(false);
+    if (agentBuffer.length > 0) {
+      schedulePartialAgentFlush();
+    }
+  };
+
+  const flushCommandLines = (forceFlushPartial: boolean) => {
+    const lines = commandBuffer.split('\n');
+    commandBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      clearStatusLine();
+      process.stderr.write(line + '\n');
+    }
+
+    if (forceFlushPartial && commandBuffer.length > 0) {
+      clearStatusLine();
+      process.stderr.write(commandBuffer + '\n');
+      commandBuffer = '';
+    }
+  };
+
+  const writeCommandDelta = (chunk: string) => {
+    if (!chunk) {
+      return;
+    }
+    commandBuffer += chunk.replace(/\r\n/g, '\n');
+    flushCommandLines(false);
+  };
+
+  const finish = () => {
+    if (partialAgentFlushTimer) {
+      clearTimeout(partialAgentFlushTimer);
+      partialAgentFlushTimer = null;
+    }
+    flushAgentLines(true);
+    flushCommandLines(true);
+  };
+
+  return {
+    writeAgentDelta,
+    writeCommandDelta,
+    finish,
+  };
+}
+
+/**
+ * App Server の通知イベントを CLI 風に逐次表示する
+ */
+export function createAppServerEventLogger(
+  agentLabel: 'manager' | 'worker'
+): AppServerEventLogger {
+  void agentLabel;
+  return {
+    writeEvent: (method: string, params: unknown) => {
+      const editLines = formatEditEventLines(method, params);
+      if (editLines.length > 0) {
+        for (const line of editLines) {
+          process.stderr.write(`\x1b[2K\r${line}\n`);
+        }
+        return;
+      }
+
+      const line = formatAppServerEventLine(method, params);
+      if (!line) {
+        return;
+      }
+      process.stderr.write(`\x1b[2K\r${Colors.DIM}${line}${Colors.NC}\n`);
+    },
+  };
+}
+
+function formatAppServerEventLine(method: string, params: unknown): string | null {
+  const data = toRecord(params);
+  if (!data) {
+    return null;
+  }
+
+  if (method === 'thread/started') {
+    const thread = toRecord(data.thread);
+    const threadId = readStringAny(thread, ['id']) ?? readStringAny(data, ['threadId', 'thread_id']);
+    return threadId ? `thread started (${threadId})` : 'thread started';
+  }
+
+  if (method === 'turn/started') {
+    const turn = toRecord(data.turn);
+    const turnId = readStringAny(turn, ['id']) ?? readStringAny(data, ['turnId', 'turn_id']);
+    return turnId ? `turn started (${turnId})` : 'turn started';
+  }
+
+  if (method === 'turn/completed') {
+    const turn = toRecord(data.turn);
+    const turnId = readStringAny(turn, ['id']) ?? readStringAny(data, ['turnId', 'turn_id']);
+    const status = readStringAny(turn, ['status']);
+    if (turnId && status) {
+      return `turn completed (${status}, ${turnId})`;
+    }
+    if (status) {
+      return `turn completed (${status})`;
+    }
+    return 'turn completed';
+  }
+
+  if (method === 'item/started' || method === 'item/completed') {
+    const item = toRecord(data.item);
+    const itemType = readStringAny(item, ['type']) ?? 'item';
+    const normalizedItemType = normalizeItemType(itemType);
+    const phase = method === 'item/started' ? 'started' : 'completed';
+    if (normalizedItemType === 'usermessage') {
+      return null;
+    }
+    if (normalizedItemType === 'agentmessage') {
+      return null;
+    }
+    if (normalizedItemType === 'reasoning') {
+      if (phase === 'started') {
+        return 'thinking...';
+      }
+      return null;
+    }
+    if (normalizedItemType === 'commandexecution') {
+      const command = readStringAny(item, ['command']);
+      if (phase === 'started') {
+        return command ? `command: ${truncateLine(command, 140)}` : 'command started';
+      }
+      const status = readStringAny(item, ['status']) ?? 'completed';
+      const exitCode = readNumberAny(item, ['exitCode']);
+      const durationMs = readNumberAny(item, ['durationMs']);
+      const isFailure = status === 'failed' || (typeof exitCode === 'number' && exitCode !== 0);
+
+      // 成功時の completed ログはノイズになりやすいため非表示にする。
+      if (!isFailure) {
+        return null;
+      }
+
+      const result = [
+        status,
+        typeof exitCode === 'number' ? `exit=${exitCode}` : null,
+        typeof durationMs === 'number' ? `${durationMs}ms` : null,
+      ].filter((v): v is string => v !== null).join(', ');
+      return result ? `command failed (${result})` : 'command failed';
+    }
+    if (normalizedItemType === 'mcptoolcall') {
+      return `mcp tool ${phase}`;
+    }
+    if (normalizedItemType === 'filechange') {
+      return null;
+    }
+    return `${itemType} ${phase}`;
+  }
+
+  if (method === 'item/reasoning/summaryTextDelta') {
+    return null;
+  }
+
+  if (method === 'item/reasoning/summaryPartAdded') {
+    return null;
+  }
+
+  if (method === 'thread/tokenUsage/updated') {
+    const usage = toRecord(data.tokenUsage);
+    if (!usage) {
+      return null;
+    }
+    const input = readNumberAny(usage, ['inputTokens', 'input_tokens']);
+    const output = readNumberAny(usage, ['outputTokens', 'output_tokens']);
+    const total = readNumberAny(usage, ['totalTokens', 'total_tokens']);
+    const parts = [
+      typeof input === 'number' ? `in=${input}` : null,
+      typeof output === 'number' ? `out=${output}` : null,
+      typeof total === 'number' ? `total=${total}` : null,
+    ].filter((v): v is string => v !== null);
+    return parts.length > 0 ? `usage ${parts.join(' ')}` : null;
+  }
+
+  if (method === 'item/commandExecution/requestApproval') {
+    return 'approval requested (command)';
+  }
+
+  if (method === 'item/fileChange/requestApproval') {
+    return 'approval requested (file change)';
+  }
+
+  if (method === 'codex/event/apply_patch_begin' || method === 'codex/event/patch_apply_begin') {
+    return null;
+  }
+
+  if (method === 'codex/event/apply_patch_end' || method === 'codex/event/patch_apply_end') {
+    const msg = toRecord(data.msg);
+    const status = readStringAny(msg, ['status']) ?? 'completed';
+    return `patch ${status}`;
+  }
+
+  // delta や内部イベントの大量出力は表示しない（ストリーム表示と重複する）
+  if (
+    method.startsWith('item/agentMessage/')
+    || method.startsWith('item/commandExecution/outputDelta')
+    || method.startsWith('codex/event/')
+    || method === 'account/rateLimits/updated'
+  ) {
+    return null;
+  }
+
+  return null;
+}
+
+function normalizeItemType(itemType: string): string {
+  return itemType.replace(/[_-]/g, '').toLowerCase();
+}
+
+interface EditPreview {
+  path: string;
+  added: number;
+  removed: number;
+  diffLines: string[];
+}
+
+function formatEditEventLines(method: string, params: unknown): string[] {
+  const data = toRecord(params);
+  if (!data) {
+    return [];
+  }
+
+  const previews = extractEditPreviews(method, data);
+  if (previews.length === 0) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  const maxFiles = 4;
+  for (const preview of previews.slice(0, maxFiles)) {
+    lines.push(
+      `${Colors.CYAN}•${Colors.NC} Edited ${preview.path} ${Colors.DIM}(+${preview.added} -${preview.removed})${Colors.NC}`
+    );
+
+    const maxDiffLines = 10;
+    const visible = preview.diffLines.slice(0, maxDiffLines);
+    for (const line of visible) {
+      if (line.startsWith('+')) {
+        lines.push(`${Colors.GREEN}  ${line}${Colors.NC}`);
+      } else if (line.startsWith('-')) {
+        lines.push(`${Colors.RED}  ${line}${Colors.NC}`);
+      } else if (line.startsWith('@@')) {
+        lines.push(`${Colors.CYAN}  ${line}${Colors.NC}`);
+      } else if (line.startsWith(' ')) {
+        lines.push(`${Colors.DIM}  ${line}${Colors.NC}`);
+      } else {
+        lines.push(`${Colors.DIM}  ${line}${Colors.NC}`);
+      }
+    }
+    if (preview.diffLines.length > maxDiffLines) {
+      lines.push(
+        `${Colors.DIM}  ... (${preview.diffLines.length - maxDiffLines} more lines)${Colors.NC}`
+      );
+    }
+  }
+
+  if (previews.length > maxFiles) {
+    lines.push(`${Colors.DIM}... (${previews.length - maxFiles} more files)${Colors.NC}`);
+  }
+
+  return lines;
+}
+
+function extractEditPreviews(method: string, data: Record<string, unknown>): EditPreview[] {
+  if (method === 'codex/event/apply_patch_begin' || method === 'codex/event/patch_apply_begin') {
+    const msg = readRecordAny(data, ['msg']);
+    const changes = readRecordAny(msg, ['changes', 'file_changes']);
+    return extractEditPreviewsFromChangeMap(changes);
+  }
+
+  if (method === 'item/completed') {
+    const item = readRecordAny(data, ['item']);
+    const itemType = normalizeItemType(readStringAny(item, ['type']) ?? '');
+    if (itemType !== 'filechange') {
+      return [];
+    }
+
+    const changes = item?.changes;
+    if (!Array.isArray(changes)) {
+      return [];
+    }
+    return extractEditPreviewsFromChangeArray(changes);
+  }
+
+  return [];
+}
+
+function extractEditPreviewsFromChangeMap(
+  changes: Record<string, unknown> | null
+): EditPreview[] {
+  if (!changes) {
+    return [];
+  }
+
+  const previews: EditPreview[] = [];
+  for (const [path, value] of Object.entries(changes)) {
+    const change = toRecord(value);
+    const type = readStringAny(change, ['type']);
+    if (!type) {
+      continue;
+    }
+
+    if (type === 'add') {
+      const content = readStringAny(change, ['content']) ?? '';
+      const diffLines = contentToDiffLines(content, '+');
+      previews.push({
+        path,
+        added: countTextLines(content),
+        removed: 0,
+        diffLines,
+      });
+      continue;
+    }
+
+    if (type === 'delete') {
+      const content = readStringAny(change, ['content']) ?? '';
+      const diffLines = contentToDiffLines(content, '-');
+      previews.push({
+        path,
+        added: 0,
+        removed: countTextLines(content),
+        diffLines,
+      });
+      continue;
+    }
+
+    const diff = readStringAny(change, ['unified_diff', 'diff']) ?? '';
+    const parsed = parseUnifiedDiff(diff);
+    previews.push({
+      path,
+      added: parsed.added,
+      removed: parsed.removed,
+      diffLines: parsed.lines,
+    });
+  }
+
+  return previews;
+}
+
+function extractEditPreviewsFromChangeArray(changes: unknown[]): EditPreview[] {
+  const previews: EditPreview[] = [];
+  for (const value of changes) {
+    const change = toRecord(value);
+    const path = readStringAny(change, ['path']) ?? '(unknown)';
+    const diff = readStringAny(change, ['diff']) ?? '';
+    const parsed = parseUnifiedDiff(diff);
+    previews.push({
+      path,
+      added: parsed.added,
+      removed: parsed.removed,
+      diffLines: parsed.lines,
+    });
+  }
+  return previews;
+}
+
+function parseUnifiedDiff(diff: string): {
+  added: number;
+  removed: number;
+  lines: string[];
+} {
+  let added = 0;
+  let removed = 0;
+  const lines: string[] = [];
+  for (const rawLine of diff.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (line.startsWith('+++') || line.startsWith('---')) {
+      continue;
+    }
+    if (line.startsWith('@@')) {
+      lines.push(truncateDiffLine(line, 160));
+      continue;
+    }
+    if (line.startsWith('+')) {
+      added++;
+      lines.push(truncateDiffLine(line, 160));
+      continue;
+    }
+    if (line.startsWith('-')) {
+      removed++;
+      lines.push(truncateDiffLine(line, 160));
+      continue;
+    }
+    if (line.startsWith(' ') || line.startsWith('\\')) {
+      lines.push(truncateDiffLine(line, 160));
+    }
+  }
+  return { added, removed, lines };
+}
+
+function contentToDiffLines(content: string, prefix: '+' | '-'): string[] {
+  return content
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => truncateDiffLine(`${prefix}${line}`, 160));
+}
+
+function countTextLines(content: string): number {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\n$/, '');
+  if (normalized.length === 0) {
+    return 0;
+  }
+  return normalized.split('\n').length;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readStringAny(source: Record<string, unknown> | null, keys: string[]): string | null {
+  if (!source) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string') {
+      return value;
+    }
+  }
+  return null;
+}
+
+function readNumberAny(source: Record<string, unknown> | null, keys: string[]): number | null {
+  if (!source) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'number') {
+      return value;
+    }
+  }
+  return null;
+}
+
+function truncateLine(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return normalized.slice(0, maxLength - 3) + '...';
+}
+
+function truncateDiffLine(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return value.slice(0, maxLength - 3) + '...';
+}
+
+function readRecordAny(
+  source: Record<string, unknown> | null,
+  keys: string[]
+): Record<string, unknown> | null {
+  if (!source) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = toRecord(source[key]);
+    if (value) {
+      return value;
+    }
+  }
+  return null;
 }
 
 /**

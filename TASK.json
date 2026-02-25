@@ -1,0 +1,9 @@
+[
+  {
+    "id": "review-code-g1",
+    "description": "[Code Review] 変更差分中心で P1/P2 相当の品質問題を確認する (generation 1)",
+    "passes": false,
+    "reviewType": "code",
+    "reviewGeneration": 1
+  }
+]

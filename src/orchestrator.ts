@@ -4,7 +4,14 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 import { ManagerAgent, type ManagerAgentConfig } from './agents/manager.js';
 import { WorkerAgent, type WorkerAgentConfig } from './agents/worker.js';
-import type { ManagerInput, WorkerInput, ManagerDecision, WorkerResult } from './agents/types.js';
+import type {
+  AskUserPrompt,
+  ManagerInput,
+  WorkerInput,
+  ManagerDecision,
+  WorkerResult,
+  SteerResult,
+} from './agents/types.js';
 import {
   loadTasks,
   saveTasks,
@@ -29,12 +36,17 @@ import {
 import type { ExecutionMode } from './state/progress.js';
 import {
   type Escalation,
-  saveEscalation,
   loadEscalation,
   clearEscalation,
 } from './state/escalation.js';
 import {
+  type MelosSession,
+  saveSession as saveSessionState,
+} from './state/session.js';
+import {
+  createAppServerEventLogger,
   createSpinner,
+  createStreamRenderer,
   formatElapsed,
   type Spinner,
 } from './ui/display.js';
@@ -67,6 +79,10 @@ export interface OrchestratorConfig {
   executionMode?: ExecutionMode;
   /** ドライラン（計画のみ、Worker実行しない） */
   dryRun?: boolean;
+  /** 中断セッションからの再開情報 */
+  resumeSession?: MelosSession | null;
+  /** 対話入力が可能かどうか */
+  interactiveInputEnabled?: boolean;
 }
 
 /**
@@ -78,12 +94,20 @@ export interface LoopResult {
   /** 完了したイテレーション数 */
   completedIterations: number;
   /** 終了理由 */
-  reason: 'complete' | 'max_iterations' | 'error' | 'escalation';
+  reason: 'complete' | 'max_iterations' | 'error';
   /** エラーメッセージ（エラー時） */
   error?: string;
   /** HANDOFF 内容（完了時） */
   handoffContent?: string;
 }
+
+export type OrchestratorSteerResult =
+  | { status: 'accepted' }
+  | { status: 'answered'; answer: string }
+  | { status: 'queued'; queuedCount: number; target: 'manager-codex' }
+  | { status: 'unavailable' }
+  | { status: 'unsupported' }
+  | { status: 'error'; message: string };
 
 /**
  * オーケストレーター状態
@@ -95,7 +119,12 @@ interface OrchestratorState {
   progress: string | null;
   lastWorkReport: WorkReport | null;
   pendingEscalation: Escalation | null;
+  pendingQuestion: AskUserPrompt | null;
+  currentTaskId: string | null;
+  pendingSteers: string[];
 }
+
+const CODEX_MODEL_PATTERN = /codex/i;
 
 /**
  * カラー出力用の ANSI コード
@@ -154,6 +183,9 @@ export class Orchestrator {
   private aborted: boolean = false;
   private loopStartTime: Date = new Date();
   private currentSpinner: Spinner | null = null;
+  private activeAgent: 'manager' | 'worker' | null = null;
+  private pendingResumeTaskId: string | null;
+  private pendingQuestionAnswerResolver: (() => void) | null = null;
   private static readonly DEFAULT_WORKER_MODEL = 'gpt-5.3-codex';
   private static readonly DEFAULT_MANAGER_EFFORT = 'high';
   private static readonly DEFAULT_WORKER_EFFORT = 'high';
@@ -178,17 +210,25 @@ export class Orchestrator {
       reasoningEffort: config.workerReasoningEffort,
       claudeModel: config.managerModel,
       claudeEffort: config.managerEffort,
+      resumeThreadId: config.resumeSession?.threadId,
+      resumeTaskId: config.resumeSession?.currentTaskId,
     };
     this.worker = new WorkerAgent(workerConfig);
+    this.pendingResumeTaskId = config.resumeSession?.currentTaskId ?? null;
 
     // 状態初期化
     this.state = {
-      iteration: 1,
+      iteration: config.resumeSession?.iteration ?? 1,
       tasks: null,
       prd: null,
       progress: null,
       lastWorkReport: null,
-      pendingEscalation: null,
+      pendingEscalation: config.resumeSession?.pendingEscalation ?? null,
+      pendingQuestion: config.resumeSession?.pendingQuestion ?? null,
+      currentTaskId: config.resumeSession?.currentTaskId ?? null,
+      pendingSteers: (config.resumeSession?.pendingSteers ?? [])
+        .map((instruction) => instruction.trim())
+        .filter((instruction) => instruction.length > 0),
     };
   }
 
@@ -239,10 +279,42 @@ export class Orchestrator {
    * 1イテレーションを実行する
    */
   private async runIteration(): Promise<{
-    reason: 'continue' | 'complete' | 'escalation' | 'error';
+    reason: 'continue' | 'complete' | 'error';
     error?: string;
     handoffContent?: string;
   }> {
+    if (this.state.pendingQuestion) {
+      await this.resolvePendingQuestionFlow(this.state.pendingQuestion);
+      return { reason: 'continue' };
+    }
+
+    if (this.pendingResumeTaskId) {
+      const taskId = this.pendingResumeTaskId;
+      this.pendingResumeTaskId = null;
+      const latestTasks = await this.loadLatestTaskListForResolution();
+      const taskToRun = this.resolveTaskForExecution(taskId, latestTasks);
+      log('CYAN', `resume: 中断タスクを再開します (${taskToRun.id})`);
+
+      if (this.config.dryRun) {
+        log('YELLOW', '[DRY-RUN] resume では Worker 実行をスキップ');
+        return { reason: 'continue' };
+      }
+
+      const workerResult = await this.runWorker(taskToRun);
+      this.state.lastWorkReport = workerResult.report;
+      await saveWorkReport(this.config.melosDir, workerResult.report);
+
+      if (taskFileExists(this.config.taskFile)) {
+        this.state.tasks = await this.updateTaskListAfterWorker(
+          taskToRun.id,
+          taskToRun.description,
+          workerResult
+        );
+      }
+
+      return { reason: 'continue' };
+    }
+
     const elapsed = formatElapsed(this.loopStartTime);
     printIterationHeader(
       this.state.iteration,
@@ -257,6 +329,16 @@ export class Orchestrator {
     this.currentSpinner = createSpinner(
       buildManagerRunMessage(this.state.lastWorkReport)
     );
+    const managerStreamRenderer = createStreamRenderer();
+    const managerEventLogger = createAppServerEventLogger('manager');
+    let managerSpinnerStoppedForStream = false;
+    const stopManagerSpinnerForStream = () => {
+      if (managerSpinnerStoppedForStream) {
+        return;
+      }
+      this.currentSpinner?.stop();
+      managerSpinnerStoppedForStream = true;
+    };
 
     const managerInput: ManagerInput = {
       iteration: this.state.iteration,
@@ -266,19 +348,53 @@ export class Orchestrator {
       progress: this.state.progress,
       lastWorkReport: this.state.lastWorkReport,
       pendingEscalation: this.state.pendingEscalation,
+      deferredSteers: undefined,
       executionMode: this.config.executionMode ?? 'default',
+      onAgentMessageDelta: (chunk) => {
+        stopManagerSpinnerForStream();
+        managerStreamRenderer.writeAgentDelta(chunk);
+      },
+      onCommandOutputDelta: (chunk) => {
+        stopManagerSpinnerForStream();
+        managerStreamRenderer.writeCommandDelta(chunk);
+      },
+      onAppServerEvent: (method, params) => {
+        stopManagerSpinnerForStream();
+        managerEventLogger.writeEvent(method, params);
+      },
     };
+    const deferredSteersForManager = this.shouldDeliverDeferredSteersToManager()
+      ? [...this.state.pendingSteers]
+      : [];
+    if (deferredSteersForManager.length > 0) {
+      managerInput.deferredSteers = deferredSteersForManager;
+      log(
+        'CYAN',
+        `保留 steer を Manager(Codex) に ${deferredSteersForManager.length} 件引き渡し`
+      );
+    }
 
     let decision: ManagerDecision;
+    this.activeAgent = 'manager';
     try {
       decision = await this.manager.run(managerInput);
+      if (deferredSteersForManager.length > 0) {
+        this.state.pendingSteers.splice(0, deferredSteersForManager.length);
+      }
+      if (this.state.pendingEscalation?.status === 'answered') {
+        this.state.pendingEscalation = null;
+      }
     } catch (error) {
+      managerStreamRenderer.finish();
       this.currentSpinner.fail('Manager 実行エラー');
       return {
         reason: 'error',
         error: error instanceof Error ? error.message : String(error),
       };
+    } finally {
+      this.activeAgent = null;
     }
+    managerStreamRenderer.finish();
 
     // 2. 判断に応じて行動
     switch (decision.type) {
@@ -319,30 +435,17 @@ export class Orchestrator {
         return { reason: 'continue' };
       }
 
+      case 'ask_user': {
+        this.currentSpinner.succeed(buildManagerDecisionMessage(decision));
+        await this.resolvePendingQuestionFlow(decision.prompt);
+        return { reason: 'continue' };
+      }
+
       case 'escalate': {
         this.currentSpinner.succeed(buildManagerDecisionMessage(decision));
-        const escalation = decision.escalation;
-        await saveEscalation(this.config.melosDir, escalation);
-        this.state.pendingEscalation = escalation;
-
-        log('YELLOW', '');
-        log('YELLOW', '========================================');
-        log('YELLOW', 'エスカレーション');
-        log('YELLOW', '========================================');
-        log('YELLOW', `タイプ: ${escalation.type}`);
-        log('YELLOW', `質問: ${escalation.question}`);
-        if (escalation.options) {
-          log('YELLOW', 'オプション:');
-          for (const opt of escalation.options) {
-            log('YELLOW', `  - ${opt.label}: ${opt.description}`);
-          }
-        }
-        if (escalation.recommendation) {
-          log('CYAN', `推奨: ${escalation.recommendation}`);
-        }
-        log('YELLOW', '');
-
-        return { reason: 'escalation' };
+        const prompt = this.toAskUserPrompt(decision.escalation);
+        await this.resolvePendingQuestionFlow(prompt);
+        return { reason: 'continue' };
       }
 
       case 'complete': {
@@ -405,6 +508,16 @@ export class Orchestrator {
     );
 
     this.currentSpinner = createSpinner(buildWorkerRunMessage(task));
+    const streamRenderer = createStreamRenderer();
+    const eventLogger = createAppServerEventLogger('worker');
+    let spinnerStoppedForStream = false;
+    const stopSpinnerForStream = () => {
+      if (spinnerStoppedForStream) {
+        return;
+      }
+      this.currentSpinner?.stop();
+      spinnerStoppedForStream = true;
+    };
 
     const workerInput: WorkerInput = {
       iteration: this.state.iteration,
@@ -412,12 +525,27 @@ export class Orchestrator {
       codebasePatterns: this.state.progress,
       prd: this.state.prd,
       briefing,
+      onAgentMessageDelta: (chunk) => {
+        stopSpinnerForStream();
+        streamRenderer.writeAgentDelta(chunk);
+      },
+      onCommandOutputDelta: (chunk) => {
+        stopSpinnerForStream();
+        streamRenderer.writeCommandDelta(chunk);
+      },
+      onAppServerEvent: (method, params) => {
+        stopSpinnerForStream();
+        eventLogger.writeEvent(method, params);
+      },
     };
 
     let result: WorkerResult;
+    this.state.currentTaskId = task.id;
+    this.activeAgent = 'worker';
     try {
       result = await this.worker.run(workerInput);
     } catch (error) {
+      streamRenderer.finish();
       const failedResult: WorkerResult = {
         type: 'failed',
         report: {
@@ -442,8 +570,12 @@ export class Orchestrator {
         },
       };
       this.currentSpinner.fail(buildWorkerFinishMessage(task, failedResult));
+      this.state.currentTaskId = null;
+      this.activeAgent = null;
       return failedResult;
     }
+    this.activeAgent = null;
+    streamRenderer.finish();
 
     const finishMessage = buildWorkerFinishMessage(task, result);
     // 結果に応じてスピナーを更新
@@ -472,7 +604,41 @@ export class Orchestrator {
       await this.appendLearnings(task.id, result.report);
     }
 
+    this.state.currentTaskId = null;
     return result;
+  }
+
+  /**
+   * 中断セッションを保存する
+   */
+  async saveSession(): Promise<boolean> {
+    const currentTaskId = this.state.currentTaskId;
+    const pendingSteers = this.state.pendingSteers
+      .map((instruction) => instruction.trim())
+      .filter((instruction) => instruction.length > 0);
+    const pendingQuestion = this.state.pendingQuestion ?? undefined;
+    const pendingEscalation = this.state.pendingEscalation ?? undefined;
+    if (!currentTaskId && pendingSteers.length === 0 && !pendingQuestion && !pendingEscalation) {
+      return false;
+    }
+
+    const threadId = currentTaskId
+      ? this.worker.getActiveThreadId() ?? this.manager.getActiveThreadId()
+      : undefined;
+
+    await saveSessionState(this.config.melosDir, {
+      threadId: threadId ?? undefined,
+      currentTaskId: currentTaskId ?? undefined,
+      iteration: this.state.iteration,
+      interruptedAt: new Date().toISOString(),
+      model: currentTaskId
+        ? this.config.workerModel ?? Orchestrator.DEFAULT_WORKER_MODEL
+        : undefined,
+      pendingSteers: pendingSteers.length > 0 ? pendingSteers : undefined,
+      pendingQuestion,
+      pendingEscalation,
+    });
+    return true;
   }
 
   /**
@@ -497,8 +663,28 @@ export class Orchestrator {
     // 前回の WORK_REPORT
     this.state.lastWorkReport = await loadWorkReport(this.config.melosDir);
 
-    // 保留中のエスカレーション
-    this.state.pendingEscalation = await loadEscalation(this.config.melosDir);
+    // 旧形式の保留エスカレーション（互換読み込み）
+    const fileEscalation = await loadEscalation(this.config.melosDir);
+    if (fileEscalation) {
+      this.state.pendingEscalation = fileEscalation;
+    }
+    if (this.state.pendingEscalation) {
+      const legacy = this.state.pendingEscalation;
+      if (legacy.status === 'answered' && typeof legacy.answer === 'string' && legacy.answer.trim().length > 0) {
+        if (this.shouldDeliverDeferredSteersToManager()) {
+          this.state.pendingSteers.push(
+            this.formatQuestionAnswerAsSteer(this.toAskUserPrompt(legacy), legacy.answer.trim())
+          );
+          this.state.pendingEscalation = null;
+        } else {
+          this.state.pendingEscalation = legacy;
+        }
+      } else if (!this.state.pendingQuestion) {
+        this.state.pendingQuestion = this.toAskUserPrompt(legacy);
+        this.state.pendingEscalation = null;
+      }
+      await clearEscalation(this.config.melosDir);
+    }
 
     if (this.config.executionMode === 'review-only') {
       await this.ensureReviewOnlyTaskPolicy();
@@ -638,6 +824,17 @@ export class Orchestrator {
       return this.state.tasks;
     }
     return this.state.tasks.filter((task) => task.reviewType !== 'product');
+  }
+
+  private shouldDeliverDeferredSteersToManager(): boolean {
+    if (this.state.pendingSteers.length === 0) {
+      return false;
+    }
+    const model = this.config.managerModel;
+    if (typeof model !== 'string' || model.trim().length === 0) {
+      return true;
+    }
+    return CODEX_MODEL_PATTERN.test(model);
   }
 
   private resolveTaskForExecution(
@@ -832,17 +1029,274 @@ export class Orchestrator {
     return false;
   }
 
+  private async resolvePendingQuestionFlow(prompt: AskUserPrompt): Promise<void> {
+    this.state.pendingQuestion = prompt;
+    this.printPendingQuestion(prompt);
+
+    if (!this.isInteractiveInputEnabled()) {
+      const auto = this.chooseAutomaticQuestionAnswer(prompt);
+      this.submitPendingQuestionAnswer(auto.answer, auto.display);
+      log('YELLOW', `非対話モードのため自動回答を採用: ${auto.display}`);
+      return;
+    }
+
+    await this.waitForPendingQuestionAnswer();
+  }
+
+  private waitForPendingQuestionAnswer(): Promise<void> {
+    if (!this.state.pendingQuestion) {
+      return Promise.resolve();
+    }
+    if (this.pendingQuestionAnswerResolver) {
+      return new Promise<void>((resolve) => {
+        const previous = this.pendingQuestionAnswerResolver;
+        if (!previous) {
+          resolve();
+          return;
+        }
+        this.pendingQuestionAnswerResolver = () => {
+          previous();
+          resolve();
+        };
+      });
+    }
+    return new Promise<void>((resolve) => {
+      this.pendingQuestionAnswerResolver = () => {
+        this.pendingQuestionAnswerResolver = null;
+        resolve();
+      };
+    });
+  }
+
+  private submitPendingQuestionAnswer(answer: string, displayAnswer: string): void {
+    const pendingQuestion = this.state.pendingQuestion;
+    if (!pendingQuestion) {
+      return;
+    }
+    if (this.shouldDeliverDeferredSteersToManager()) {
+      this.state.pendingSteers.push(this.formatQuestionAnswerAsSteer(pendingQuestion, answer));
+      this.state.pendingEscalation = null;
+    } else {
+      this.state.pendingEscalation = this.buildAnsweredEscalationFromPrompt(
+        pendingQuestion,
+        answer
+      );
+    }
+    this.state.pendingQuestion = null;
+    const resolver = this.pendingQuestionAnswerResolver;
+    this.pendingQuestionAnswerResolver = null;
+    if (resolver) {
+      resolver();
+    }
+    log('CYAN', `質問回答を受け付けました: ${displayAnswer}`);
+  }
+
+  private resolvePendingQuestionInput(
+    input: string,
+    prompt: AskUserPrompt
+  ): { ok: true; answer: string; display: string } | { ok: false; message: string } {
+    const text = input.trim();
+    if (text.length === 0) {
+      return { ok: false, message: '回答は空にできません' };
+    }
+
+    const options = prompt.options ?? [];
+    if (options.length === 0) {
+      return { ok: true, answer: text, display: text };
+    }
+
+    if (/^\d+$/.test(text)) {
+      const index = Number(text) - 1;
+      if (index < 0 || index >= options.length) {
+        return { ok: false, message: `選択肢は 1〜${options.length} で入力してください` };
+      }
+      const option = options[index];
+      return {
+        ok: true,
+        answer: option.label,
+        display: `${option.label}: ${option.description}`,
+      };
+    }
+
+    const byLabel = options.find((option) => option.label.toLowerCase() === text.toLowerCase());
+    if (byLabel) {
+      return {
+        ok: true,
+        answer: byLabel.label,
+        display: `${byLabel.label}: ${byLabel.description}`,
+      };
+    }
+
+    if (prompt.allowFreeText === false) {
+      return { ok: false, message: 'この質問は選択肢から回答してください（番号またはラベル）' };
+    }
+
+    return { ok: true, answer: text, display: text };
+  }
+
+  private printPendingQuestion(prompt: AskUserPrompt): void {
+    log('YELLOW', '');
+    log('YELLOW', '========================================');
+    log('YELLOW', 'ユーザー確認');
+    log('YELLOW', '========================================');
+    if (prompt.context) {
+      log('YELLOW', `コンテキスト: ${prompt.context}`);
+    }
+    log('YELLOW', `質問: ${prompt.question}`);
+    if (prompt.options && prompt.options.length > 0) {
+      log('YELLOW', '選択肢:');
+      for (let i = 0; i < prompt.options.length; i++) {
+        const option = prompt.options[i];
+        log('YELLOW', `  ${i + 1}. ${option.label}: ${option.description}`);
+      }
+    }
+    if (prompt.recommendation) {
+      log('CYAN', `推奨: ${prompt.recommendation}`);
+    }
+    if (this.isInteractiveInputEnabled()) {
+      if (prompt.options && prompt.options.length > 0) {
+        log('CYAN', '回答方法: 番号、ラベル、または自由入力');
+      } else {
+        log('CYAN', '回答方法: 自由入力');
+      }
+    }
+    log('YELLOW', '');
+  }
+
+  private chooseAutomaticQuestionAnswer(prompt: AskUserPrompt): {
+    answer: string;
+    display: string;
+  } {
+    const recommendation = prompt.recommendation?.trim();
+    const options = prompt.options ?? [];
+
+    if (recommendation && options.length > 0) {
+      const matched = options.find(
+        (option) => option.label.toLowerCase() === recommendation.toLowerCase()
+      );
+      if (matched) {
+        return {
+          answer: matched.label,
+          display: `${matched.label}: ${matched.description}`,
+        };
+      }
+    }
+
+    if (options.length > 0) {
+      const first = options[0];
+      return {
+        answer: first.label,
+        display: `${first.label}: ${first.description}`,
+      };
+    }
+
+    if (recommendation && recommendation.length > 0) {
+      return { answer: recommendation, display: recommendation };
+    }
+
+    const fallback = 'Recommendation がある場合はそれに従い、最善の方針で継続してください。';
+    return { answer: fallback, display: fallback };
+  }
+
+  private toAskUserPrompt(escalation: Escalation): AskUserPrompt {
+    return {
+      question: escalation.question,
+      context: escalation.context,
+      options: escalation.options,
+      recommendation: escalation.recommendation,
+      allowFreeText: true,
+    };
+  }
+
+  private buildAnsweredEscalationFromPrompt(prompt: AskUserPrompt, answer: string): Escalation {
+    return {
+      id: `esc-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      type: 'QUESTION',
+      context: prompt.context ?? this.state.currentTaskId ?? `iteration-${this.state.iteration}`,
+      question: prompt.question,
+      options: prompt.options,
+      recommendation: prompt.recommendation,
+      status: 'answered',
+      answer,
+      answeredAt: new Date().toISOString(),
+    };
+  }
+
+  private formatQuestionAnswerAsSteer(prompt: AskUserPrompt, answer: string): string {
+    const lines = ['[manager-question-answer]', `question: ${prompt.question}`, `answer: ${answer}`];
+    if (prompt.context) {
+      lines.push(`context: ${prompt.context}`);
+    }
+    if (prompt.recommendation) {
+      lines.push(`recommendation: ${prompt.recommendation}`);
+    }
+    return lines.join('\n');
+  }
+
+  private isInteractiveInputEnabled(): boolean {
+    if (typeof this.config.interactiveInputEnabled === 'boolean') {
+      return this.config.interactiveInputEnabled;
+    }
+    return process.stdin.isTTY;
+  }
+
+  /**
+   * 実行中ターンへ追加指示を送る
+   */
+  async steer(instruction: string): Promise<OrchestratorSteerResult> {
+    const text = instruction.trim();
+    if (text.length === 0) {
+      return { status: 'unavailable' };
+    }
+
+    if (!this.activeAgent && this.state.pendingQuestion) {
+      const resolved = this.resolvePendingQuestionInput(text, this.state.pendingQuestion);
+      if (!resolved.ok) {
+        return { status: 'error', message: resolved.message };
+      }
+      this.submitPendingQuestionAnswer(resolved.answer, resolved.display);
+      return { status: 'answered', answer: resolved.display };
+    }
+
+    let result: SteerResult;
+    try {
+      if (this.activeAgent === 'worker') {
+        result = await this.worker.steer(text);
+      } else if (this.activeAgent === 'manager') {
+        result = await this.manager.steer(text);
+      } else {
+        return { status: 'unavailable' };
+      }
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    if (result === 'accepted') {
+      return { status: 'accepted' };
+    }
+    if (result === 'unsupported') {
+      this.state.pendingSteers.push(text);
+      return {
+        status: 'queued',
+        queuedCount: this.state.pendingSteers.length,
+        target: 'manager-codex',
+      };
+    }
+    return { status: 'unavailable' };
+  }
+
   /**
    * エスカレーションに回答する
    */
   async answerEscalation(answer: string): Promise<void> {
-    if (!this.state.pendingEscalation) {
+    if (!this.state.pendingQuestion) {
       throw new Error('保留中のエスカレーションがありません');
     }
-
-    this.state.pendingEscalation.status = 'answered';
-    this.state.pendingEscalation.answer = answer;
-    await saveEscalation(this.config.melosDir, this.state.pendingEscalation);
+    this.submitPendingQuestionAnswer(answer.trim(), answer.trim());
   }
 
   /**
@@ -851,6 +1305,7 @@ export class Orchestrator {
   async clearPendingEscalation(): Promise<void> {
     await clearEscalation(this.config.melosDir);
     this.state.pendingEscalation = null;
+    this.state.pendingQuestion = null;
   }
 
   /**
@@ -860,6 +1315,11 @@ export class Orchestrator {
     this.aborted = true;
     this.manager.abort();
     this.worker.abort();
+    const resolver = this.pendingQuestionAnswerResolver;
+    this.pendingQuestionAnswerResolver = null;
+    if (resolver) {
+      resolver();
+    }
     if (this.currentSpinner) {
       this.currentSpinner.fail('中止されました');
     }
@@ -955,6 +1415,8 @@ export function buildManagerDecisionMessage(
       return 'Manager 決定: エラー';
     case 'review_complete':
       return 'Manager 決定: レビュー継続';
+    case 'ask_user':
+      return 'Manager 決定: ユーザー確認が必要';
   }
 }
 

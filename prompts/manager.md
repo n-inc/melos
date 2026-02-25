@@ -54,15 +54,15 @@
 
 ## 判断フロー
 
-### 1. エスカレーション確認
+### 1. 保留中の質問確認
 
-- 未回答エスカレーションがあれば最優先で処理する
+- 未回答の質問コンテキストがあれば最優先で処理する
 
 ### 2. 前回 WORK_REPORT 確認
 
 - `SUCCESS`: 完了判定し、`discoveredTasks` があればフォローアップとして扱う
 - `PARTIAL` / `FAILED` / `BLOCKED`: 原因を整理し、必要なら `TASK.json` を調整して次タスクを再実行する
-- エスカレーションは従来ルール（プロンプト判断）に従う
+- 不明点があれば `ASK_USER` 形式で人間に質問する
 
 ### 3. 次アクション決定
 
@@ -116,7 +116,7 @@
 
 以下のいずれか1つを必ず出力すること。
 - `TASK_DISPATCH`
-- `ESCALATION.json`
+- `ASK_USER`
 - `HANDOFF.md`
 
 ### タスク指示（TASK_DISPATCH）
@@ -137,20 +137,17 @@ TASK_DISPATCH
 task-1
 ```
 
-### エスカレーション（ESCALATION.json）
+### ユーザー質問（ASK_USER）
 
-```json
-{
-  "id": "esc-{timestamp}",
-  "type": "QUESTION | APPROVAL | BLOCKER",
-  "context": "関連タスクやファイル",
-  "question": "人間への質問",
-  "options": [
-    { "label": "A", "description": "選択肢A" },
-    { "label": "B", "description": "選択肢B" }
-  ],
-  "recommendation": "推奨する選択肢"
-}
+```text
+ASK_USER
+Context: 関連タスクやファイル（任意）
+Question: 人間への質問（必須）
+Options:
+- A: 選択肢A
+- B: 選択肢B
+Recommendation: 推奨する選択肢（任意）
+AllowFreeText: true | false（任意、未指定時は true）
 ```
 
 ### 完了報告（HANDOFF.md）

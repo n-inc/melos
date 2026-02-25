@@ -9,11 +9,33 @@ import type { ExecutionMode } from '../state/progress.js';
 export type AgentMode = 'manager' | 'worker';
 
 /**
+ * 実行中ターンへの steer 結果
+ */
+export type SteerResult = 'accepted' | 'unavailable' | 'unsupported';
+
+/**
+ * Manager がユーザーに確認する質問
+ */
+export interface AskUserPrompt {
+  /** 質問文 */
+  question: string;
+  /** 質問の背景 */
+  context?: string;
+  /** 選択肢 */
+  options?: Array<{ label: string; description: string }>;
+  /** 推奨回答 */
+  recommendation?: string;
+  /** 自由入力可否（未指定時は true） */
+  allowFreeText?: boolean;
+}
+
+/**
  * Manager の判断結果
  */
 export type ManagerDecision =
   | { type: 'dispatch_task'; taskId: string; briefing?: string }
   | { type: 'review_complete'; approved: boolean; feedback?: string }
+  | { type: 'ask_user'; prompt: AskUserPrompt }
   | { type: 'escalate'; escalation: Escalation }
   | { type: 'complete'; handoffContent: string }
   | { type: 'error'; message: string };
@@ -45,8 +67,16 @@ export interface ManagerInput {
   lastWorkReport: WorkReport | null;
   /** 未回答のエスカレーション */
   pendingEscalation: Escalation | null;
+  /** Claude 実行中に保留された steer 指示（FIFO） */
+  deferredSteers?: string[];
   /** 実行モード */
   executionMode?: ExecutionMode;
+  /** App Server の agent message delta ストリーム */
+  onAgentMessageDelta?: (chunk: string) => void;
+  /** App Server の command output delta ストリーム */
+  onCommandOutputDelta?: (chunk: string) => void;
+  /** App Server 通知イベント */
+  onAppServerEvent?: (method: string, params: unknown) => void;
 }
 
 /**
@@ -63,6 +93,12 @@ export interface WorkerInput {
   prd: string | null;
   /** Manager が合成したタスク固有ブリーフィング */
   briefing?: string;
+  /** App Server の agent message delta ストリーム */
+  onAgentMessageDelta?: (chunk: string) => void;
+  /** App Server の command output delta ストリーム */
+  onCommandOutputDelta?: (chunk: string) => void;
+  /** App Server 通知イベント */
+  onAppServerEvent?: (method: string, params: unknown) => void;
 }
 
 /**

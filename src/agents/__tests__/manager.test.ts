@@ -140,6 +140,48 @@ describe('ManagerAgent.parseDecision', () => {
     }
   });
 
+  it('parses ASK_USER fixed text format with options', () => {
+    const output = [
+      'assistant output',
+      'ASK_USER',
+      'Context: task-6',
+      'Question: Which option should we use?',
+      'Options:',
+      '- A: Keep current behavior',
+      '- B: Use new fallback',
+      'Recommendation: B',
+      'AllowFreeText: false',
+    ].join('\n');
+
+    const decision = parseDecision(output);
+    expect(decision.type).toBe('ask_user');
+    if (decision.type === 'ask_user') {
+      expect(decision.prompt.question).toBe('Which option should we use?');
+      expect(decision.prompt.context).toBe('task-6');
+      expect(decision.prompt.options).toEqual([
+        { label: 'A', description: 'Keep current behavior' },
+        { label: 'B', description: 'Use new fallback' },
+      ]);
+      expect(decision.prompt.recommendation).toBe('B');
+      expect(decision.prompt.allowFreeText).toBe(false);
+    }
+  });
+
+  it('returns error when ASK_USER has no Question field', () => {
+    const output = [
+      'ASK_USER',
+      'Context: task-7',
+      'Options:',
+      '- A: First option',
+    ].join('\n');
+
+    const decision = parseDecision(output);
+    expect(decision.type).toBe('error');
+    if (decision.type === 'error') {
+      expect(decision.message).toBe('Could not parse Manager decision from output');
+    }
+  });
+
   it('returns error when no decision can be parsed', () => {
     const decision = parseDecision('thinking\nno JSON decision here');
     expect(decision.type).toBe('error');

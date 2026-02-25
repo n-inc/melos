@@ -1,12 +1,21 @@
 import { writeFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { CodexEngine, type CodexEngineOptions } from '../engines/codex.js';
+import {
+  AppServerEngine,
+  type AppServerEngineOptions,
+} from '../engines/app-server.js';
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
 import { loadPromptRaw } from '../prompts/loader.js';
 import type { TaskEntry } from '../state/task.js';
 import type { WorkReport } from '../state/work-report.js';
-import type { Agent, WorkerInput, WorkerResult, AgentMode } from './types.js';
+import type {
+  Agent,
+  WorkerInput,
+  WorkerResult,
+  AgentMode,
+  SteerResult,
+} from './types.js';
 
 /**
  * Worker Agent 設定
@@ -24,6 +33,10 @@ export interface WorkerAgentConfig {
   claudeModel?: string;
   /** Claude effort レベル（task.model=claude のときに使用、任意） */
   claudeEffort?: 'low' | 'medium' | 'high' | 'max';
+  /** resume 時に再利用する threadId */
+  resumeThreadId?: string;
+  /** resume 対象 taskId */
+  resumeTaskId?: string;
 }
 
 /**
@@ -36,14 +49,19 @@ export class WorkerAgent implements Agent {
   readonly name = 'worker';
   readonly mode: AgentMode = 'worker';
 
-  private engine: CodexEngine;
+  private engine: AppServerEngine;
   private claudeEngine: ClaudeEngine;
   private config: WorkerAgentConfig;
+  private resumeThreadId: string | null;
+  private resumeTaskId: string | null;
+  private activeEngine: 'codex' | 'claude' | null = null;
 
   constructor(config: WorkerAgentConfig) {
     this.config = config;
-    this.engine = new CodexEngine();
+    this.engine = new AppServerEngine();
     this.claudeEngine = new ClaudeEngine();
+    this.resumeThreadId = config.resumeThreadId ?? null;
+    this.resumeTaskId = config.resumeTaskId ?? null;
   }
 
   /**
@@ -148,17 +166,39 @@ export class WorkerAgent implements Agent {
   async run(input: WorkerInput): Promise<WorkerResult> {
     const prompt = await this.buildPrompt(input);
     const executeWithClaude = this.shouldExecuteWithClaude(input.task);
+    const streamTranscript: string[] = [];
+    this.activeEngine = executeWithClaude ? 'claude' : 'codex';
 
-    const result = executeWithClaude
-      ? await this.claudeEngine.execute(prompt, this.buildClaudeOptions())
-      : await this.engine.execute(prompt, this.buildCodexOptions());
+    const result = await (executeWithClaude
+      ? this.claudeEngine.execute(prompt, this.buildClaudeOptions())
+      : this.engine.execute(
+        prompt,
+        this.buildCodexOptions(input.task, {
+          onAgentMessageDelta: (chunk) => {
+            streamTranscript.push(chunk);
+            input.onAgentMessageDelta?.(chunk);
+          },
+          onCommandOutputDelta: (chunk) => {
+            streamTranscript.push(`[command] ${chunk}`);
+            input.onCommandOutputDelta?.(chunk);
+          },
+          onAppServerEvent: (method, params) => {
+            streamTranscript.push(`[event] ${method} ${safeStringify(params)}\n`);
+            input.onAppServerEvent?.(method, params);
+          },
+        })
+      ))
+      .finally(() => {
+        this.activeEngine = null;
+      });
 
     // 実行ログをファイルに保存
     const logFilePath = await this.saveExecutionLog(
       input.iteration,
       input.task.id,
       result.output,
-      result.error
+      result.error,
+      streamTranscript.join('')
     );
 
     const report = this.parseWorkReport(input.iteration, input.task, result.output, result.success);
@@ -182,7 +222,8 @@ export class WorkerAgent implements Agent {
     iteration: number,
     taskId: string,
     output: string,
-    error?: string
+    error?: string,
+    streamTranscript?: string
   ): Promise<string> {
     const logsDir = join(this.config.cwd, '.melos', 'worker-logs');
     mkdirSync(logsDir, { recursive: true });
@@ -197,6 +238,7 @@ Timestamp: ${new Date().toISOString()}
 === Output ===
 ${output}
 
+${streamTranscript ? `=== Stream Transcript ===\n${streamTranscript}\n\n` : ''}
 ${error ? `=== Error ===\n${error}` : ''}
 `;
     await writeFile(filepath, content, 'utf-8');
@@ -335,12 +377,54 @@ ${error ? `=== Error ===\n${error}` : ''}
     this.claudeEngine.abort();
   }
 
-  private buildCodexOptions(): CodexEngineOptions {
+  getActiveThreadId(): string | null {
+    return this.engine.getActiveThreadId();
+  }
+
+  setResumeSession(threadId: string, taskId: string): void {
+    this.resumeThreadId = threadId;
+    this.resumeTaskId = taskId;
+  }
+
+  async steer(instruction: string): Promise<SteerResult> {
+    if (this.activeEngine === null) {
+      return 'unavailable';
+    }
+    if (this.activeEngine === 'claude') {
+      return 'unsupported';
+    }
+
+    const accepted = await this.engine.steer(instruction);
+    return accepted ? 'accepted' : 'unavailable';
+  }
+
+  private buildCodexOptions(
+    task: Pick<TaskEntry, 'id'>,
+    callbacks: Pick<
+      WorkerInput,
+      'onAgentMessageDelta' | 'onCommandOutputDelta' | 'onAppServerEvent'
+    > = {}
+  ): AppServerEngineOptions {
+    const shouldResume = this.resumeThreadId !== null
+      && this.resumeTaskId !== null
+      && this.resumeTaskId === task.id;
+    const threadId = shouldResume && this.resumeThreadId
+      ? this.resumeThreadId
+      : undefined;
+    if (shouldResume) {
+      this.resumeThreadId = null;
+      this.resumeTaskId = null;
+    }
+
     return {
       cwd: this.config.cwd,
       model: this.config.model,
       reasoningEffort: this.config.reasoningEffort || 'high',
       execMode: true,
+      threadId,
+      onStream: callbacks.onAgentMessageDelta,
+      onCommandOutput: callbacks.onCommandOutputDelta,
+      onEvent: callbacks.onAppServerEvent,
     };
   }
 
@@ -436,5 +520,13 @@ ${error ? `=== Error ===\n${error}` : ''}
     );
 
     return hasFrontendSignal && hasDesignSignal;
+  }
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
   }
 }

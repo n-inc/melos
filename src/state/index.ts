@@ -97,3 +97,12 @@ export {
   clearEscalation,
   generateEscalationId,
 } from './escalation.js';
+
+export {
+  type MelosSession,
+  getSessionPath,
+  sessionExists,
+  loadSession,
+  saveSession,
+  clearSession,
+} from './session.js';
