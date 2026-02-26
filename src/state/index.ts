@@ -106,3 +106,14 @@ export {
   saveSession,
   clearSession,
 } from './session.js';
+
+export {
+  type MelosRuntime,
+  getRuntimePath,
+  runtimeExists,
+  loadRuntime,
+  saveRuntime,
+  clearRuntime,
+  isProcessAlive,
+  terminateProcess,
+} from './runtime.js';

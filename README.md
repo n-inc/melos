@@ -32,6 +32,14 @@ TASK.json を監視し、新しいタスクが追加されると自動的に Mel
 npx melos watch
 ```
 
+### 外部停止（kill）
+
+同一プロジェクト（同一 `cwd`）で実行中の Melos に `SIGTERM` を送信します。
+
+```bash
+npx melos kill
+```
+
 ## オプション
 
 | オプション | 説明 | デフォルト |
@@ -133,6 +141,7 @@ Melos は以下のファイルを使用します：
 - **PRD.md**: 要件定義・受入基準
 - **PROGRESS.md**: 進捗ログ
 - **.melos.json**: プロジェクト設定ファイル（オプション）
+- **.melos/RUN.json**: 実行中プロセス情報（`melos kill` が参照）
 
 ## Manager の責務
 

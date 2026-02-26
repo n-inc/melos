@@ -90,5 +90,11 @@ describe('CLI model resolution', () => {
       const resumeCommand = program.commands.find((command) => command.name() === 'resume');
       expect(resumeCommand).toBeDefined();
     });
+
+    it('registers kill subcommand', () => {
+      const program = createProgram();
+      const killCommand = program.commands.find((command) => command.name() === 'kill');
+      expect(killCommand).toBeDefined();
+    });
   });
 });

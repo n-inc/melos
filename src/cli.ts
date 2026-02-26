@@ -20,6 +20,13 @@ import {
   clearSession,
   loadSession,
 } from './state/session.js';
+import {
+  clearRuntime,
+  isProcessAlive,
+  loadRuntime,
+  saveRuntime,
+  terminateProcess,
+} from './state/runtime.js';
 import { createInteractiveInputController } from './ui/interactive.js';
 import { playSystemSound } from './ui/sound.js';
 
@@ -49,6 +56,11 @@ export interface CLIOptions {
 
 /** Claude 専用モデル名（Worker では無効） */
 const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
+
+export type KillCommandResult =
+  | { status: 'killed'; pid: number }
+  | { status: 'not_running' }
+  | { status: 'stale'; pid: number };
 
 function notifyLifecycleEvent(event: OrchestratorLifecycleEvent): void {
   playSystemSound(event);
@@ -216,6 +228,26 @@ export function createProgram(): Command {
       await handleCommandAction(() => executeWithOptions(options, { resume: true }));
     });
 
+  program
+    .command('kill')
+    .description('同一プロジェクトで実行中の Melos を停止')
+    .action(async () => {
+      await handleCommandAction(async () => {
+        const result = await killMelosRun(process.cwd());
+        if (result.status === 'killed') {
+          console.log(`PID ${result.pid} に SIGTERM を送信しました。`);
+          return;
+        }
+        if (result.status === 'stale') {
+          console.error(`実行中の Melos が見つかりませんでした（stale PID: ${result.pid}）。`);
+          process.exit(1);
+          return;
+        }
+        console.error('実行中の Melos が見つかりませんでした。');
+        process.exit(1);
+      });
+    });
+
   return program;
 }
 
@@ -230,6 +262,25 @@ export async function run(argv?: string[]): Promise<void> {
   });
 
   await program.parseAsync(argv ?? process.argv);
+}
+
+/**
+ * 同一プロジェクトで実行中の Melos を停止する
+ */
+export async function killMelosRun(cwd: string): Promise<KillCommandResult> {
+  const melosDir = join(cwd, '.melos');
+  const runtime = await loadRuntime(melosDir);
+  if (!runtime) {
+    return { status: 'not_running' };
+  }
+
+  if (!isProcessAlive(runtime.pid)) {
+    await clearRuntime(melosDir);
+    return { status: 'stale', pid: runtime.pid };
+  }
+
+  terminateProcess(runtime.pid);
+  return { status: 'killed', pid: runtime.pid };
 }
 
 /**
@@ -376,6 +427,12 @@ export async function executeWithOptions(
     resetForSmokeTest();
   }
 
+  await saveRuntime(melosDir, {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    cwd,
+  });
+
   try {
     const result = await orchestrator.run();
 
@@ -394,6 +451,7 @@ export async function executeWithOptions(
 
     await clearSession(melosDir);
   } finally {
+    await clearRuntime(melosDir);
     process.removeListener('SIGINT', handleSignal);
     process.removeListener('SIGTERM', handleSignal);
     if (process.stdin.isTTY) {
