@@ -137,11 +137,44 @@ npx melos --dry-run
 
 Melos は以下のファイルを使用します：
 
-- **TASK.json**: タスク定義ファイル
+- **TASK.json**: タスク定義と完了状態（`passes` / `checks`）
 - **PRD.md**: 要件定義・受入基準
-- **PROGRESS.md**: 進捗ログ
+- **PROGRESS.md**: 次イテレーション判断のための学習・状況ログ
+- **HANDOFF.md**: 完了時の引き継ぎレポート（必要時）
 - **.melos.json**: プロジェクト設定ファイル（オプション）
 - **.melos/RUN.json**: 実行中プロセス情報（`melos kill` が参照）
+- **.melos/SESSION.json**: 中断時の再開情報（`melos resume` が参照）
+- **.melos/WORK_REPORT.json**: 直前 Worker 実行結果
+- **.melos/ESCALATION.json**: 未回答エスカレーションの互換保存
+
+## PROGRESS.md の推奨構成
+
+`PROGRESS.md` は「長い実況ログ」ではなく、次の判断に使う要点だけを残します。
+
+```md
+# Progress Log
+
+## Header
+- Mode: default
+- Started: 2026-02-26 14:10
+- Max Iterations: 30
+
+## Iterations
+### Iteration 1
+- Task: task-1
+- Result: SUCCESS
+- Summary: 認証APIのエラーハンドリングを統一
+- Verification: test ✅ / lint ✅ / typecheck ✅
+
+## Current Objective
+次に最優先で進める1項目
+
+## Learnings
+- 次タスクに再利用できる判断・知見
+
+## Open Questions / Risks
+- 未解決事項・リスク
+```
 
 ## Manager の責務
 

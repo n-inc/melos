@@ -575,13 +575,12 @@ function validateEffort(level: string): 'low' | 'medium' | 'high' | 'max' {
 /**
  * スモークテスト用リセット処理
  * TASK.json の passes と checks.passed を false にリセットし、証拠URLも空にする
- * PROGRESS.md と STATUS.json を削除
+ * PROGRESS.md を削除
  */
 function resetForSmokeTest(): void {
   const cwd = process.cwd();
   const taskPath = join(cwd, 'TASK.json');
   const progressPath = join(cwd, 'PROGRESS.md');
-  const statusPath = join(cwd, 'STATUS.json');
 
   console.log('\n🔄 Smoke Test リセット...');
 
@@ -625,12 +624,6 @@ function resetForSmokeTest(): void {
   if (existsSync(progressPath)) {
     unlinkSync(progressPath);
     console.log('  Removed PROGRESS.md');
-  }
-
-  // STATUS.json を削除
-  if (existsSync(statusPath)) {
-    unlinkSync(statusPath);
-    console.log('  Removed STATUS.json');
   }
 
   console.log('\n✅ リセット完了\n');

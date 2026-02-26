@@ -1,5 +1,20 @@
 import { spawnSync, execSync } from 'node:child_process';
-import type { GitState } from './status.js';
+
+/**
+ * Git 状態
+ */
+interface GitState {
+  /** 現在のブランチ名 */
+  branch: string;
+  /** リモートにプッシュ済みか */
+  isPushed: boolean;
+  /** PR情報（存在する場合） */
+  pullRequest: { number: number; url: string } | null;
+  /** 最後のコミットハッシュ */
+  lastCommitHash: string;
+  /** 取得時刻（ISO 8601） */
+  fetchedAt: string;
+}
 
 /**
  * 現在のブランチ名を取得

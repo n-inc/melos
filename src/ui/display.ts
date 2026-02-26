@@ -1,4 +1,3 @@
-import type { MelosStatus } from '../state/status.js';
 import type { ExecutionMode } from '../state/progress.js';
 
 /**
@@ -343,23 +342,6 @@ export function printIterationHeader(
   for (const line of lines) {
     process.stderr.write(line + '\n');
   }
-}
-
-/**
- * イテレーション開始時のヘッダーを表示（ステータスオブジェクトから）
- * NOTE: MelosStatusにはmodeが含まれないため、デフォルトモードを使用
- */
-export function printIterationHeaderFromStatus(status: MelosStatus): void {
-  printIterationHeader(
-    status.iteration,
-    status.maxIterations,
-    'default',
-    status.currentTask,
-    status.completedTasks,
-    status.totalTasks,
-    status.startedAt,
-    status.engine
-  );
 }
 
 /**

@@ -43,6 +43,7 @@
 5. レビュータスク（`review-product-g*` / `review-code-g*`）はコード修正せず監査のみ行う
 6. 報告は次の Worker / Manager が再現・判断できる粒度で記載する（事実・根拠・判断・次アクション）
 7. `checks` に `browser` がある場合、ブラウザ確認は `task.model: "claude"` を明示したタスクとして実施する（必要なら実装と確認を分離）
+8. `learnings` は原則 1-3 件を記載する（`SUCCESS` / `PARTIAL` で空配列にしない）
 
 ---
 
@@ -114,7 +115,7 @@ npm run typecheck
 
 1. 具体名を使う（抽象語のみを避け、ファイルパス・コマンド・テスト名を入れる）
 2. 成功/失敗の理由を書く（`passed: false` の項目は `note` 必須）
-3. `learnings` は「前提 → 発見 → 次回の活用」を1行で書く
+3. `learnings` は「前提 → 発見 → 次回の活用」を1行で書き、`SUCCESS` / `PARTIAL` では最低1件を記載する
 4. `PARTIAL` / `FAILED` / `BLOCKED` の場合、次の担当者が即着手できる情報を残す
 5. `keyDecisions` は「何を選んだか + なぜそうしたか」をセットで書く（設計トレードオフを優先）
 6. `criticalFiles` は次の担当者が先に読むべきファイルを 3-5 件、`context` 付きで書く

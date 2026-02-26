@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkerResult } from '../agents/types.js';
@@ -713,5 +713,28 @@ describe('Orchestrator briefing integration', () => {
     const result = await orchestrator.run();
     expect(result.success).toBe(true);
     expect(events).toEqual(['iteration_completed', 'run_completed']);
+  });
+
+  it('creates PROGRESS.md during loadState when file does not exist', async () => {
+    const progressFile = join(testDir, 'PROGRESS.md');
+    const orchestrator = new Orchestrator({
+      cwd: testDir,
+      maxIterations: 3,
+      prdFile: join(testDir, 'PRD.md'),
+      taskFile: join(testDir, 'TASK.json'),
+      progressFile,
+      melosDir: join(testDir, '.melos'),
+    });
+
+    await (
+      orchestrator as unknown as {
+        loadState: () => Promise<void>;
+      }
+    ).loadState();
+
+    await expect(readFile(progressFile, 'utf-8')).resolves.toBe('# Progress Log\n');
+    expect(
+      (orchestrator as unknown as { state: { progress: string | null } }).state.progress
+    ).toBe('# Progress Log\n');
   });
 });

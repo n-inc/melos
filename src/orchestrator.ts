@@ -134,6 +134,7 @@ interface OrchestratorState {
 const CODEX_MODEL_PATTERN = /codex/i;
 const DEFAULT_CODEX_MODEL_ID = 'gpt-5.3-codex';
 const DEFAULT_CLAUDE_MODEL_ID = 'opus';
+const INITIAL_PROGRESS_CONTENT = '# Progress Log\n';
 type InterruptedAgent = NonNullable<MelosSession['interruptedAgent']>;
 
 function resolveResumeInterruptedAgent(
@@ -784,9 +785,12 @@ export class Orchestrator {
       this.state.prd = await readFile(this.config.prdFile, 'utf-8');
     }
 
-    // PROGRESS.md
+    // PROGRESS.md（未作成でも初期化して常に生成）
     if (existsSync(this.config.progressFile)) {
       this.state.progress = await readFile(this.config.progressFile, 'utf-8');
+    } else {
+      await writeFile(this.config.progressFile, INITIAL_PROGRESS_CONTENT, 'utf-8');
+      this.state.progress = INITIAL_PROGRESS_CONTENT;
     }
 
     // 前回の WORK_REPORT
@@ -866,7 +870,7 @@ export class Orchestrator {
     const learningLines = formatLearningsForProgress(taskId, allLearnings, now).split('\n');
     const existing = existsSync(this.config.progressFile)
       ? await readFile(this.config.progressFile, 'utf-8')
-      : '# Progress Log\n';
+      : INITIAL_PROGRESS_CONTENT;
 
     const updated = upsertLearningsSection(existing, learningLines);
     await writeFile(this.config.progressFile, updated, 'utf-8');
