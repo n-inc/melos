@@ -88,7 +88,7 @@ export async function loadMissionPlan(path: string): Promise<MissionPlan> {
   }
 
   const raw = await readFile(path, 'utf-8');
-  const parsed = JSON.parse(raw) as MissionPlan;
+  const parsed = JSON.parse(raw) as unknown;
   validateMissionPlan(parsed);
   return normalizeMissionPlan(parsed);
 }
@@ -376,21 +376,45 @@ function normalizeFeature(feature: Feature, fallbackId?: string): Feature {
   };
 }
 
-function validateMissionPlan(plan: MissionPlan): void {
-  if (plan.version !== 2) {
-    throw new Error(`Mission plan version must be 2. received=${String((plan as { version?: unknown }).version)}`);
+function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {
+  if (typeof plan !== 'object' || plan === null) {
+    throw new Error(
+      'TASK.json の形式が不正です。Melos v0.8 では MissionPlan v2 オブジェクトのみ対応しています。'
+    );
   }
 
-  if (!plan.mission || typeof plan.mission.goal !== 'string' || plan.mission.goal.trim().length === 0) {
+  if (Array.isArray(plan)) {
+    throw new Error([
+      'TASK.json の形式が不正です: legacy task array は v0.8 でサポートされません（hard cutover）。',
+      '期待形式: {"version":2,"mission":{...},"milestones":[...]}',
+      '対応方法: TASK.json を MissionPlan v2 に置き換えてください。',
+    ].join('\n'));
+  }
+
+  const candidate = plan as Record<string, unknown>;
+  if (candidate.version !== 2) {
+    const received = candidate.version === undefined
+      ? 'undefined'
+      : JSON.stringify(candidate.version);
+    throw new Error([
+      `TASK.json の形式が不正です: top-level "version" は 2 である必要があります（received=${received}）。`,
+      '期待形式: {"version":2,"mission":{...},"milestones":[...]}',
+      '対応方法: TASK.json を MissionPlan v2 に置き換えてください。',
+    ].join('\n'));
+  }
+
+  const missionPlan = plan as MissionPlan;
+
+  if (!missionPlan.mission || typeof missionPlan.mission.goal !== 'string' || missionPlan.mission.goal.trim().length === 0) {
     throw new Error('Mission goal is required');
   }
 
-  if (!Array.isArray(plan.milestones) || plan.milestones.length === 0) {
+  if (!Array.isArray(missionPlan.milestones) || missionPlan.milestones.length === 0) {
     throw new Error('At least one milestone is required');
   }
 
   const milestoneIds = new Set<string>();
-  for (const milestone of plan.milestones) {
+  for (const milestone of missionPlan.milestones) {
     if (!milestone.id || milestone.id.trim().length === 0) {
       throw new Error('Milestone id is required');
     }

@@ -132,6 +132,19 @@ describe('state/mission', () => {
       { id: '1', description: 'legacy task', passes: false },
     ]), 'utf-8');
 
-    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/Mission plan version must be 2/);
+    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/legacy task array/);
+    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/MissionPlan v2/);
+  });
+
+  it('shows actionable error when version is missing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-missing-version-'));
+    const taskPath = join(dir, 'TASK.json');
+    writeFileSync(taskPath, JSON.stringify({
+      mission: { goal: 'x', constraints: [], successCriteria: [] },
+      milestones: [],
+    }), 'utf-8');
+
+    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/top-level "version" は 2/);
+    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/期待形式/);
   });
 });
