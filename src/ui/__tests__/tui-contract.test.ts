@@ -177,6 +177,24 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).toContain('Overview');
   });
 
+  it('ignores view keys before first state update', () => {
+    const h = createHarness();
+    h.ui.start(createSessionInfo(), {
+      onPause: h.onPause,
+      onResume: h.onResume,
+      onSteer: h.onSteer,
+    });
+    expect(h.getRendered()).toContain('INITIALIZING');
+
+    h.input.write('C');
+    h.input.write('W');
+    h.ui.updateState(createState());
+    h.ui.stop();
+
+    expect(h.getRendered()).toContain('Overview');
+    expect(h.getRendered()).not.toContain('Worker Log Stream');
+  });
+
   it('shows worker logs only in workers view', () => {
     const h = createHarness();
     h.ui.start(createSessionInfo());
@@ -187,6 +205,79 @@ describe('ui/tui contract', () => {
     h.ui.stop();
     expect(h.getRendered()).toContain('Worker Log Stream');
     expect(h.getRendered()).toContain('Execute npm test -- parser');
+  });
+
+  it('routes runtime log updates to the correct view sections', () => {
+    const h = createHarness();
+    h.ui.start(createSessionInfo());
+    h.ui.updateState(createState({
+      progressLog: [
+        { timestamp: '2026-02-28T09:00:00.000Z', message: 'progress only marker' },
+      ],
+      workerRuns: [
+        {
+          id: 1,
+          type: 'implement',
+          featureId: 'm1-f1',
+          milestoneId: 'm1',
+          status: 'running',
+          durationLabel: '0m 35s',
+          engine: 'codex',
+          model: 'gpt-5.3-codex',
+          log: ['worker-only-log-marker'],
+        },
+      ],
+    }));
+    expect(h.getRendered()).toContain('progress only marker');
+    expect(h.getRendered()).not.toContain('worker-only-log-marker');
+
+    h.input.write('W');
+    h.ui.stop();
+
+    expect(h.getRendered()).toContain('worker-only-log-marker');
+  });
+
+  it('keeps showing overview while worker log grows, until W is pressed', () => {
+    const h = createHarness();
+    h.ui.start(createSessionInfo());
+    h.ui.updateState(createState({
+      workerRuns: [
+        {
+          id: 1,
+          type: 'implement',
+          featureId: 'm1-f1',
+          milestoneId: 'm1',
+          status: 'running',
+          durationLabel: '0m 35s',
+          engine: 'codex',
+          model: 'gpt-5.3-codex',
+          log: ['worker-log-v1'],
+        },
+      ],
+    }));
+    expect(h.getRendered()).not.toContain('worker-log-v1');
+
+    h.ui.updateState(createState({
+      workerRuns: [
+        {
+          id: 1,
+          type: 'implement',
+          featureId: 'm1-f1',
+          milestoneId: 'm1',
+          status: 'running',
+          durationLabel: '0m 40s',
+          engine: 'codex',
+          model: 'gpt-5.3-codex',
+          log: ['worker-log-v1', 'worker-log-v2'],
+        },
+      ],
+    }));
+    expect(h.getRendered()).not.toContain('worker-log-v2');
+
+    h.input.write('W');
+    h.ui.stop();
+
+    expect(h.getRendered()).toContain('worker-log-v2');
   });
 
   it('locks hotkeys while input prompt is pending and forces overview', () => {

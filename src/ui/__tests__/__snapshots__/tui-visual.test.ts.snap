@@ -1,0 +1,160 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`ui/tui visual snapshots awaiting approval frame snapshot (input required) 1`] = `
+"● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
+● AWAITING_APPROVAL [███████████████░░░░░░░░░░░░░░░] 2/4 (50%)                                      
+╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
+║ Overview                                                                                         ║
+║ Active Feature                                          │ Features                             … ║
+║ ● m1-f2 Implement parser and CLI options                │ ● m1 Core                            … ║
+║                                                         │  ✓ m1-f1 Read files                  … ║
+║ Milestone: m1 Core                                      │ >● m1-f2 Implement parser and CLI opt… ║
+║ State: awaiting_approval                                │ ○ m2 Validation                      … ║
+║ Progress: 2/4 (50%)                                     │  ○ m2-f1 Run validations             … ║
+║ Branch: melos/mission/m1-f2                             │                                      … ║
+║                                                         │ Progress Log                         … ║
+║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
+║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
+║                                                         │ 09:00:10 worker #1 started           … ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+
+
+
+
+
+
+
+
+
+
+
+Input Required  Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort    
+[INPUT] Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort            "
+`;
+
+exports[`ui/tui visual snapshots initializing frame snapshot 1`] = `
+"● Mission Control  テキスト統計ユーティリティの追加         Time 0m 00s  Input 0  Cached 0  Output 0
+● INITIALIZING [░░░░░░░░░░] 0/0 (0%)                                                                
+Initializing mission runtime...                                                                     
+                                                                                                    
+Waiting for first status update from orchestrator.                                                  
+This usually appears in a few seconds.                                                              
+                                                                                                    
+If this does not change:                                                                            
+1. Confirm PRD.md exists                                                                            
+2. Confirm TASK.json is valid MissionPlan v2                                                        
+3. Press Ctrl+C to abort and re-run                                                                 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+Ctrl+C Abort  Tab Next  Shift+Tab Prev  Esc Overview                                                
+melos> initializing...                                                                              "
+`;
+
+exports[`ui/tui visual snapshots narrow terminal snapshot (80x24) 1`] = `
+"● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  …
+● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%)                            
+╔══════════════════════════════════════════════════════════════════════════════╗
+║ Overview                                                                     ║
+║ Active Feature                              │ Features                     … ║
+║ ● m1-f2 Implement parser and CLI options    │ ● m1 Core                    … ║
+║                                             │  ✓ m1-f1 Read files          … ║
+║ Milestone: m1 Core                          │ >● m1-f2 Implement parser and… ║
+║ State: running                              │ ○ m2 Validation              … ║
+║ Progress: 2/4 (50%)                         │  ○ m2-f1 Run validations     … ║
+║ Branch: melos/mission/m1-f2                 │                              … ║
+║                                             │ Progress Log                 … ║
+║ Expected Behavior                           │ 09:00:00 mission run started … ║
+║   Implement parser and CLI options          │ 09:00:05 Planning mission... … ║
+║                                             │ 09:00:10 worker #1 started   … ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+
+
+
+
+
+Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Ov…
+melos> Ctrl+G to steer                                                          "
+`;
+
+exports[`ui/tui visual snapshots overview frame snapshot 1`] = `
+"● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
+● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%)                                                
+╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
+║ Overview                                                                                         ║
+║ Active Feature                                          │ Features                             … ║
+║ ● m1-f2 Implement parser and CLI options                │ ● m1 Core                            … ║
+║                                                         │  ✓ m1-f1 Read files                  … ║
+║ Milestone: m1 Core                                      │ >● m1-f2 Implement parser and CLI opt… ║
+║ State: running                                          │ ○ m2 Validation                      … ║
+║ Progress: 2/4 (50%)                                     │  ○ m2-f1 Run validations             … ║
+║ Branch: melos/mission/m1-f2                             │                                      … ║
+║                                                         │ Progress Log                         … ║
+║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
+║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
+║                                                         │ 09:00:10 worker #1 started           … ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+
+
+
+
+
+
+
+
+
+
+
+Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview               
+melos> Ctrl+G to steer                                                                              "
+`;
+
+exports[`ui/tui visual snapshots workers frame snapshot 1`] = `
+"● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
+● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%)                                                
+╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
+║ Workers                                                                                          ║
+║ #     Type        Target                  Status      Duration    Engine/Model                   ║
+║ ────  ──────────  ──────────────────────  ──────────  ──────────  ────────────────────────────   ║
+║ 1     implement   m1-f2                   running     1m 12s      codex/gpt-5.3-codex            ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
+║ Active Worker                                                                                    ║
+║ #1 running 1m 12s                                                                                ║
+║ Type: implement                                                                                  ║
+║ Target: m1-f2                                                                                    ║
+║ Engine: codex                                                                                    ║
+║ Model: gpt-5.3-codex                                                                             ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
+║ Worker Log Stream                                                                                ║
+║ Read src/parser.ts                                                                               ║
+║ Execute npm test -- parser                                                                       ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+
+
+
+
+Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview               
+melos> Ctrl+G to steer                                                                              "
+`;

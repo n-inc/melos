@@ -80,6 +80,7 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Features');
     expect(lines).toContain('Progress Log');
     expect(lines).not.toContain('Active Worker');
+    expect(lines).not.toContain('Execute npm test -- auth');
   });
 
   it('renders features view with active feature details', () => {

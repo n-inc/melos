@@ -133,6 +133,14 @@ export function createRuntimeUI(
       return;
     }
 
+    // 初回状態が届くまでは画面遷移キーを受け付けない（Ctrl+Cのみ許可）
+    if (!state) {
+      if (raw === '\u0003') {
+        process.kill(process.pid, 'SIGINT');
+      }
+      return;
+    }
+
     const inputLocked = !steerMode && Boolean(state?.pendingPrompt);
     if (inputLocked) {
       if (raw === '\u0003') {
@@ -255,8 +263,12 @@ export function createRuntimeUI(
   };
 
   const updateState = (nextState: MissionControlState) => {
+    const firstStateUpdate = state === null;
     state = nextState;
-    if (nextState.pendingPrompt) {
+    if (firstStateUpdate) {
+      currentView = 'overview';
+      userChangedView = false;
+    } else if (nextState.pendingPrompt) {
       currentView = 'overview';
     } else if (!userChangedView) {
       currentView = 'overview';
@@ -296,6 +308,33 @@ export function createRuntimeUI(
     updateState,
     stop,
   };
+}
+
+export function renderTUIFrameForTest(input: {
+  session: SessionInfo;
+  state: MissionControlState | null;
+  width: number;
+  height: number;
+  view: ViewId;
+  steerMode?: boolean;
+  steerBuffer?: string;
+}): string[] {
+  if (!input.state) {
+    return buildInitializingFrame(input.session, {
+      width: input.width,
+      height: input.height,
+      steerMode: input.steerMode === true,
+      steerBuffer: input.steerBuffer ?? '',
+    });
+  }
+
+  return buildFrame(input.session, input.state, {
+    width: input.width,
+    height: input.height,
+    view: input.view,
+    steerMode: input.steerMode === true,
+    steerBuffer: input.steerBuffer ?? '',
+  });
 }
 
 function buildFrame(
