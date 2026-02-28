@@ -50,6 +50,15 @@ export function reduceMissionEvent(
     case 'mission_resumed':
       return appendProgress(state, event.timestamp, String(event.payload.message ?? event.type));
 
+    case 'manager_started':
+    case 'manager_decision':
+    case 'manager_error':
+      return appendProgress(
+        state,
+        event.timestamp,
+        String(event.payload.message ?? `${event.type}: ${stringifyPayload(event.payload)}`)
+      );
+
     case 'plan_created':
     case 'plan_updated': {
       const missionPlan = (event.payload.plan as MissionPlan | undefined) ?? state.missionPlan;
@@ -138,6 +147,7 @@ export function reduceMissionEvent(
     case 'branch_created':
     case 'branch_merged':
     case 'branch_abandoned':
+    case 'validation_started':
     case 'validation_result':
     case 'token_usage':
     case 'mission_completed':

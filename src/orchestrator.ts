@@ -153,6 +153,7 @@ export class Orchestrator {
       promptsDir: join(config.cwd, 'prompts'),
       model: this.modelRouter.getModel('planner'),
       effort: config.managerEffort ?? 'high',
+      requestTimeoutMs: 180_000,
     };
     this.manager = new ManagerAgent(managerConfig);
 
@@ -213,6 +214,7 @@ export class Orchestrator {
         message: 'mission run resumed',
       });
     }
+    await this.emitStatusUpdate();
 
     try {
       while (!this.aborted) {
@@ -445,7 +447,11 @@ export class Orchestrator {
       return;
     }
 
-    this.emitEvent('manager_started', 'manager', { phase: 'planning' });
+    this.emitEvent('manager_started', 'manager', {
+      phase: 'planning',
+      message: `Planning mission with manager model (${this.modelRouter.getModel('planner')})`,
+    });
+    await this.emitStatusUpdate();
 
     const generated = await this.manager.generateMissionPlan({
       missionId: this.resolveMissionId(),
@@ -1081,8 +1087,12 @@ export class Orchestrator {
       return true;
     }
 
-    process.stderr.write('\nApprove this mission plan? [Y/n/edit]: ');
-    const answer = (await readLine(process.stdin)).trim().toLowerCase();
+    process.stderr.write('\nApprove this mission plan? [y=approve, n=regenerate, edit + Enter]: ');
+    const rawAnswer = await readLine(process.stdin);
+    if (rawAnswer === '\u0003' || this.aborted) {
+      return false;
+    }
+    const answer = rawAnswer.trim().toLowerCase();
     if (answer === 'n' || answer === 'no') {
       return false;
     }
@@ -1307,12 +1317,25 @@ function truncateLines(lines: string[], maxLines: number): string[] {
   return [...lines.slice(0, maxLines - 1), `... +${lines.length - (maxLines - 1)} lines`];
 }
 
-function readLine(stream: NodeJS.ReadStream): Promise<string> {
+export function readLine(stream: NodeJS.ReadStream): Promise<string> {
   return new Promise((resolve) => {
     let buffer = '';
     const onData = (chunk: Buffer | string) => {
       const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-      const newlineIndex = text.indexOf('\n');
+      if (text.includes('\u0003')) {
+        stream.removeListener('data', onData);
+        resolve('\u0003');
+        return;
+      }
+
+      // raw mode では Enter なしで単キー入力されるため、approval 用 y/n を即時解釈する
+      if (text.length === 1 && (text === 'y' || text === 'Y' || text === 'n' || text === 'N')) {
+        stream.removeListener('data', onData);
+        resolve(text);
+        return;
+      }
+
+      const newlineIndex = findLineBreakIndex(text);
       if (newlineIndex >= 0) {
         buffer += text.slice(0, newlineIndex);
         stream.removeListener('data', onData);
@@ -1323,4 +1346,16 @@ function readLine(stream: NodeJS.ReadStream): Promise<string> {
     };
     stream.on('data', onData);
   });
+}
+
+function findLineBreakIndex(text: string): number {
+  const crIndex = text.indexOf('\r');
+  const lfIndex = text.indexOf('\n');
+  if (crIndex < 0) {
+    return lfIndex;
+  }
+  if (lfIndex < 0) {
+    return crIndex;
+  }
+  return Math.min(crIndex, lfIndex);
 }

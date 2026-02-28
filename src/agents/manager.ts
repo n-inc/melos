@@ -26,6 +26,7 @@ export interface ManagerAgentConfig {
   promptsDir: string;
   model?: string;
   effort?: 'low' | 'medium' | 'high' | 'max';
+  requestTimeoutMs?: number;
   resumeThreadId?: string;
 }
 
@@ -449,6 +450,7 @@ export class ManagerAgent implements Agent {
       }
       const options: AppServerEngineOptions = {
         cwd: this.config.cwd,
+        timeout: this.config.requestTimeoutMs ?? 180_000,
         model: this.config.model,
         reasoningEffort: this.mapEffortForCodex(effort),
         execMode: true,
@@ -465,6 +467,7 @@ export class ManagerAgent implements Agent {
     this.activeEngine = 'claude';
     const options: ClaudeEngineOptions = {
       cwd: this.config.cwd,
+      timeout: this.config.requestTimeoutMs ?? 180_000,
       model: this.config.model,
       effort,
       skipPermissions: true,

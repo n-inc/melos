@@ -86,4 +86,27 @@ describe('event sourcing', () => {
     expect(replay).toHaveLength(1);
     expect(replay[0]?.payload.command).toBe('echo after');
   });
+
+  it('projects manager and validation events into progress log messages', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-events-progress-'));
+    const log = new EventLog({ melosDir: dir });
+
+    log.emit({
+      type: 'manager_started',
+      iteration: 0,
+      agent: 'manager',
+      payload: { phase: 'planning', message: 'Planning mission...' },
+    });
+    log.emit({
+      type: 'validation_started',
+      iteration: 1,
+      agent: 'orchestrator',
+      payload: { milestoneId: 'm1' },
+    });
+
+    const state = replayMissionEvents(log.readAll());
+    const messages = state.progressLog.map((entry) => entry.message);
+    expect(messages).toContain('Planning mission...');
+    expect(messages.some((message) => message.startsWith('validation_started:'))).toBe(true);
+  });
 });
