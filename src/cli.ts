@@ -1,25 +1,10 @@
-/**
- * Melos CLI - コマンドライン引数の解析と実行
- *
- * @module cli
- */
-
-import { Command, Option } from 'commander';
-import { readFileSync, existsSync, unlinkSync, writeFileSync } from 'node:fs';
+import { Command } from 'commander';
+import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
-  Orchestrator,
-  type OrchestratorConfig,
-  type OrchestratorLifecycleEvent,
-} from './orchestrator.js';
+import { Orchestrator, type OrchestratorConfig } from './orchestrator.js';
 import { loadConfig, type MelosConfig } from './config/index.js';
-import type { ExecutionMode } from './state/progress.js';
-import {
-  clearSession,
-  loadSession,
-} from './state/session.js';
 import {
   clearRuntime,
   isProcessAlive,
@@ -27,206 +12,70 @@ import {
   saveRuntime,
   terminateProcess,
 } from './state/runtime.js';
-import { createInteractiveInputController } from './ui/interactive.js';
-import { playSystemSound } from './ui/sound.js';
+import { createRuntimeUI, resolveRuntimeUIMode, type SessionInfo, type TerminalCapabilities } from './ui/tui.js';
 
-/**
- * CLI オプション
- */
 export interface CLIOptions {
-  /** 最大イテレーション数 */
   maxIterations?: number;
-  /** モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など） */
+  plannerModel?: string;
+  workerModel?: string;
+  validatorModel?: string;
+  researchModel?: string;
   model?: string;
-  /** Codex 推論努力レベル */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-  /** Claude effort レベル（Opus 4.6+） */
   effort?: 'low' | 'medium' | 'high' | 'max';
-  /** Claude thinking budget（旧モデル向け） */
-  thinkingBudget?: number;
-  /** 開始前にリセット（スモークテスト用） */
-  dangerouslyResetBeforeStart?: boolean;
-  /** プレーン出力モード（スピナー無効） */
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   plain?: boolean;
-  /** ドライラン（計画のみ、Worker実行しない） */
   dryRun?: boolean;
-  /** レビューループ専用モード */
-  reviewOnly?: boolean;
+  interactive?: boolean;
+  autoApprove?: boolean;
+  gitStrategy?: boolean;
+  baseBranch?: string;
+  missionId?: string;
 }
-
-/** Claude 専用モデル名（Worker では無効） */
-const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
 
 export type KillCommandResult =
   | { status: 'killed'; pid: number }
   | { status: 'not_running' }
   | { status: 'stale'; pid: number };
 
-function notifyLifecycleEvent(event: OrchestratorLifecycleEvent): void {
-  playSystemSound(event);
-}
-
-/**
- * package.json からバージョンを取得
- */
-function getVersion(): string {
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
-  const packageJsonPath = join(__dirname, '..', 'package.json');
-  try {
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-    return packageJson.version || '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
-
-/**
- * コマンドアクションのエラーハンドリングを共通化
- */
-async function handleCommandAction(action: () => Promise<void>): Promise<void> {
-  try {
-    await action();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`\x1b[0;31mエラー: ${message}\x1b[0m`);
-    process.exit(1);
-  }
-}
-
-/**
- * CLI プログラムを作成
- */
 export function createProgram(): Command {
   const program = new Command();
 
   program
     .name('melos')
-    .description('Melos - 自律的エージェントループシステム')
+    .description('Melos v0.8.0 Mission Orchestrator')
     .version(getVersion(), '-v, --version', 'バージョンを表示')
-    .option(
-      '--max-iterations <number>',
-      '最大イテレーション数',
-      parseMaxIterations
-    )
-    .option(
-      '--model <model>',
-      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など）'
-    )
-    .option(
-      '--reasoning-effort <level>',
-      'Codex 推論努力レベル (minimal | low | medium | high | xhigh、デフォルト: high)'
-    )
-    .option(
-      '--effort <level>',
-      'Claude effort レベル (low | medium | high | max、デフォルト: max)'
-    )
-    .option(
-      '--thinking-budget <number>',
-      'Claude thinking budget（旧モデル向け、1024〜31999）',
-      parseThinkingBudget
-    )
-    .option(
-      '--plain',
-      'プレーン出力モード（スピナー無効）'
-    )
-    .addOption(
-      new Option('--dangerously-reset-before-start', '開始前にTASK.json等をリセット（スモークテスト用）').hideHelp()
-    )
-    .option(
-      '--dry-run',
-      'ドライラン（計画のみ、Worker実行しない）'
-    )
-    .option(
-      '--review-only',
-      'レビューのみモード（コードレビュー→修正のループ）'
-    )
     .helpOption('-h, --help', 'ヘルプを表示');
 
-  program
-    .command('run')
-    .description('Melos ループを実行')
-    .option(
-      '--max-iterations <number>',
-      '最大イテレーション数',
-      parseMaxIterations
-    )
-    .option(
-      '--model <model>',
-      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など）'
-    )
-    .option(
-      '--reasoning-effort <level>',
-      'Codex 推論努力レベル (minimal | low | medium | high | xhigh、デフォルト: high)'
-    )
-    .option(
-      '--effort <level>',
-      'Claude effort レベル (low | medium | high | max、デフォルト: max)'
-    )
-    .option(
-      '--thinking-budget <number>',
-      'Claude thinking budget（旧モデル向け、1024〜31999）',
-      parseThinkingBudget
-    )
-    .option(
-      '--plain',
-      'プレーン出力モード（スピナー無効）'
-    )
-    .addOption(
-      new Option('--dangerously-reset-before-start', '開始前にTASK.json等をリセット（スモークテスト用）').hideHelp()
-    )
-    .option(
-      '--dry-run',
-      'ドライラン（計画のみ、Worker実行しない）'
-    )
-    .option(
-      '--review-only',
-      'レビューのみモード（コードレビュー→修正のループ）'
-    )
-    .action(async (options: CLIOptions) => {
-      await handleCommandAction(() => executeWithOptions(options));
-    });
+  const applyCommonRunOptions = (cmd: Command): Command => cmd
+    .option('--max-iterations <number>', '最大イテレーション数', parseMaxIterations)
+    .option('--model <model>', '全ロールの共通モデル')
+    .option('--planner-model <model>', 'Planner/Manager モデル')
+    .option('--worker-model <model>', 'Worker モデル')
+    .option('--validator-model <model>', 'Validator モデル')
+    .option('--research-model <model>', 'Research モデル')
+    .option('--reasoning-effort <level>', 'Worker 推論努力レベル (minimal|low|medium|high|xhigh)')
+    .option('--effort <level>', 'Planner effort レベル (low|medium|high|max)')
+    .option('--plain', 'プレーン出力モード')
+    .option('--dry-run', '実装を行わず計画のみ進める')
+    .option('--interactive', '対話型 planning を有効化')
+    .option('--auto-approve', 'plan 承認を自動化')
+    .option('--git-strategy', 'Git-as-Truth ハンドオフを有効化')
+    .option('--base-branch <branch>', 'Git戦略のベースブランチ')
+    .option('--mission-id <id>', 'ミッションID');
 
-  program
+  applyCommonRunOptions(program
+    .command('run')
+    .description('ミッションを開始')
+    .action(async (options: CLIOptions) => {
+      await handleCommandAction(() => executeWithOptions(options, { resume: false }));
+    }));
+
+  applyCommonRunOptions(program
     .command('resume')
-    .description('中断したセッションを再開')
-    .option(
-      '--max-iterations <number>',
-      '最大イテレーション数',
-      parseMaxIterations
-    )
-    .option(
-      '--model <model>',
-      'モデル名（Claude: haiku, sonnet, opus / Codex: gpt-5.3-codex など）'
-    )
-    .option(
-      '--reasoning-effort <level>',
-      'Codex 推論努力レベル (minimal | low | medium | high | xhigh、デフォルト: high)'
-    )
-    .option(
-      '--effort <level>',
-      'Claude effort レベル (low | medium | high | max、デフォルト: max)'
-    )
-    .option(
-      '--thinking-budget <number>',
-      'Claude thinking budget（旧モデル向け、1024〜31999）',
-      parseThinkingBudget
-    )
-    .option(
-      '--plain',
-      'プレーン出力モード（スピナー無効）'
-    )
-    .option(
-      '--dry-run',
-      'ドライラン（計画のみ、Worker実行しない）'
-    )
-    .option(
-      '--review-only',
-      'レビューのみモード（コードレビュー→修正のループ）'
-    )
+    .description('中断したミッションを再開')
     .action(async (options: CLIOptions) => {
       await handleCommandAction(() => executeWithOptions(options, { resume: true }));
-    });
+    }));
 
   program
     .command('kill')
@@ -251,22 +100,16 @@ export function createProgram(): Command {
   return program;
 }
 
-/**
- * CLI を実行
- */
 export async function run(argv?: string[]): Promise<void> {
   const program = createProgram();
 
   program.action(async (options: CLIOptions) => {
-    await handleCommandAction(() => executeWithOptions(options));
+    await handleCommandAction(() => executeWithOptions(options, { resume: false }));
   });
 
   await program.parseAsync(argv ?? process.argv);
 }
 
-/**
- * 同一プロジェクトで実行中の Melos を停止する
- */
 export async function killMelosRun(cwd: string): Promise<KillCommandResult> {
   const melosDir = join(cwd, '.melos');
   const runtime = await loadRuntime(melosDir);
@@ -283,348 +126,201 @@ export async function killMelosRun(cwd: string): Promise<KillCommandResult> {
   return { status: 'killed', pid: runtime.pid };
 }
 
-/**
- * オプションを使用して実行
- */
 export async function executeWithOptions(
   options: CLIOptions,
-  runtimeOptions: {
-    resume?: boolean;
-  } = {}
+  runtimeOptions: { resume: boolean }
 ): Promise<void> {
-  const shouldEnableInteractiveInput = process.stdin.isTTY && !options.plain;
-  const previousMelosNoSpinner = process.env.MELOS_NO_SPINNER;
-  const autoDisabledSpinnerForInteractive =
-    shouldEnableInteractiveInput
-    && process.env.MELOS_SPINNER !== '1'
-    && process.env.MELOS_NO_SPINNER !== '1';
-
-  if (autoDisabledSpinnerForInteractive) {
-    process.env.MELOS_NO_SPINNER = '1';
-  }
-
-  // --plain オプションが指定された場合、環境変数を設定
-  if (options.plain) {
-    process.env.MELOS_NO_SPINNER = '1';
-  }
-
   const cwd = process.cwd();
   const melosDir = join(cwd, '.melos');
+  const missionFilePath = join(cwd, 'TASK.json');
+  const prdFilePath = join(cwd, 'PRD.md');
 
-  // 設定ファイルを読み込み
+  const terminalCapabilities: TerminalCapabilities = {
+    stdinIsTTY: process.stdin.isTTY === true,
+    stdoutIsTTY: process.stdout.isTTY === true,
+    stderrIsTTY: process.stderr.isTTY === true,
+  };
+  const uiMode = resolveRuntimeUIMode(options, terminalCapabilities);
+  const runtimeUI = createRuntimeUI(uiMode, process.stderr, process.stdin);
+
   const fileConfig = await loadConfig(cwd);
+  const models = resolveModels(options, fileConfig);
 
-  // 推論努力レベルを検証
-  const reasoningEffort = options.reasoningEffort
-    ? validateReasoningEffort(options.reasoningEffort)
-    : undefined;
-
-  // effort レベルを検証
-  const effort = options.effort
-    ? validateEffort(options.effort)
-    : undefined;
-
-  // CLI オプション > .melos.json の個別設定 > .melos.json の model の順で候補を選ぶ。
-  // Worker については Claude 専用モデル名を自動スキップして次候補へフォールバックする。
-  const managerModel = resolveManagerModel(options, fileConfig);
-  const managerEffort = effort ?? fileConfig.manager?.effort;
-  const workerModel = resolveWorkerModel(options, fileConfig);
-  const workerReasoningEffort =
-    reasoningEffort ?? fileConfig.worker?.effort ?? fileConfig.worker?.reasoningEffort;
-  const executionMode = resolveExecutionMode(options);
-  const maxIterations = resolveMaxIterations(options, fileConfig, executionMode);
-  const taskFilePath = join(cwd, 'TASK.json');
-  const legacyPlanPath = join(cwd, 'PLAN.json');
-
-  if (!existsSync(taskFilePath) && existsSync(legacyPlanPath)) {
-    throw new Error(
-      'PLAN.json は廃止されました。PLAN.json を TASK.json にリネームして再実行してください。'
-    );
-  }
-
-  // 設定を作成
-  const resumeSession = runtimeOptions.resume
-    ? await loadSession(melosDir)
-    : null;
-  if (runtimeOptions.resume && !resumeSession) {
-    throw new Error('再開可能なセッションがありません');
-  }
-
-  const config: OrchestratorConfig = {
+  const orchestratorConfig: OrchestratorConfig = {
     cwd,
-    maxIterations,
-    prdFile: join(cwd, 'PRD.md'),
-    taskFile: taskFilePath,
-    progressFile: join(cwd, 'PROGRESS.md'),
+    maxIterations: options.maxIterations ?? fileConfig.maxIterations ?? 200,
+    prdFile: prdFilePath,
+    missionFile: missionFilePath,
     melosDir,
-    managerModel,
-    managerEffort,
-    workerModel,
-    workerReasoningEffort,
-    executionMode,
-    dryRun: options.dryRun,
-    resumeSession,
-    interactiveInputEnabled: process.stdin.isTTY,
-    onLifecycleEvent: notifyLifecycleEvent,
+    plannerModel: models.planner,
+    workerModel: models.worker,
+    validatorModel: models.validator,
+    researchModel: models.research,
+    managerEffort: options.effort ?? 'high',
+    workerReasoningEffort: options.reasoningEffort ?? 'high',
+    interactivePlanning: options.interactive === true,
+    autoApprove: options.autoApprove === true,
+    dryRun: options.dryRun === true,
+    resume: runtimeOptions.resume,
+    missionId: options.missionId,
+    gitStrategy: resolveGitStrategy(options, fileConfig),
+    onStatusUpdate: async (state) => {
+      runtimeUI.updateState(state);
+    },
   };
 
-  // オーケストレーターを作成
-  const orchestrator = new Orchestrator(config);
+  const orchestrator = new Orchestrator(orchestratorConfig);
 
-  // Ctrl+C ハンドラー
-  let isSignalHandled = false;
   let signalExitCode: number | null = null;
   const handleSignal = (signal: NodeJS.Signals) => {
-    if (isSignalHandled) {
+    if (signalExitCode !== null) {
       return;
     }
-    isSignalHandled = true;
     signalExitCode = signal === 'SIGTERM' ? 143 : 130;
     process.exitCode = signalExitCode;
-    console.error('\n\x1b[1;33m中断されました。\x1b[0m');
     orchestrator.abort();
-    void orchestrator.saveSession().then((saved) => {
-      if (saved) {
-        console.error('\x1b[0;36m再開: npx melos resume\x1b[0m');
-      }
-    }).catch(() => {
-      // 保存失敗時も中断自体は継続
-    });
-    setTimeout(() => {
-      process.exit(signalExitCode ?? 130);
-    }, 3000).unref();
   };
 
   process.on('SIGINT', handleSignal);
   process.on('SIGTERM', handleSignal);
 
-  let stdinResumedByMelos = false;
-  let interactiveInputController: ReturnType<typeof createInteractiveInputController> | null = null;
-  const handleStdinData = (chunk: Buffer | string) => {
-    const data = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    // raw mode 等で Ctrl+C がシグナルではなく ETX として届くケースに対応
-    if (data.includes('\u0003')) {
-      handleSignal('SIGINT');
-    }
-  };
+  try {
+    await saveRuntime(melosDir, {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      cwd,
+    });
 
-  if (process.stdin.isTTY) {
-    process.stdin.on('data', handleStdinData);
-    process.stdin.resume();
-    stdinResumedByMelos = true;
-    interactiveInputController = createInteractiveInputController({
-      input: process.stdin,
-      output: process.stdout,
-      onSubmit: async (instruction) => {
-        return await orchestrator.steer(instruction);
+    runtimeUI.start(buildSessionInfo({
+      version: getVersion(),
+      missionId: options.missionId ?? 'mission',
+      missionTitle: readPrdTitle(prdFilePath),
+      planner: models.planner,
+      worker: models.worker,
+    }), {
+      onPause: () => orchestrator.pause(),
+      onResume: () => orchestrator.resume(),
+      onSteer: (instruction) => {
+        void orchestrator.steer(instruction);
       },
     });
-    interactiveInputController.start();
-  }
 
-  // スモークテスト用リセット（開始前）
-  if (options.dangerouslyResetBeforeStart) {
-    resetForSmokeTest();
-  }
-
-  await saveRuntime(melosDir, {
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    cwd,
-  });
-
-  try {
     const result = await orchestrator.run();
-
     if (signalExitCode !== null) {
-      // シグナル中断時は既に exitCode を設定済み
       return;
     }
 
     if (!result.success) {
-      const detail = result.error ? ` / error: ${result.error}` : '';
-      console.error(
-        `\x1b[0;31m実行が失敗しました (reason: ${result.reason}${detail})\x1b[0m`
-      );
+      const detail = result.error ? ` (${result.error})` : '';
+      console.error(`実行失敗: ${result.reason}${detail}`);
       process.exit(1);
+      return;
     }
-
-    await clearSession(melosDir);
   } finally {
+    runtimeUI.stop();
     await clearRuntime(melosDir);
     process.removeListener('SIGINT', handleSignal);
     process.removeListener('SIGTERM', handleSignal);
-    if (process.stdin.isTTY) {
-      process.stdin.removeListener('data', handleStdinData);
-      interactiveInputController?.stop();
-      if (stdinResumedByMelos && !process.stdin.isPaused()) {
-        process.stdin.pause();
-      }
-    }
-    if (autoDisabledSpinnerForInteractive) {
-      if (previousMelosNoSpinner === undefined) {
-        delete process.env.MELOS_NO_SPINNER;
-      } else {
-        process.env.MELOS_NO_SPINNER = previousMelosNoSpinner;
-      }
-    }
   }
 }
 
-export function resolveExecutionMode(
-  options: Pick<CLIOptions, 'reviewOnly'>
-): ExecutionMode {
-  return options.reviewOnly ? 'review-only' : 'default';
+function resolveGitStrategy(
+  options: CLIOptions,
+  config: MelosConfig
+): OrchestratorConfig['gitStrategy'] {
+  const enabled = options.gitStrategy ?? config.git?.enabled ?? false;
+  if (!enabled) {
+    return undefined;
+  }
+
+  const missionId = options.missionId ?? inferMissionIdFromCwd(process.cwd());
+  return {
+    enabled: true,
+    baseBranch: options.baseBranch ?? config.git?.baseBranch ?? 'main',
+    missionId,
+    autoPush: config.git?.autoPush ?? false,
+    preMergeValidation: config.git?.preMergeValidation ?? true,
+    validationCommands: config.git?.validationCommands ?? ['npm run typecheck', 'npm test'],
+  };
 }
 
-export function resolveMaxIterations(
-  options: Pick<CLIOptions, 'maxIterations'>,
-  fileConfig: Pick<MelosConfig, 'maxIterations'>,
-  executionMode: ExecutionMode
-): number {
-  const modeDefaultMaxIterations = executionMode === 'review-only' ? 10 : 30;
-  return options.maxIterations ?? fileConfig.maxIterations ?? modeDefaultMaxIterations;
+function resolveModels(options: CLIOptions, config: MelosConfig): {
+  planner: string;
+  worker: string;
+  validator: string;
+  research: string;
+} {
+  const fallback = options.model ?? config.models?.planner ?? 'opus';
+  const workerFallback = options.model ?? config.models?.worker ?? 'gpt-5.3-codex';
+
+  return {
+    planner: options.plannerModel ?? config.models?.planner ?? fallback,
+    worker: options.workerModel ?? config.models?.worker ?? workerFallback,
+    validator: options.validatorModel ?? config.models?.validator ?? config.models?.planner ?? 'sonnet',
+    research: options.researchModel ?? config.models?.research ?? config.models?.validator ?? 'sonnet',
+  };
 }
 
-/**
- * Manager に渡すモデルを解決する
- */
-export function resolveManagerModel(
-  options: Pick<CLIOptions, 'model'>,
-  fileConfig: MelosConfig
-): string | undefined {
-  const candidates = [options.model, fileConfig.manager?.model, fileConfig.model];
-  return candidates.find((model): model is string => {
-    return isNonEmptyString(model);
-  });
+function getVersion(): string {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const packageJsonPath = join(__dirname, '..', 'package.json');
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version?: string };
+    return packageJson.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
 }
 
-/**
- * Worker(Codex) に渡すモデルを解決する
- */
-export function resolveWorkerModel(
-  options: Pick<CLIOptions, 'model'>,
-  fileConfig: MelosConfig
-): string | undefined {
-  const candidates = [options.model, fileConfig.worker?.model, fileConfig.model];
-  return candidates.find((model): model is string => {
-    return isNonEmptyString(model) && !isClaudeOnlyModel(model);
-  });
+function buildSessionInfo(input: {
+  version: string;
+  missionId: string;
+  missionTitle: string;
+  planner: string;
+  worker: string;
+}): SessionInfo {
+  return {
+    version: input.version,
+    missionId: input.missionId,
+    missionTitle: input.missionTitle,
+    planner: input.planner,
+    worker: input.worker,
+  };
 }
 
-/**
- * 空でない文字列かどうか
- */
-function isNonEmptyString(value: string | undefined): value is string {
-  return typeof value === 'string' && value.length > 0;
-}
-
-/**
- * Claude 専用モデルかどうか（Worker には渡さない）
- */
-function isClaudeOnlyModel(model: string): boolean {
-  return CLAUDE_ONLY_MODELS.includes(model.toLowerCase());
-}
-
-/**
- * --max-iterations オプションをパース
- */
 function parseMaxIterations(value: string): number {
   const num = parseInt(value, 10);
-  if (isNaN(num) || num < 1 || num > 1000) {
-    throw new Error(
-      `無効な --max-iterations: ${value}（1〜1000 の整数を指定してください）`
-    );
+  if (Number.isNaN(num) || num < 1 || num > 10000) {
+    throw new Error('max-iterations は 1〜10000 の整数で指定してください');
   }
   return num;
 }
 
-/**
- * --thinking-budget オプションをパース
- */
-function parseThinkingBudget(value: string): number {
-  const num = parseInt(value, 10);
-  if (isNaN(num) || num < 1024 || num > 31999) {
-    throw new Error(
-      `無効な --thinking-budget: ${value}（1024〜31999 の整数を指定してください）`
-    );
+function readPrdTitle(prdFilePath: string): string {
+  if (!existsSync(prdFilePath)) {
+    return 'Untitled mission';
   }
-  return num;
+  const content = readFileSync(prdFilePath, 'utf-8');
+  const heading = content.split(/\r?\n/).find((line) => line.startsWith('# '));
+  return heading ? heading.replace(/^#\s+/, '').trim() : 'Untitled mission';
 }
 
-/**
- * 推論努力レベルを検証
- */
-function validateReasoningEffort(level: string): 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' {
-  if (level === 'minimal' || level === 'low' || level === 'medium' || level === 'high' || level === 'xhigh') {
-    return level;
-  }
-  throw new Error(`無効な推論努力レベル: ${level}（minimal, low, medium, high, xhigh のいずれかを指定してください）`);
+function inferMissionIdFromCwd(cwd: string): string {
+  const base = cwd.split(/[\\/]/).filter(Boolean).pop() ?? 'mission';
+  return base
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'mission';
 }
 
-/**
- * Claude effort レベルを検証
- */
-function validateEffort(level: string): 'low' | 'medium' | 'high' | 'max' {
-  if (level === 'low' || level === 'medium' || level === 'high' || level === 'max') {
-    return level;
+async function handleCommandAction(action: () => Promise<void>): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`エラー: ${message}`);
+    process.exit(1);
   }
-  throw new Error(`無効な effort レベル: ${level}（low, medium, high, max のいずれかを指定してください）`);
-}
-
-/**
- * スモークテスト用リセット処理
- * TASK.json の passes と checks.passed を false にリセットし、証拠URLも空にする
- * PROGRESS.md を削除
- */
-function resetForSmokeTest(): void {
-  const cwd = process.cwd();
-  const taskPath = join(cwd, 'TASK.json');
-  const progressPath = join(cwd, 'PROGRESS.md');
-
-  console.log('\n🔄 Smoke Test リセット...');
-
-  // TASK.json をリセット
-  if (existsSync(taskPath)) {
-    try {
-      const tasks = JSON.parse(readFileSync(taskPath, 'utf-8'));
-      if (Array.isArray(tasks)) {
-        const resetTasks = tasks.map((task: {
-          passes?: boolean;
-          checks?: Array<{
-            text: string;
-            type: string;
-            passed: boolean;
-            screenshot?: string;
-            video?: string;
-          }>;
-        }) => ({
-          ...task,
-          passes: false,
-          // checks が存在する場合は各項目の passed も false にリセット、証拠URLも空に
-          ...(task.checks && {
-            checks: task.checks.map((check) => ({
-              ...check,
-              passed: false,
-              // 証拠フィールドが存在する場合は空にリセット
-              ...(check.screenshot !== undefined && { screenshot: '' }),
-              ...(check.video !== undefined && { video: '' }),
-            })),
-          }),
-        }));
-        writeFileSync(taskPath, JSON.stringify(resetTasks, null, 2) + '\n');
-        console.log('  Reset TASK.json');
-      }
-    } catch {
-      console.error('  Failed to reset TASK.json');
-    }
-  }
-
-  // PROGRESS.md を削除
-  if (existsSync(progressPath)) {
-    unlinkSync(progressPath);
-    console.log('  Removed PROGRESS.md');
-  }
-
-  console.log('\n✅ リセット完了\n');
 }

@@ -13,6 +13,101 @@ export {
 } from './task.js';
 
 export {
+  type MissionState,
+  type FeatureStatus,
+  type MilestoneStatus,
+  type CheckItem,
+  type Feature,
+  type Milestone,
+  type MissionPlan,
+  missionFileExists,
+  loadMissionPlan,
+  saveMissionPlan,
+  createMissionPlan,
+  transitionMissionState,
+  incrementMissionIterations,
+  getMilestoneById,
+  getFeatureById,
+  getActiveMilestone,
+  getActiveFeature,
+  getNextPendingMilestone,
+  getNextPendingFeature,
+  areMilestoneFeaturesDone,
+  areAllMilestonesDone,
+  setActiveMilestone,
+  setActiveFeature,
+  updateMilestoneStatus,
+  updateFeatureStatus,
+  appendFeaturesToMilestone,
+} from './mission.js';
+
+export {
+  type CheckType,
+  type ValidationCheck,
+  type ValidationContract,
+  type ValidationCheckFailure,
+  type ValidationCheckResult,
+  type ValidationReport,
+  type ValidationFailureSummary,
+  createEmptyValidationContract,
+  getAllValidationChecks,
+  cloneValidationContract,
+  normalizeValidationCheck,
+  normalizeValidationContract,
+  mergeValidationResults,
+  collectValidationFailures,
+  hasValidationLoop,
+} from './validation.js';
+
+export {
+  type GitStrategyConfig,
+  type FeatureBranch,
+  type GitStrategyState,
+  getGitStrategyPath,
+  gitStrategyExists,
+  loadGitStrategyState,
+  saveGitStrategyState,
+  createGitStrategyState,
+  createFeatureBranchName,
+  registerFeatureBranch,
+  updateFeatureBranchStatus,
+} from './git-strategy.js';
+
+export {
+  type MissionEventType,
+  type MissionEventBase,
+  type MissionEvent,
+  type EventLogOptions,
+  EventLog,
+} from './events.js';
+
+export {
+  type WorkerRunState,
+  type MissionKernelState,
+  createInitialKernelState,
+  reduceMissionEvent,
+  replayMissionEvents,
+} from './event-reducer.js';
+
+export {
+  type MissionSnapshot,
+  getSnapshotPath,
+  saveSnapshot,
+  loadSnapshot,
+} from './snapshot.js';
+
+export {
+  Watchdog,
+} from './watchdog.js';
+
+export {
+  type TokenUsage,
+  type TokenUsageEntry,
+  type TokenUsageSnapshot,
+  TokenTracker,
+} from './token-tracker.js';
+
+export {
   type ExecutionMode,
   type ProgressHeader,
   type IterationEntry,

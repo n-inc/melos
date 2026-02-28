@@ -1,207 +1,69 @@
-# Melos CLI
+# Melos CLI v0.8.0
 
-Melos は自律的なエージェントループシステムです。TASK.json に定義されたタスクを順次実行し、PRD.md の受入基準に従って検証を行います。
+Melos は MissionPlan 状態機械を中心に、長時間の自律実行を管理する CLI です。
+`TASK.json` は v2 MissionPlan（`mission > milestones > features`）を唯一の実行ソースとして扱います。
 
-## 前提
-
-- Bun がインストール済みであること（CLI の実行に使用）
-
-## インストール
+## セットアップ
 
 ```bash
-cd scripts/melos
 npm install
 ```
 
-## 基本的な使い方
-
-### plan モード（デフォルト）
-
-TASK.json のタスクを順次実行します。
-`TASK.json` が存在しない場合は、`PRD.md` を元に初期タスクを生成してから実行します。
+## 実行
 
 ```bash
-npx melos
+npx melos run
 ```
 
-### watch モード
+主要オプション:
 
-TASK.json を監視し、新しいタスクが追加されると自動的に Melos ループを開始します。
+- `--interactive`: 対話型 planning
+- `--auto-approve`: plan 承認を自動化
+- `--git-strategy`: feature branch ハンドオフを有効化
+- `--base-branch <branch>`: Git 戦略のベースブランチ
+- `--mission-id <id>`: ミッションID
+- `--planner-model <model>` / `--worker-model <model>` / `--validator-model <model>` / `--research-model <model>`
+- `--dry-run`: 実装を実行せず状態遷移のみ確認
+
+再開:
 
 ```bash
-npx melos watch
+npx melos resume
 ```
 
-### 外部停止（kill）
-
-同一プロジェクト（同一 `cwd`）で実行中の Melos に `SIGTERM` を送信します。
+停止:
 
 ```bash
 npx melos kill
 ```
 
-## オプション
+## 状態管理
 
-| オプション | 説明 | デフォルト |
-|-----------|------|-----------|
-| `--model <model>` | 共通モデル候補（`manager.*` / `worker.*` が優先） | - |
-| `--max-iterations <n>` | 最大イテレーション数（1〜1000） | `30` |
-| `--effort <level>` | Claude effort レベル（`low` / `medium` / `high` / `max`） | `max` |
-| `--reasoning-effort <level>` | Codex 推論努力レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） | `high` |
-| `--thinking-budget <n>` | Claude thinking budget（旧モデル向け、1024〜31999） | - |
-| `--dry-run` | ドライラン（計画のみ、Worker 実行しない） | - |
-| `--plain` | プレーン出力モード（スピナー無効） | - |
-| `-v, --version` | バージョンを表示 | - |
-| `-h, --help` | ヘルプを表示 | - |
+`.melos/` 配下に以下を保存します。
 
-## 設定ファイル（`.melos.json`）
+- `events.jsonl`: 追記専用イベントログ
+- `state.json`: スナップショット
+- `git-strategy.json`: ブランチ状態
+- `validations/*.json`: milestone validation レポート
+- `RUN.json`: 実行中プロセス情報
 
-プロジェクトルートに `.melos.json` を配置することで、デフォルト設定をカスタマイズできます。
-
-### スキーマ
+## 設定 (`.melos.json`)
 
 ```json
 {
-  "model": "opus",
-  "maxIterations": 30,
-  "manager": {
-    "model": "sonnet",
-    "effort": "high"
+  "maxIterations": 400,
+  "models": {
+    "planner": "opus",
+    "worker": "gpt-5.3-codex",
+    "validator": "sonnet",
+    "research": "sonnet"
   },
-  "worker": {
-    "model": "gpt-5.3-codex",
-    "effort": "high"
+  "git": {
+    "enabled": true,
+    "baseBranch": "main",
+    "autoPush": false,
+    "preMergeValidation": true,
+    "validationCommands": ["npm run typecheck", "npm test"]
   }
 }
 ```
-
-| フィールド | 型 | 説明 |
-|-----------|-----|------|
-| `model` | `string` | Manager/Worker 共通のモデル候補（`manager.*` / `worker.*` が優先） |
-| `maxIterations` | `number` | 最大イテレーション数（1〜1000） |
-| `manager.model` | `string` | Manager モデル名（`model` より優先） |
-| `manager.effort` | `string` | Claude effort レベル（`low` / `medium` / `high` / `max`） |
-| `worker.model` | `string` | Worker モデル名（`model` より優先） |
-| `worker.effort` | `string` | Codex effort レベル（`minimal` / `low` / `medium` / `high` / `xhigh`） |
-
-### 優先順位
-
-CLI オプション > `.melos.json` の個別設定（`manager.*` / `worker.*`） > `.melos.json` の `model` > デフォルト値
-
-### 設定例
-
-Manager に Claude Sonnet、Worker に Codex を使う場合：
-
-```json
-{
-  "manager": {
-    "model": "sonnet",
-    "effort": "high"
-  },
-  "worker": {
-    "model": "gpt-5.3-codex",
-    "effort": "high"
-  }
-}
-```
-
-全体のデフォルトモデルのみ指定する場合：
-
-```json
-{
-  "model": "opus"
-}
-```
-
-## 実行例
-
-### デフォルト設定で実行
-
-```bash
-npx melos
-```
-
-### モデルを指定して実行
-
-```bash
-npx melos --model opus
-```
-
-### ドライランで計画のみ確認
-
-```bash
-npx melos --dry-run
-```
-
-## ファイル構成
-
-Melos は以下のファイルを使用します：
-
-- **TASK.json**: タスク定義と完了状態（`passes` / `checks`）
-- **PRD.md**: 要件定義・受入基準
-- **PROGRESS.md**: 次イテレーション判断のための学習・状況ログ
-- **HANDOFF.md**: 完了時の引き継ぎレポート（必要時）
-- **.melos.json**: プロジェクト設定ファイル（オプション）
-- **.melos/RUN.json**: 実行中プロセス情報（`melos kill` が参照）
-- **.melos/SESSION.json**: 中断時の再開情報（`melos resume` が参照）
-- **.melos/WORK_REPORT.json**: 直前 Worker 実行結果
-- **.melos/ESCALATION.json**: 未回答エスカレーションの互換保存
-
-## PROGRESS.md の推奨構成
-
-`PROGRESS.md` は「長い実況ログ」ではなく、次の判断に使う要点だけを残します。
-
-```md
-# Progress Log
-
-## Header
-- Mode: default
-- Started: 2026-02-26 14:10
-- Max Iterations: 30
-
-## Iterations
-### Iteration 1
-- Task: task-1
-- Result: SUCCESS
-- Summary: 認証APIのエラーハンドリングを統一
-- Verification: test ✅ / lint ✅ / typecheck ✅
-
-## Current Objective
-次に最優先で進める1項目
-
-## Learnings
-- 次タスクに再利用できる判断・知見
-
-## Open Questions / Risks
-- 未解決事項・リスク
-```
-
-## Manager の責務
-
-Manager は `TASK.json` を更新しながら、要件達成まで反復実行を管理します。
-
-- Worker が `PARTIAL` / `FAILED` / `BLOCKED` の場合は、必要に応じて `TASK.json` を調整して再実行を継続する
-- `reviewType: "product"` と `reviewType: "code"` を独立して完了管理する
-- 最終レビューでは通常ケースに加えて、失敗しやすい条件や境界条件も確認する
-- `TASK.json` の `task.model`（`claude` / `codex`）指定がある場合は最優先で従う
-- `task.model` 未指定の実装・検証タスクは Codex を指定して扱う
-- フロントエンド実装（UI デザイン、スタイリング、レイアウト調整）が主目的のタスクは `task.model: "claude"` を明示する
-- `browser` を含む動作確認は実装から切り出し、`task.model: "claude"` を明示したブラウザ確認タスクとして扱う
-- 状況に応じて `HANDOFF.md` を出力できる
-
-詳細ルールは `prompts/manager.md` を参照してください。
-
-## レビュータスクの自動追加
-
-実装タスク（`reviewType` 未指定）がすべて完了すると、Melos は `TASK.json` に以下のレビュータスクを自動追加します。
-
-- `reviewType: "product"`: PRD.md との整合性レビュー
-- `reviewType: "code"`: 変更差分中心のコードレビュー
-
-レビューで見つかった問題は `discoveredTasks` からフォローアップ実装タスクとして追加されます。  
-フォローアップ完了後は次 generation の product/code レビューが再度自動追加されます。
-
-## 関連スキル
-
-- `/melos-add-task`: 自然言語でタスクを追加する Claude Code スキル
-- `/handoff-next-task`: HANDOFF.md の有無に応じて次タスクを継続実行するスキル

@@ -4,54 +4,56 @@ import {
   type AppServerEngineOptions,
 } from '../engines/app-server.js';
 import type { EngineResult } from '../engines/base.js';
-import { loadPromptRaw } from '../prompts/loader.js';
-import type { TaskEntry } from '../state/task.js';
-import type { WorkReport } from '../state/work-report.js';
-import type { Escalation } from '../state/escalation.js';
+import type { MissionPlan } from '../state/mission.js';
+import {
+  createMissionPlan,
+} from '../state/mission.js';
+import type { ValidationCheckResult } from '../state/validation.js';
+import {
+  createEmptyValidationContract,
+} from '../state/validation.js';
+import type { CheckType } from '../state/validation.js';
 import type {
   Agent,
-  AskUserPrompt,
-  ManagerDecision,
-  ManagerInput,
   AgentMode,
+  FollowUpFeatureDraft,
+  ManagerInput,
   SteerResult,
 } from './types.js';
 
-/**
- * Manager Agent 設定
- */
 export interface ManagerAgentConfig {
-  /** 作業ディレクトリ */
   cwd: string;
-  /** プロンプトディレクトリ */
   promptsDir: string;
-  /** Manager モデル名（Claude/Codex） */
   model?: string;
-  /** effort レベル */
   effort?: 'low' | 'medium' | 'high' | 'max';
-  /** resume 時に再利用する threadId */
   resumeThreadId?: string;
 }
 
-/** Codex 系モデル名パターン */
 const CODEX_MODEL_PATTERN = /codex/i;
 
-const REVIEW_ONLY_INSTRUCTIONS = `### Review-Only モード固有ルール
+interface MissionPlanningOutput {
+  goal: string;
+  constraints: string[];
+  successCriteria: string[];
+  milestones: Array<{
+    id?: string;
+    title: string;
+    description: string;
+    validationContract?: {
+      staticChecks?: Array<{ id: string; description: string; command?: string; type?: string }>;
+      testSuites?: Array<{ id: string; description: string; command?: string; type?: string }>;
+      e2eChecks?: Array<{ id: string; description: string; command?: string; type?: string }>;
+      manualSteps?: Array<{ id: string; description: string; command?: string; type?: string }>;
+    };
+    features: Array<{
+      id?: string;
+      description: string;
+      model?: 'claude' | 'codex';
+      checks?: Array<{ text: string; type?: string }>;
+    }>;
+  }>;
+}
 
-- **Product Review は行わない**: review-only では \`reviewType: "code"\` のみを対象にし、\`reviewType: "product"\` は dispatch しない
-- **「レビュー」はコードレビューのみを指す**: PRD との整合性確認や Product Review はこのモードでは実施しない
-- **実装タスクは dispatch しない**: 既存の未完了実装タスクがあっても無視し、レビュータスクまたはレビュー起因の修正タスクのみを dispatch する
-- **レビュー→修正→再レビュー**: レビューで P1/P2 が見つかった場合、Worker が discoveredTasks に報告 → それを修正タスクとして追加 → 修正後に次世代レビューへ
-- **修正後は必ず再レビューを挟む**: 修正タスクが完了した直後に完了判定せず、全体の code review を再度実行してから完了判定する
-- **完了条件**: レビューが CLEAN（discoveredTasks が空の SUCCESS）になったら HANDOFF.md を出力
-- **修正タスクの粒度**: P1 は個別タスク、P2 はまとめて 1 タスクにする（既存の buildFollowupTaskEntries ルールに従う）`;
-
-/**
- * Manager Agent
- *
- * 判断、タスク分解、レビューを担当する。
- * model に応じて Claude/Codex Engine を使用。
- */
 export class ManagerAgent implements Agent {
   readonly name = 'manager';
   readonly mode: AgentMode = 'manager';
@@ -69,112 +71,139 @@ export class ManagerAgent implements Agent {
     this.resumeThreadId = config.resumeThreadId ?? null;
   }
 
-  /**
-   * Manager プロンプトを構築する
-   */
-  private async buildPrompt(input: ManagerInput): Promise<string> {
-    const template = await loadPromptRaw('manager');
+  async generateMissionPlan(input: {
+    missionId: string;
+    prd: string | null;
+    interactiveGoal?: string;
+    approvalMethod?: 'auto' | 'interactive';
+    prdFile?: string;
+    onAgentMessageDelta?: (chunk: string) => void;
+    onCommandOutputDelta?: (chunk: string) => void;
+    onAppServerEvent?: (method: string, params: unknown) => void;
+  }): Promise<MissionPlan> {
+    const prompt = this.buildMissionPlanPrompt(input.prd, input.interactiveGoal);
 
-    // プレースホルダーを置換
-    let prompt = template
-      .replace('{ITERATION}', String(input.iteration))
-      .replace('{MAX_ITERATIONS}', String(input.maxIterations));
-
-    const executionMode = input.executionMode ?? 'default';
-    prompt = prompt
-      .replace('{EXECUTION_MODE}', executionMode)
-      .replace(
-        '{MODE_INSTRUCTIONS}',
-        executionMode === 'review-only' ? REVIEW_ONLY_INSTRUCTIONS : ''
-      );
-
-    // TASK セクション
-    if (input.tasks) {
-      prompt = prompt.replace(
-        '{TASK_JSON}',
-        JSON.stringify(input.tasks, null, 2)
-      );
-    } else {
-      prompt = prompt.replace('{TASK_JSON}', 'null (TASK.json が存在しません)');
-    }
-
-    // PRD セクション
-    if (input.prd) {
-      prompt = prompt.replace('{PRD_CONTENT}', input.prd);
-    } else {
-      prompt = prompt.replace('{PRD_CONTENT}', '(PRD.md が存在しません)');
-    }
-
-    // PROGRESS セクション
-    if (input.progress) {
-      prompt = prompt.replace('{PROGRESS_CONTENT}', input.progress);
-    } else {
-      prompt = prompt.replace('{PROGRESS_CONTENT}', '(PROGRESS.md が存在しません)');
-    }
-
-    // WORK_REPORT セクション
-    if (input.lastWorkReport) {
-      prompt = prompt.replace(
-        '{WORK_REPORT_JSON}',
-        JSON.stringify(input.lastWorkReport, null, 2)
-      );
-    } else {
-      prompt = prompt.replace('{WORK_REPORT_JSON}', 'null (前回の報告なし)');
-    }
-
-    // ESCALATION セクション
-    if (input.pendingEscalation) {
-      prompt = prompt.replace(
-        '{ESCALATION_JSON}',
-        JSON.stringify(input.pendingEscalation, null, 2)
-      );
-    } else {
-      prompt = prompt.replace('{ESCALATION_JSON}', 'null');
-    }
-
-    const deferredSteers = (input.deferredSteers ?? [])
-      .map((instruction) => instruction.trim())
-      .filter((instruction) => instruction.length > 0);
-    if (deferredSteers.length > 0) {
-      const steerLines = deferredSteers
-        .map((instruction, index) => `${index + 1}. ${instruction}`)
-        .join('\n');
-      prompt += `\n\n## Deferred User Steering (FIFO)\n以下は Claude 実行中に保留された追加指示です。今回の判断に反映してください。\n\n${steerLines}\n`;
-    }
-
-    return prompt;
-  }
-
-  /**
-   * Manager を実行して判断を取得する
-   */
-  async run(input: ManagerInput): Promise<ManagerDecision> {
-    const prompt = await this.buildPrompt(input);
-
-    const result = await this.executeWithConfiguredEngine(
-      prompt,
-      this.config.effort || 'high',
-      {
-        onAgentMessageDelta: input.onAgentMessageDelta,
-        onCommandOutputDelta: input.onCommandOutputDelta,
-        onAppServerEvent: input.onAppServerEvent,
-      }
-    );
+    const result = await this.executeWithConfiguredEngine(prompt, this.config.effort ?? 'high', {
+      onAgentMessageDelta: input.onAgentMessageDelta,
+      onCommandOutputDelta: input.onCommandOutputDelta,
+      onAppServerEvent: input.onAppServerEvent,
+    });
 
     if (!result.success) {
-      return {
-        type: 'error',
-        message: result.error || 'Manager execution failed',
-      };
+      return this.fallbackMissionPlan(input);
     }
 
-    // 出力から判断を抽出
-    return this.parseDecision(result.output);
+    const planning = this.parsePlanningOutput(result.output);
+    if (!planning) {
+      return this.fallbackMissionPlan(input);
+    }
+
+    return this.toMissionPlan(planning, input);
   }
 
-  /**
-   * 実行中の Manager プロセスを中断する
-   */
+  async generateFeatureBriefing(input: ManagerInput): Promise<string | undefined> {
+    const milestone = input.activeMilestone;
+    const feature = input.activeFeature;
+    if (!milestone || !feature) {
+      return undefined;
+    }
+
+    const prompt = [
+      'You are a technical planning manager.',
+      'Provide a concise implementation briefing in Japanese for the next feature.',
+      '',
+      `Mission Goal: ${input.missionPlan.mission.goal}`,
+      `Milestone: ${milestone.id} ${milestone.title}`,
+      `Feature: ${feature.id} ${feature.description}`,
+      `Feature Attempts: ${feature.attempts}`,
+      '',
+      'Output only markdown with these sections:',
+      '## Objective',
+      '## Constraints',
+      '## Validation focus',
+      '## Risks',
+    ].join('\n');
+
+    const result = await this.executeWithConfiguredEngine(prompt, 'medium', {
+      onAgentMessageDelta: input.onAgentMessageDelta,
+      onCommandOutputDelta: input.onCommandOutputDelta,
+      onAppServerEvent: input.onAppServerEvent,
+    });
+
+    if (!result.success) {
+      return undefined;
+    }
+
+    const text = result.output.trim();
+    return text.length > 0 ? text : undefined;
+  }
+
+  async generateFollowUpFeatures(input: {
+    milestoneId: string;
+    failures: ValidationCheckResult[];
+    missionPlan: MissionPlan;
+    onAgentMessageDelta?: (chunk: string) => void;
+    onCommandOutputDelta?: (chunk: string) => void;
+    onAppServerEvent?: (method: string, params: unknown) => void;
+  }): Promise<FollowUpFeatureDraft[]> {
+    const failedChecks = input.failures.filter((result) => !result.passed);
+    if (failedChecks.length === 0) {
+      return [];
+    }
+
+    const prompt = [
+      'You are a technical manager.',
+      'Generate follow-up features to repair failed milestone validation.',
+      'Return JSON array only.',
+      '',
+      `Milestone ID: ${input.milestoneId}`,
+      'Failed checks:',
+      JSON.stringify(failedChecks, null, 2),
+      '',
+      'Schema:',
+      '[{"description":"...","priority":"high|medium|low","rationale":"...","model":"claude|codex"}]',
+    ].join('\n');
+
+    const result = await this.executeWithConfiguredEngine(prompt, 'high', {
+      onAgentMessageDelta: input.onAgentMessageDelta,
+      onCommandOutputDelta: input.onCommandOutputDelta,
+      onAppServerEvent: input.onAppServerEvent,
+    });
+
+    if (!result.success) {
+      return this.fallbackFollowUpFeatures(failedChecks);
+    }
+
+    const parsed = this.parseJsonArray(result.output);
+    if (!parsed) {
+      return this.fallbackFollowUpFeatures(failedChecks);
+    }
+
+    const drafts: FollowUpFeatureDraft[] = [];
+    for (const candidate of parsed) {
+      if (!candidate || typeof candidate !== 'object') {
+        continue;
+      }
+      const description = String((candidate as { description?: unknown }).description ?? '').trim();
+      if (!description) {
+        continue;
+      }
+      const priority = String((candidate as { priority?: unknown }).priority ?? 'medium').toLowerCase();
+      drafts.push({
+        description,
+        priority: priority === 'high' || priority === 'low' ? priority : 'medium',
+        rationale: String((candidate as { rationale?: unknown }).rationale ?? '').trim() || undefined,
+        model: (candidate as { model?: unknown }).model === 'claude' ? 'claude' : 'codex',
+      });
+    }
+
+    if (drafts.length === 0) {
+      return this.fallbackFollowUpFeatures(failedChecks);
+    }
+
+    return drafts;
+  }
+
   abort(): void {
     this.claudeEngine.abort();
     this.codexEngine.abort();
@@ -196,476 +225,213 @@ export class ManagerAgent implements Agent {
     return accepted ? 'accepted' : 'unavailable';
   }
 
-  /**
-   * Claude の出力から判断を抽出する
-   */
-  private parseDecision(output: string): ManagerDecision {
-    // fenced JSON と生JSON（ログ混在）を両方収集し、末尾優先で判定する
-    const jsonBlocks = this.extractJsonBlocks(output);
-    const rawJsonBlocks = this.extractRawJsonBlocks(output);
-    const candidates = [...jsonBlocks, ...rawJsonBlocks];
+  private fallbackMissionPlan(input: {
+    missionId: string;
+    prd: string | null;
+    interactiveGoal?: string;
+    approvalMethod?: 'auto' | 'interactive';
+    prdFile?: string;
+  }): MissionPlan {
+    const goal = input.interactiveGoal?.trim()
+      || extractGoalFromPrd(input.prd)
+      || 'Implement the requested product changes';
 
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      const parsed = this.tryParseJsonObject(candidates[i]);
-      if (!parsed) {
-        continue;
-      }
-
-      if (this.isTaskDispatchCandidate(parsed)) {
-        return {
-          type: 'dispatch_task',
-          taskId: parsed.taskId,
-          briefing: typeof parsed.briefing === 'string' ? parsed.briefing : undefined,
-        };
-      }
-
-      if (this.isEscalationCandidate(parsed)) {
-        return { type: 'escalate', escalation: parsed };
-      }
-    }
-
-    const taskDispatchId = this.extractTaskDispatchTaskId(output);
-    if (taskDispatchId) {
-      return { type: 'dispatch_task', taskId: taskDispatchId };
-    }
-
-    const askUserPrompt = this.extractAskUserPrompt(output);
-    if (askUserPrompt) {
-      return { type: 'ask_user', prompt: askUserPrompt };
-    }
-
-    // HANDOFF.md の出力を探す（```markdown ブロック内または実際の完了レポート）
-    // 注意: プロンプト内のテンプレートではなく、実際の引き継ぎレポートのみをマッチ
-    const markdownBlockMatch = output.match(
-      /```markdown\s*\n(# (HANDOFF|Melos 引き継ぎレポート)[\s\S]*?)\n```/
-    );
-    if (markdownBlockMatch) {
-      return { type: 'complete', handoffContent: markdownBlockMatch[1] };
-    }
-
-    // 実際の引き継ぎレポート（生成日時と完了したタスクを含む）
-    const handoffMatch = output.match(
-      /# (HANDOFF|Melos 引き継ぎレポート)\s*\n\n(?:\*\*生成日時\*\*|生成日時)\s*:[\s\S]*/
-    );
-    if (handoffMatch) {
-      return { type: 'complete', handoffContent: handoffMatch[0] };
-    }
-
-    // COMPLETE promise を探す
-    if (output.includes('<promise>COMPLETE</promise>')) {
-      return {
-        type: 'complete',
-        handoffContent: '# Melos 完了\n\n全てのタスクが完了しました。',
-      };
-    }
-
-    // デフォルト: エラー
-    return {
-      type: 'error',
-      message: 'Could not parse Manager decision from output',
-    };
+    return createMissionPlan({
+      missionId: input.missionId,
+      goal,
+      constraints: ['No backward compatibility layer'],
+      successCriteria: ['All milestone validations pass'],
+      prdFile: input.prdFile,
+      approvalMethod: input.approvalMethod,
+      state: 'planning',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Core implementation',
+          description: 'Implement the mission scope end-to-end',
+          status: 'pending',
+          order: 1,
+          validationContract: {
+            ...createEmptyValidationContract(),
+            staticChecks: [
+              {
+                id: 'typecheck',
+                description: 'Typecheck must pass',
+                type: 'auto:typecheck',
+                command: 'npm run typecheck',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+            testSuites: [
+              {
+                id: 'test',
+                description: 'Test suite must pass',
+                type: 'auto:test',
+                command: 'npm test',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement requested scope from PRD',
+              status: 'pending',
+              model: 'codex',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+    });
   }
 
-  /**
-   * 出力から全ての JSON ブロックを抽出する
-   */
-  private extractJsonBlocks(output: string): string[] {
-    const blocks: string[] = [];
-    const regex = /```json\s*\n([\s\S]*?)\n```/g;
-    let match;
-    while ((match = regex.exec(output)) !== null) {
-      blocks.push(match[1]);
+  private toMissionPlan(
+    planning: MissionPlanningOutput,
+    input: {
+      missionId: string;
+      approvalMethod?: 'auto' | 'interactive';
+      prdFile?: string;
     }
-    return blocks;
+  ): MissionPlan {
+    const milestones = planning.milestones.map((milestone, milestoneIndex) => ({
+      id: milestone.id?.trim() || `m${milestoneIndex + 1}`,
+      title: milestone.title,
+      description: milestone.description,
+      status: 'pending' as const,
+      order: milestoneIndex + 1,
+      validationContract: {
+        staticChecks: (milestone.validationContract?.staticChecks ?? []).map((check, index) => ({
+          id: check.id || `m${milestoneIndex + 1}-static-${index + 1}`,
+          description: check.description,
+          type: normalizeCheckType(check.type, 'command'),
+          command: check.command,
+          passed: false,
+          failureCount: 0,
+        })),
+        testSuites: (milestone.validationContract?.testSuites ?? []).map((check, index) => ({
+          id: check.id || `m${milestoneIndex + 1}-test-${index + 1}`,
+          description: check.description,
+          type: normalizeCheckType(check.type, 'auto:test'),
+          command: check.command,
+          passed: false,
+          failureCount: 0,
+        })),
+        e2eChecks: (milestone.validationContract?.e2eChecks ?? []).map((check, index) => ({
+          id: check.id || `m${milestoneIndex + 1}-e2e-${index + 1}`,
+          description: check.description,
+          type: normalizeCheckType(check.type, 'e2e'),
+          command: check.command,
+          passed: false,
+          failureCount: 0,
+        })),
+        manualSteps: (milestone.validationContract?.manualSteps ?? []).map((check, index) => ({
+          id: check.id || `m${milestoneIndex + 1}-manual-${index + 1}`,
+          description: check.description,
+          type: normalizeCheckType(check.type, 'manual'),
+          command: check.command,
+          passed: false,
+          failureCount: 0,
+        })),
+      },
+      features: milestone.features.map((feature, featureIndex) => ({
+        id: feature.id?.trim() || `m${milestoneIndex + 1}-f${featureIndex + 1}`,
+        description: feature.description,
+        checks: feature.checks?.map((check) => ({ text: check.text, type: check.type, passed: false })),
+        status: 'pending' as const,
+        model: feature.model ?? inferFeatureModel(feature.description),
+        attempts: 0,
+      })),
+    }));
+
+    return createMissionPlan({
+      missionId: input.missionId,
+      goal: planning.goal,
+      constraints: planning.constraints,
+      successCriteria: planning.successCriteria,
+      prdFile: input.prdFile,
+      milestones,
+      state: 'planning',
+      approvalMethod: input.approvalMethod,
+    });
   }
 
-  /**
-   * ログ混在テキストからトップレベル JSON object を抽出する
-   * - "{}" のネスト深さで範囲を判定
-   * - 文字列内の "{}" は無視
-   */
-  private extractRawJsonBlocks(output: string): string[] {
-    const blocks: string[] = [];
-    let depth = 0;
-    let startIndex = -1;
-    let inString = false;
-    let escaped = false;
-
-    for (let i = 0; i < output.length; i++) {
-      const char = output[i];
-
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (char === '\\') {
-          escaped = true;
-          continue;
-        }
-        if (char === '"') {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (depth > 0 && char === '"') {
-        inString = true;
-        continue;
-      }
-
-      if (char === '{') {
-        if (depth === 0) {
-          startIndex = i;
-        }
-        depth++;
-        continue;
-      }
-
-      if (char === '}' && depth > 0) {
-        depth--;
-        if (depth === 0 && startIndex >= 0) {
-          blocks.push(output.slice(startIndex, i + 1));
-          startIndex = -1;
-        }
-      }
-    }
-
-    return blocks;
+  private buildMissionPlanPrompt(prd: string | null, interactiveGoal?: string): string {
+    return [
+      'You are an expert technical planner.',
+      'Create a MissionPlan JSON for a coding mission.',
+      'Hard cutover mode: do not include backward compatibility tasks.',
+      '',
+      'Output schema:',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex"}]}]}',
+      '',
+      'Constraints:',
+      '- Provide at least 3 milestones when possible',
+      '- Each milestone requires validationContract with executable commands where possible',
+      '- Feature IDs must follow mX-fY',
+      '',
+      'User stated goal:',
+      interactiveGoal?.trim() || '(not provided)',
+      '',
+      'PRD content:',
+      prd?.trim() || '(PRD not found)',
+    ].join('\n');
   }
 
-  /**
-   * JSON object を安全にパースする
-   */
-  private tryParseJsonObject(value: string): Record<string, unknown> | null {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
+  private parsePlanningOutput(output: string): MissionPlanningOutput | null {
+    const block = this.extractFirstJsonObject(output);
+    if (!block) {
       return null;
+    }
+
+    try {
+      const parsed = JSON.parse(block) as MissionPlanningOutput;
+      if (!parsed.goal || !Array.isArray(parsed.milestones) || parsed.milestones.length === 0) {
+        return null;
+      }
+      return parsed;
     } catch {
       return null;
     }
   }
 
-  private isTaskDispatchCandidate(
-    value: unknown
-  ): value is {
-    taskId: string;
-    reason?: string;
-    description?: string;
-    briefing?: string;
-  } {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return false;
-    }
-    const candidate = value as Record<string, unknown>;
-    if (typeof candidate.taskId !== 'string') {
-      return false;
-    }
-
-    const allowedKeys = new Set(['taskId', 'reason', 'description', 'briefing']);
-    return Object.keys(candidate).every((key) => allowedKeys.has(key));
-  }
-
-  /**
-   * TASK_DISPATCH 固定テキスト形式から taskId を抽出する
-   *
-   * 対応形式:
-   * TASK_DISPATCH
-   * task-1
-   *
-   * 互換形式（旧）:
-   * TASK_DISPATCH
-   * taskId: task-1
-   */
-  private extractTaskDispatchTaskId(output: string): string | null {
-    const lines = output.split(/\r?\n/);
-    let lastTaskId: string | null = null;
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() !== 'TASK_DISPATCH') {
-        continue;
-      }
-
-      for (let j = i + 1; j < lines.length; j++) {
-        const line = lines[j].trim();
-
-        if (line.length === 0) {
-          continue;
-        }
-
-        if (line.startsWith('```')) {
-          continue;
-        }
-
-        const keyed = line.match(/^taskId\s*:\s*(.+)$/i);
-        if (keyed && keyed[1].trim().length > 0) {
-          lastTaskId = this.cleanTaskIdCandidate(keyed[1]);
-          break;
-        }
-
-        if (/^[A-Z_]+(?:\.(json|md))?$/i.test(line)) {
-          break;
-        }
-
-        lastTaskId = this.cleanTaskIdCandidate(line);
-        break;
-      }
-    }
-
-    return lastTaskId;
-  }
-
-  /**
-   * ASK_USER 固定テキスト形式から質問を抽出する
-   *
-   * 対応形式:
-   * ASK_USER
-   * Context: task-1
-   * Question: Which option should we use?
-   * Options:
-   * - A: keep current
-   * - B: switch behavior
-   * Recommendation: B
-   * AllowFreeText: true
-   */
-  private extractAskUserPrompt(output: string): AskUserPrompt | null {
-    const lines = output.split(/\r?\n/);
-    let lastPrompt: AskUserPrompt | null = null;
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim().toUpperCase() !== 'ASK_USER') {
-        continue;
-      }
-
-      const parsed = this.parseAskUserPromptFromLines(lines, i + 1);
-      if (parsed) {
-        lastPrompt = parsed;
-      }
-    }
-
-    return lastPrompt;
-  }
-
-  private parseAskUserPromptFromLines(
-    lines: string[],
-    startIndex: number
-  ): AskUserPrompt | null {
-    let question: string | null = null;
-    let context: string | undefined;
-    let recommendation: string | undefined;
-    let allowFreeText: boolean | undefined;
-    const options: Array<{ label: string; description: string }> = [];
-    let readingOptions = false;
-
-    for (let i = startIndex; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.length === 0) {
-        continue;
-      }
-      if (line.startsWith('```')) {
-        break;
-      }
-      if (line.toUpperCase() === 'TASK_DISPATCH' || line.toUpperCase() === 'ASK_USER') {
-        break;
-      }
-      if (line === '<promise>COMPLETE</promise>' || /^#\s/.test(line)) {
-        break;
-      }
-
-      const questionMatch = line.match(/^question\s*:\s*(.+)$/i);
-      if (questionMatch) {
-        question = questionMatch[1].trim();
-        readingOptions = false;
-        continue;
-      }
-
-      const contextMatch = line.match(/^context\s*:\s*(.+)$/i);
-      if (contextMatch) {
-        context = contextMatch[1].trim();
-        readingOptions = false;
-        continue;
-      }
-
-      const recommendationMatch = line.match(/^recommendation\s*:\s*(.+)$/i);
-      if (recommendationMatch) {
-        recommendation = recommendationMatch[1].trim();
-        readingOptions = false;
-        continue;
-      }
-
-      const allowFreeTextMatch = line.match(/^allowfreetext\s*:\s*(.+)$/i);
-      if (allowFreeTextMatch) {
-        const raw = allowFreeTextMatch[1].trim().toLowerCase();
-        allowFreeText = raw !== 'false';
-        readingOptions = false;
-        continue;
-      }
-
-      if (/^options\s*:\s*$/i.test(line)) {
-        readingOptions = true;
-        continue;
-      }
-
-      if (readingOptions) {
-        const optionMatch = line.match(/^-+\s*([^:]+)\s*:\s*(.+)$/);
-        if (optionMatch) {
-          options.push({
-            label: optionMatch[1].trim(),
-            description: optionMatch[2].trim(),
-          });
-          continue;
-        }
-      }
-    }
-
-    if (!question || question.length === 0) {
+  private parseJsonArray(output: string): unknown[] | null {
+    const fenced = output.match(/```json\s*\n([\s\S]*?)\n```/);
+    const source = fenced?.[1] ?? output;
+    const arrayMatch = source.match(/\[[\s\S]*\]/);
+    if (!arrayMatch) {
       return null;
     }
-
-    return {
-      question,
-      context,
-      options: options.length > 0 ? options : undefined,
-      recommendation,
-      allowFreeText,
-    };
-  }
-
-  private cleanTaskIdCandidate(value: string): string {
-    return value.trim().replace(/^['"`]|['"`]$/g, '');
-  }
-
-  private isEscalationCandidate(value: unknown): value is Escalation {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return false;
+    try {
+      const parsed = JSON.parse(arrayMatch[0]);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
     }
-    const candidate = value as Record<string, unknown>;
-    const type = candidate.type;
-    return (
-      (type === 'QUESTION' || type === 'APPROVAL' || type === 'BLOCKER') &&
-      typeof candidate.question === 'string'
-    );
   }
 
-  /**
-   * TASK.json がない場合にタスクを生成する
-   */
-  async generateTasks(prd: string, progress: string | null): Promise<TaskEntry[]> {
-    const prompt = `
-あなたは熟練したテックリードです。
-
-以下のPRD（要件定義）を読み、実装タスクに分解してください。
-
-## PRD
-
-${prd}
-
-## コードベースの既知パターン
-
-${progress || '(なし)'}
-
-## タスク分解のルール
-
-タスクは「検証可能な最小デリバリー単位」で分解する。
-
-1. **単独検証可能**: 各タスクの checks は他タスクの完了に依存せず単独で検証できること
-2. **依存は順序で表現**: 先行タスクの成果物を前提にしてよいが、checks は自己完結させる
-3. **分割の判断**: バックエンドが単体テストで検証できるならフロント分離可。検証できない中間成果物だけのタスクは作らない
-
-各タスクには必ず具体的な checks を付与し、「このタスクだけで検証合格できるか？」を確認する。
-
-## 出力形式
-
-以下のJSON形式でタスクリストを出力してください:
-
-\`\`\`json
-[
-  {
-    "id": "task-1",
-    "description": "タスクの説明",
-    "passes": false
-  }
-]
-\`\`\`
-`;
-
-    const result = await this.executeWithConfiguredEngine(prompt, 'high');
-
-    if (!result.success) {
-      throw new Error(`Failed to generate tasks: ${result.error}`);
+  private extractFirstJsonObject(output: string): string | null {
+    const fenced = output.match(/```json\s*\n([\s\S]*?)\n```/);
+    if (fenced?.[1]) {
+      return fenced[1];
     }
 
-    // JSON を抽出
-    const jsonMatch = result.output.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (!jsonMatch) {
-      throw new Error('Could not parse task JSON from output');
-    }
-
-    const tasks = JSON.parse(jsonMatch[1]) as TaskEntry[];
-    return tasks;
+    const objectMatch = output.match(/\{[\s\S]*\}/);
+    return objectMatch?.[0] ?? null;
   }
 
-  /**
-   * Worker の報告をレビューする
-   */
-  async reviewWorkReport(
-    task: Pick<TaskEntry, 'id' | 'description' | 'checks'>,
-    workReport: WorkReport
-  ): Promise<{ approved: boolean; feedback?: string }> {
-    const prompt = `
-あなたは熟練したテックリードです。
-
-Worker の実行報告をレビューしてください。
-
-## タスク情報 (TASK)
-
-${JSON.stringify(task, null, 2)}
-
-## 報告内容 (WORK_REPORT)
-
-${JSON.stringify(workReport, null, 2)}
-
-## 判断基準
-
-1. 全ての成功基準が満たされているか
-2. テスト/lint/typecheckがパスしているか
-3. 重大な問題が報告されていないか
-
-## 出力形式
-
-\`\`\`json
-{
-  "approved": true または false,
-  "feedback": "承認しない場合のフィードバック"
-}
-\`\`\`
-`;
-
-    const result = await this.executeWithConfiguredEngine(prompt, 'medium');
-
-    if (!result.success) {
-      return { approved: false, feedback: 'Review execution failed' };
-    }
-
-    // JSON を抽出
-    const jsonMatch = result.output.match(/```json\s*\n([\s\S]*?)\n```/);
-    if (!jsonMatch) {
-      return { approved: false, feedback: 'Could not parse review result' };
-    }
-
-    const review = JSON.parse(jsonMatch[1]) as {
-      approved: boolean;
-      feedback?: string;
-    };
-    return review;
+  private fallbackFollowUpFeatures(failures: ValidationCheckResult[]): FollowUpFeatureDraft[] {
+    return failures.slice(0, 3).map((failure, index) => ({
+      description: failure.failure?.summary
+        ?? `Fix validation failure: ${failure.checkId}`,
+      priority: index === 0 ? 'high' : 'medium',
+      rationale: failure.failure?.rootCause,
+      model: 'codex',
+    }));
   }
 
-  /**
-   * 設定モデルに応じたエンジンでプロンプトを実行する
-   */
   private executeWithConfiguredEngine(
     prompt: string,
     effort: NonNullable<ManagerAgentConfig['effort']>,
@@ -703,17 +469,14 @@ ${JSON.stringify(workReport, null, 2)}
       effort,
       skipPermissions: true,
       printMode: true,
+      onStream: callbacks.onAgentMessageDelta,
+      onEvent: callbacks.onAppServerEvent,
     };
     return this.claudeEngine.execute(prompt, options).finally(() => {
       this.activeEngine = null;
     });
   }
 
-  /**
-   * モデル名に応じて Codex を使うべきか判定する
-   * - model 未指定: Codex をデフォルト使用
-   * - model 指定あり: codex 文字列を含む場合のみ Codex を使用
-   */
   private shouldUseCodexEngine(model: string | undefined): boolean {
     if (typeof model !== 'string' || model.trim().length === 0) {
       return true;
@@ -721,9 +484,6 @@ ${JSON.stringify(workReport, null, 2)}
     return CODEX_MODEL_PATTERN.test(model);
   }
 
-  /**
-   * Manager の effort 値を Codex の reasoning effort に変換する
-   */
   private mapEffortForCodex(
     effort: NonNullable<ManagerAgentConfig['effort']>
   ): NonNullable<AppServerEngineOptions['reasoningEffort']> {
@@ -732,4 +492,39 @@ ${JSON.stringify(workReport, null, 2)}
     }
     return effort;
   }
+}
+
+function normalizeCheckType(
+  value: string | undefined,
+  fallback: 'command' | 'auto:test' | 'e2e' | 'manual'
+): CheckType {
+  if (!value) {
+    return fallback;
+  }
+  if (value === 'auto:lint' || value === 'auto:typecheck' || value === 'auto:test' || value === 'e2e' || value === 'manual' || value === 'command') {
+    return value;
+  }
+  return fallback;
+}
+
+function inferFeatureModel(description: string): 'claude' | 'codex' {
+  const normalized = description.toLowerCase();
+  if (normalized.includes('ui') || normalized.includes('design') || normalized.includes('layout') || normalized.includes('style')) {
+    return 'claude';
+  }
+  return 'codex';
+}
+
+function extractGoalFromPrd(prd: string | null): string | null {
+  if (!prd) {
+    return null;
+  }
+
+  const firstHeading = prd.split(/\r?\n/).find((line) => line.startsWith('# '));
+  if (!firstHeading) {
+    return null;
+  }
+
+  const title = firstHeading.replace(/^#\s+/, '').trim();
+  return title.length > 0 ? title : null;
 }

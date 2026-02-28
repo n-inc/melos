@@ -1,100 +1,27 @@
-import {
-  createProgram,
-  resolveExecutionMode,
-  resolveManagerModel,
-  resolveMaxIterations,
-  resolveWorkerModel,
-} from '../../cli.js';
-import type { MelosConfig } from '../../config/index.js';
+import { createProgram } from '../../cli.js';
 
-describe('CLI model resolution', () => {
-  describe('resolveManagerModel', () => {
-    it('uses top-level codex model for Manager', () => {
-      const config: MelosConfig = {
-        model: 'gpt-5.3-codex',
-      };
+describe('CLI v0.8 options', () => {
+  it('registers run/resume/kill commands', () => {
+    const program = createProgram();
+    const commandNames = new Set(program.commands.map((command) => command.name()));
 
-      expect(resolveManagerModel({}, config)).toBe('gpt-5.3-codex');
-    });
-
-    it('prioritizes CLI model over manager-specific model', () => {
-      const config: MelosConfig = {
-        manager: { model: 'sonnet' },
-      };
-
-      expect(resolveManagerModel({ model: 'gpt-5.3-codex' }, config)).toBe('gpt-5.3-codex');
-    });
-
-    it('accepts non-codex model from top-level', () => {
-      const config: MelosConfig = {
-        model: 'opus',
-      };
-
-      expect(resolveManagerModel({}, config)).toBe('opus');
-    });
+    expect(commandNames.has('run')).toBe(true);
+    expect(commandNames.has('resume')).toBe(true);
+    expect(commandNames.has('kill')).toBe(true);
   });
 
-  describe('resolveWorkerModel', () => {
-    it('uses top-level codex model for Worker', () => {
-      const config: MelosConfig = {
-        model: 'gpt-5.3-codex',
-      };
+  it('registers mission options on run command', () => {
+    const program = createProgram();
+    const runCommand = program.commands.find((command) => command.name() === 'run');
+    expect(runCommand).toBeDefined();
 
-      expect(resolveWorkerModel({}, config)).toBe('gpt-5.3-codex');
-    });
-
-    it('falls back to worker-specific model when CLI model is claude-only', () => {
-      const config: MelosConfig = {
-        worker: { model: 'gpt-5.3-codex' },
-      };
-
-      expect(resolveWorkerModel({ model: 'sonnet' }, config)).toBe('gpt-5.3-codex');
-    });
-
-    it('treats claude-only model names case-insensitively', () => {
-      const config: MelosConfig = {
-        worker: { model: 'gpt-5.3-codex' },
-      };
-
-      expect(resolveWorkerModel({ model: 'OPUS' }, config)).toBe('gpt-5.3-codex');
-    });
-  });
-
-  describe('review-only option resolution', () => {
-    it('registers --review-only option on root command and run subcommand', () => {
-      const program = createProgram();
-      const rootHasOption = program.options.some((option) => option.long === '--review-only');
-      const runCommand = program.commands.find((command) => command.name() === 'run');
-      const runHasOption = runCommand?.options.some(
-        (option) => option.long === '--review-only'
-      );
-
-      expect(rootHasOption).toBe(true);
-      expect(runHasOption).toBe(true);
-    });
-
-    it('resolves review-only execution mode and mode-specific max iterations', () => {
-      const executionMode = resolveExecutionMode({ reviewOnly: true });
-      expect(executionMode).toBe('review-only');
-      expect(resolveMaxIterations({}, {}, executionMode)).toBe(10);
-    });
-
-    it('uses explicit maxIterations and config maxIterations over mode defaults', () => {
-      expect(resolveMaxIterations({ maxIterations: 7 }, { maxIterations: 25 }, 'review-only')).toBe(7);
-      expect(resolveMaxIterations({}, { maxIterations: 25 }, 'review-only')).toBe(25);
-      expect(resolveMaxIterations({}, {}, 'default')).toBe(30);
-    });
-
-    it('registers resume subcommand', () => {
-      const program = createProgram();
-      const resumeCommand = program.commands.find((command) => command.name() === 'resume');
-      expect(resumeCommand).toBeDefined();
-    });
-
-    it('registers kill subcommand', () => {
-      const program = createProgram();
-      const killCommand = program.commands.find((command) => command.name() === 'kill');
-      expect(killCommand).toBeDefined();
-    });
+    const options = new Set(runCommand?.options.map((option) => option.long));
+    expect(options.has('--interactive')).toBe(true);
+    expect(options.has('--auto-approve')).toBe(true);
+    expect(options.has('--git-strategy')).toBe(true);
+    expect(options.has('--base-branch')).toBe(true);
+    expect(options.has('--mission-id')).toBe(true);
+    expect(options.has('--planner-model')).toBe(true);
+    expect(options.has('--worker-model')).toBe(true);
   });
 });

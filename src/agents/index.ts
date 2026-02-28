@@ -1,9 +1,12 @@
 export {
   type AgentMode,
-  type ManagerDecision,
   type WorkerResult,
   type ManagerInput,
   type WorkerInput,
+  type AskUserPrompt,
+  type FollowUpFeatureDraft,
+  type WorkerFeatureReport,
+  type WorkerTokenUsage,
   type Agent,
 } from './types.js';
 

@@ -1,690 +1,99 @@
-import {
-  buildFollowupTaskEntries,
-  buildManagerDecisionMessage,
-  buildManagerRunMessage,
-  buildWorkerFinishMessage,
-  buildWorkerRunMessage,
-  closePendingProductReviewsForReviewOnly,
-  formatLearningsForProgress,
-  formatTaskLabel,
-  getReviewOnlyPreferredTaskId,
-  getReviewTasksToAdd,
-  isCleanCodeReviewReport,
-  resolveTaskIdByDescription,
-  resolveTaskIdForTaskList,
-  resolveTaskIdWithFallback,
-  shouldBlockCompletion,
-  upsertLearningsSection,
-} from '../orchestrator.js';
-import type { TaskEntry } from '../state/task.js';
-import type { WorkerResult, ManagerDecision } from '../agents/types.js';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { jest } from '@jest/globals';
 
-describe('orchestrator.ts', () => {
-  describe('display message helpers', () => {
-    const baseTask: TaskEntry = {
-      id: 'task-1',
-      description: 'Implement login flow',
-      passes: false,
-    };
+import { Orchestrator } from '../orchestrator.js';
+import { ManagerAgent } from '../agents/manager.js';
+import { WorkerAgent } from '../agents/worker.js';
+import { createMissionPlan } from '../state/mission.js';
 
-    function createWorkerResult(
-      type: WorkerResult['type'],
-      status: WorkerResult['report']['status'],
-      summary: string
-    ): WorkerResult {
-      return {
-        type,
-        report: {
-          iteration: 1,
-          taskId: 'task-1',
-          status,
-          summary,
-          filesChanged: [],
-          verification: {
-            testsRun: false,
-            testsPassed: 0,
-            testsFailed: 0,
-            lintPassed: false,
-            typecheckPassed: false,
+describe('Orchestrator v0.8', () => {
+  it('runs mission state machine to completion', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Sample mission\n\nImplement feature.', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'sample',
+      goal: 'Sample mission',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['tests pass'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Build core',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
           },
-          successCriteriaResults: [],
-          issues: [],
-          discoveredTasks: [],
-          learnings: [],
-          requestsHelp: false,
-          createdAt: '2026-02-18T00:00:00Z',
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement core feature',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
         },
-      };
-    }
-
-    it('formats task label with truncation', () => {
-      const label = formatTaskLabel('task-1', 'A very long description that should be cut', 24);
-      expect(label).toBe('[task-1] A very long ...');
+      ],
+      state: 'planning',
     });
 
-    it('formats japanese task label with display width truncation', () => {
-      const label = formatTaskLabel(
-        '4',
-        '本修正に関連するレビュー/チャット/本文表示フローを横断的に回帰検証し、追跡する',
-        24
-      );
-      expect(label.endsWith('...')).toBe(true);
-      expect(label.startsWith('[4]')).toBe(true);
-    });
-
-    it('builds manager run message without previous report', () => {
-      expect(buildManagerRunMessage(null)).toBe(
-        'Manager 実行中: 初回判断で次アクションを決定中...'
-      );
-    });
-
-    it('builds manager run message with previous report context', () => {
-      const message = buildManagerRunMessage({
-        iteration: 3,
-        taskId: 'task-9',
-        status: 'PARTIAL',
-        summary: 'partial',
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'done',
         filesChanged: [],
-        verification: {
-          testsRun: false,
-          testsPassed: 0,
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
           testsFailed: 0,
-          lintPassed: false,
-          typecheckPassed: false,
+          lintPassed: true,
+          typecheckPassed: true,
         },
-        successCriteriaResults: [],
-        issues: [],
-        discoveredTasks: [],
+        checks: [],
+        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
-        createdAt: '2026-02-18T00:00:00Z',
-      });
-      expect(message).toBe(
-        'Manager 実行中: 前回 [task-9] (PARTIAL) を評価して次アクションを決定中...'
-      );
-    });
-
-    it('builds manager decision messages for all decision types', () => {
-      const dispatchDecision: ManagerDecision = {
-        type: 'dispatch_task',
-        taskId: 'task-1',
-      };
-      const escalateDecision: ManagerDecision = {
-        type: 'escalate',
-        escalation: {
-          id: 'esc-1',
-          type: 'QUESTION',
-          context: 'task-1',
-          question: 'question?',
-          status: 'pending',
-          createdAt: '2026-02-18T00:00:00Z',
+        tokenUsage: {
+          input: 100,
+          output: 50,
+          cached: 10,
         },
-      };
-      const completeDecision: ManagerDecision = {
-        type: 'complete',
-        handoffContent: 'done',
-      };
-      const errorDecision: ManagerDecision = {
-        type: 'error',
-        message: 'oops',
-      };
-      const reviewDecision: ManagerDecision = {
-        type: 'review_complete',
-        approved: false,
-        feedback: 'needs more',
-      };
-      const askUserDecision: ManagerDecision = {
-        type: 'ask_user',
-        prompt: {
-          question: 'Which option should we use?',
-          options: [
-            { label: 'A', description: 'keep current behavior' },
-            { label: 'B', description: 'switch behavior' },
-          ],
-          recommendation: 'B',
-        },
-      };
-
-      expect(buildManagerDecisionMessage(dispatchDecision, baseTask.description)).toContain(
-        'Manager 決定: [task-1] Implement login flow を Worker に指示'
-      );
-      expect(buildManagerDecisionMessage(escalateDecision)).toBe(
-        'Manager 決定: エスカレーション (QUESTION)'
-      );
-      expect(buildManagerDecisionMessage(completeDecision)).toBe(
-        'Manager 決定: 完了判定'
-      );
-      expect(buildManagerDecisionMessage(errorDecision)).toBe(
-        'Manager 決定: エラー'
-      );
-      expect(buildManagerDecisionMessage(reviewDecision)).toBe(
-        'Manager 決定: レビュー継続'
-      );
-      expect(buildManagerDecisionMessage(askUserDecision)).toBe(
-        'Manager 決定: ユーザー確認が必要'
-      );
+        createdAt: new Date().toISOString(),
+      },
     });
 
-    it('builds worker run message with task label', () => {
-      expect(buildWorkerRunMessage(baseTask)).toBe(
-        'Worker 実行中: [task-1] Implement login flow'
-      );
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
     });
 
-    it('builds worker finish message with summary fallback', () => {
-      const result = createWorkerResult('failed', 'FAILED', '');
-      expect(buildWorkerFinishMessage(baseTask, result)).toBe(
-        'Worker 完了: [task-1] Implement login flow FAILED - summary unavailable'
-      );
-    });
+    const result = await orchestrator.run();
 
-    it('builds worker finish message for all statuses', () => {
-      const successResult = createWorkerResult('success', 'SUCCESS', 'done');
-      const partialResult = createWorkerResult('partial', 'PARTIAL', 'partial done');
-      const blockedResult = createWorkerResult('blocked', 'BLOCKED', 'need credentials');
-      const failedResult = createWorkerResult('failed', 'FAILED', 'test failed');
-
-      expect(buildWorkerFinishMessage(baseTask, successResult)).toContain('SUCCESS - done');
-      expect(buildWorkerFinishMessage(baseTask, partialResult)).toContain(
-        'PARTIAL - partial done'
-      );
-      expect(buildWorkerFinishMessage(baseTask, blockedResult)).toContain(
-        'BLOCKED - need credentials'
-      );
-      expect(buildWorkerFinishMessage(baseTask, failedResult)).toContain(
-        'FAILED - test failed'
-      );
-    });
-  });
-
-  describe('formatLearningsForProgress', () => {
-    it('formats learnings as date-prefixed bullet lines', () => {
-      const result = formatLearningsForProgress('3', [
-        'first learning',
-        'second learning',
-      ], '2026-02-16');
-
-      expect(result).toBe(
-        '- 2026-02-16 Task 3: first learning\n- 2026-02-16 Task 3: second learning'
-      );
-      expect(result).not.toContain('- [3]');
-    });
-  });
-
-  describe('upsertLearningsSection', () => {
-    it('appends to existing Learnings section', () => {
-      const content = `# Progress Log
-
-## Learnings
-
-- 2026-02-15 Task 1: old learning
-
-## Open Questions / Risks
-
-- none
-`;
-
-      const updated = upsertLearningsSection(content, [
-        '- 2026-02-16 Task 2: new learning',
-      ]);
-
-      expect(updated).toContain('## Learnings');
-      expect(updated).toContain('- 2026-02-15 Task 1: old learning');
-      expect(updated).toContain('- 2026-02-16 Task 2: new learning');
-      expect(updated).toContain('## Open Questions / Risks');
-      expect(updated).not.toContain('### Learnings (');
-    });
-
-    it('migrates legacy dated Learnings blocks into a single Learnings section', () => {
-      const content = `# Progress Log
-
-### Learnings (2026-02-15)
-- [1] legacy one
-- Task 1: legacy two
-
-### Learnings (2026-02-16)
-- [2] legacy three
-`;
-
-      const updated = upsertLearningsSection(content, [
-        '- 2026-02-17 Task 3: new learning',
-      ]);
-
-      expect(updated).toContain('## Learnings');
-      expect(updated).toContain('- 2026-02-15 Task 1: legacy one');
-      expect(updated).toContain('- 2026-02-15 Task 1: legacy two');
-      expect(updated).toContain('- 2026-02-16 Task 2: legacy three');
-      expect(updated).toContain('- 2026-02-17 Task 3: new learning');
-      expect(updated).not.toContain('### Learnings (2026-02-15)');
-      expect(updated).not.toContain('### Learnings (2026-02-16)');
-    });
-  });
-
-  describe('buildFollowupTaskEntries', () => {
-    it('returns empty array when discovered tasks are empty', () => {
-      const result = buildFollowupTaskEntries([], 'task-1', []);
-      expect(result).toEqual([]);
-    });
-
-    it('groups low/medium tasks by relatedTaskId and separates high tasks', () => {
-      const plan = [
-        { id: 'task-1', description: 'base', passes: false },
-        { id: 'task-1-followup-1', description: 'existing follow-up', passes: false },
-      ];
-
-      const result = buildFollowupTaskEntries(plan, 'task-1', [
-        {
-          description: '重大な決済エラー',
-          priority: 'high',
-          relatedTaskId: 'task-payment',
-        },
-        {
-          description: '文言の不一致',
-          priority: 'low',
-          relatedTaskId: 'task-1',
-        },
-        {
-          description: 'ボタン位置のずれ',
-          priority: 'medium',
-          relatedTaskId: 'task-1',
-        },
-        {
-          description: '設定画面の表示崩れ',
-          priority: 'low',
-          relatedTaskId: 'task-settings',
-        },
-      ]);
-
-      expect(result).toHaveLength(3);
-      expect(result.map((task) => task.id)).toEqual([
-        'task-1-followup-2',
-        'task-1-followup-3',
-        'task-1-followup-4',
-      ]);
-      expect(result[0].description).toContain('重大な決済エラー');
-      expect(result[1].description).toContain('軽微な不整合 2 件をまとめて対応');
-      expect(result[2].description).toContain('設定画面の表示崩れ');
-      expect(result.every((task) => task.passes === false)).toBe(true);
-    });
-  });
-
-  describe('shouldBlockCompletion', () => {
-    it('does not block when plan is null', () => {
-      expect(shouldBlockCompletion(null)).toEqual({
-        blocked: false,
-        pendingTaskIds: [],
-        pendingReviewTaskIds: [],
-      });
-    });
-
-    it('blocks completion when there are pending implementation tasks', () => {
-      const result = shouldBlockCompletion([
-        { id: '1', description: 'impl', passes: false },
-      ]);
-
-      expect(result.blocked).toBe(true);
-      expect(result.pendingTaskIds).toEqual(['1']);
-      expect(result.pendingReviewTaskIds).toEqual([]);
-    });
-
-    it('blocks completion and reports pending review tasks separately', () => {
-      const result = shouldBlockCompletion([
-        { id: '1', description: 'impl', passes: true },
-        {
-          id: 'review-product-g1',
-          description: 'product review',
-          passes: false,
-          reviewType: 'product',
-          reviewGeneration: 1,
-        },
-      ]);
-
-      expect(result.blocked).toBe(true);
-      expect(result.pendingTaskIds).toEqual(['review-product-g1']);
-      expect(result.pendingReviewTaskIds).toEqual(['review-product-g1']);
-    });
-  });
-
-  describe('isCleanCodeReviewReport', () => {
-    it('returns true only when last report is a clean successful code review', () => {
-      const result = isCleanCodeReviewReport(
-        {
-          iteration: 4,
-          taskId: 'review-code-g4',
-          status: 'SUCCESS',
-          summary: 'clean',
-          filesChanged: [],
-          verification: {
-            testsRun: false,
-            testsPassed: 0,
-            testsFailed: 0,
-            lintPassed: false,
-            typecheckPassed: false,
-          },
-          successCriteriaResults: [],
-          issues: [],
-          discoveredTasks: [],
-          learnings: [],
-          requestsHelp: false,
-          createdAt: '2026-02-21T00:00:00.000Z',
-        },
-        [
-          {
-            id: 'review-code-g4',
-            description: 'code review',
-            passes: true,
-            reviewType: 'code',
-            reviewGeneration: 4,
-          },
-        ]
-      );
-      expect(result).toBe(true);
-    });
-
-    it('returns false when discoveredTasks remain even if status is SUCCESS', () => {
-      const result = isCleanCodeReviewReport(
-        {
-          iteration: 4,
-          taskId: 'review-code-g4',
-          status: 'SUCCESS',
-          summary: 'findings',
-          filesChanged: [],
-          verification: {
-            testsRun: false,
-            testsPassed: 0,
-            testsFailed: 0,
-            lintPassed: false,
-            typecheckPassed: false,
-          },
-          successCriteriaResults: [],
-          issues: [],
-          discoveredTasks: [{ description: 'issue', priority: 'high' }],
-          learnings: [],
-          requestsHelp: false,
-          createdAt: '2026-02-21T00:00:00.000Z',
-        },
-        [
-          {
-            id: 'review-code-g4',
-            description: 'code review',
-            passes: true,
-            reviewType: 'code',
-            reviewGeneration: 4,
-          },
-        ]
-      );
-      expect(result).toBe(false);
-    });
-
-    it('returns false when last report task is not a code review task', () => {
-      const result = isCleanCodeReviewReport(
-        {
-          iteration: 4,
-          taskId: 'task-7',
-          status: 'SUCCESS',
-          summary: 'fixed',
-          filesChanged: [],
-          verification: {
-            testsRun: false,
-            testsPassed: 0,
-            testsFailed: 0,
-            lintPassed: false,
-            typecheckPassed: false,
-          },
-          successCriteriaResults: [],
-          issues: [],
-          discoveredTasks: [],
-          learnings: [],
-          requestsHelp: false,
-          createdAt: '2026-02-21T00:00:00.000Z',
-        },
-        [
-          {
-            id: 'task-7',
-            description: 'follow-up fix',
-            passes: true,
-          },
-        ]
-      );
-      expect(result).toBe(false);
-    });
-  });
-
-  describe('resolveTaskIdForTaskList', () => {
-    it('returns exact match task id as-is', () => {
-      const result = resolveTaskIdForTaskList(
-        [{ id: 'task-10', description: 'impl', passes: false }],
-        'task-10'
-      );
-      expect(result).toBe('task-10');
-    });
-
-    it('maps numeric id to task-prefixed id when uniquely matched', () => {
-      const result = resolveTaskIdForTaskList(
-        [{ id: 'task-10', description: 'impl', passes: false }],
-        '10'
-      );
-      expect(result).toBe('task-10');
-    });
-
-    it('maps task-prefixed id to numeric id when uniquely matched', () => {
-      const result = resolveTaskIdForTaskList(
-        [{ id: '10', description: 'impl', passes: false }],
-        'task-10'
-      );
-      expect(result).toBe('10');
-    });
-
-    it('keeps original id when mapping is ambiguous', () => {
-      const result = resolveTaskIdForTaskList(
-        [
-          { id: '10', description: 'impl', passes: false },
-          { id: 'task-10', description: 'impl prefixed', passes: false },
-        ],
-        '10'
-      );
-      expect(result).toBe('10');
-    });
-
-    it('keeps original id when no match is found', () => {
-      const result = resolveTaskIdForTaskList(
-        [{ id: 'task-11', description: 'impl', passes: false }],
-        '10'
-      );
-      expect(result).toBe('10');
-    });
-
-    it('maps numeric id to zero-padded task id when uniquely matched', () => {
-      const result = resolveTaskIdForTaskList(
-        [{ id: 'task-013', description: 'impl', passes: false }],
-        '13'
-      );
-      expect(result).toBe('task-013');
-    });
-  });
-
-  describe('resolveTaskIdByDescription', () => {
-    it('returns task id when description matches uniquely', () => {
-      const result = resolveTaskIdByDescription(
-        [{ id: 'task-13', description: 'Fix panel condition', passes: false }],
-        'Fix panel condition'
-      );
-      expect(result).toBe('task-13');
-    });
-
-    it('returns null when description match is ambiguous', () => {
-      const result = resolveTaskIdByDescription(
-        [
-          { id: 'task-13', description: 'Fix panel condition', passes: false },
-          { id: 'task-14', description: 'Fix panel condition', passes: false },
-        ],
-        'Fix panel condition'
-      );
-      expect(result).toBeNull();
-    });
-  });
-
-  describe('resolveTaskIdWithFallback', () => {
-    it('resolves by fallback task id when primary task id is missing', () => {
-      const result = resolveTaskIdWithFallback(
-        [{ id: 'task-13', description: 'Fix panel condition', passes: false }],
-        '13',
-        'Fix panel condition',
-        ['task-13']
-      );
-      expect(result).toBe('task-13');
-    });
-
-    it('resolves by task description when id aliases are missing', () => {
-      const result = resolveTaskIdWithFallback(
-        [{ id: 'release/13', description: 'Fix panel condition', passes: false }],
-        '13',
-        'Fix panel condition'
-      );
-      expect(result).toBe('release/13');
-    });
-  });
-
-  describe('getReviewOnlyPreferredTaskId', () => {
-    it('prefers pending code review when product review is requested in same generation', () => {
-      const result = getReviewOnlyPreferredTaskId(
-        [
-          {
-            id: 'review-product-g6-2',
-            description: 'product review',
-            passes: false,
-            reviewType: 'product',
-            reviewGeneration: 6,
-          },
-          {
-            id: 'review-code-g6-2',
-            description: 'code review',
-            passes: false,
-            reviewType: 'code',
-            reviewGeneration: 6,
-          },
-        ],
-        'review-product-g6-2'
-      );
-      expect(result).toBe('review-code-g6-2');
-    });
-
-    it('falls back to another pending code review when same generation code review is complete', () => {
-      const result = getReviewOnlyPreferredTaskId(
-        [
-          {
-            id: 'review-product-g6-2',
-            description: 'product review',
-            passes: false,
-            reviewType: 'product',
-            reviewGeneration: 6,
-          },
-          {
-            id: 'review-code-g6-2',
-            description: 'code review',
-            passes: true,
-            reviewType: 'code',
-            reviewGeneration: 6,
-          },
-          {
-            id: 'review-code-g5-3',
-            description: 'code review old generation',
-            passes: false,
-            reviewType: 'code',
-            reviewGeneration: 5,
-          },
-        ],
-        'review-product-g6-2'
-      );
-      expect(result).toBe('review-code-g5-3');
-    });
-
-    it('falls back to pending non-product task when pending code review does not exist', () => {
-      const result = getReviewOnlyPreferredTaskId(
-        [
-          {
-            id: 'review-product-g6-2',
-            description: 'product review',
-            passes: false,
-            reviewType: 'product',
-            reviewGeneration: 6,
-          },
-          {
-            id: 'task-1-followup-1',
-            description: 'follow-up implementation',
-            passes: false,
-          },
-        ],
-        'review-product-g6-2'
-      );
-      expect(result).toBe('task-1-followup-1');
-    });
-  });
-
-  describe('closePendingProductReviewsForReviewOnly', () => {
-    it('marks only pending product review tasks as complete', () => {
-      const { updatedPlan, closedTaskIds } = closePendingProductReviewsForReviewOnly([
-        {
-          id: 'review-product-g1',
-          description: 'product review',
-          passes: false,
-          reviewType: 'product',
-          reviewGeneration: 1,
-        },
-        {
-          id: 'review-code-g1',
-          description: 'code review',
-          passes: false,
-          reviewType: 'code',
-          reviewGeneration: 1,
-        },
-        {
-          id: 'task-1-followup-1',
-          description: 'follow-up implementation',
-          passes: false,
-        },
-      ]);
-
-      expect(closedTaskIds).toEqual(['review-product-g1']);
-      const updatedProductTask = updatedPlan.find((task) => task.id === 'review-product-g1');
-      const updatedCodeTask = updatedPlan.find((task) => task.id === 'review-code-g1');
-      expect(updatedProductTask?.passes).toBe(true);
-      expect(updatedCodeTask?.passes).toBe(false);
-    });
-  });
-
-  describe('getReviewTasksToAdd', () => {
-    it('returns empty when PRD does not exist', () => {
-      const result = getReviewTasksToAdd(
-        [{ id: '1', description: 'impl', passes: true }],
-        false
-      );
-      expect(result).toEqual([]);
-    });
-
-    it('returns product/code review tasks when implementation tasks are complete', () => {
-      const result = getReviewTasksToAdd(
-        [{ id: '1', description: 'impl', passes: true }],
-        true
-      );
-
-      expect(result).toHaveLength(2);
-      expect(result.map((task) => task.reviewType)).toEqual(['product', 'code']);
-    });
-
-    it('returns code review in review-only mode without PRD when follow-up tasks are complete', () => {
-      const result = getReviewTasksToAdd(
-        [
-          { id: '1', description: 'legacy impl', passes: false },
-          { id: '1-followup-1', description: 'follow-up fix', passes: true },
-        ],
-        false,
-        { reviewOnly: true }
-      );
-
-      expect(result).toHaveLength(1);
-      expect(result[0].reviewType).toBe('code');
-      expect(result[0].reviewGeneration).toBe(2);
-    });
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe('completed');
   });
 });

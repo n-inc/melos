@@ -1,390 +1,106 @@
-import type { ManagerDecision } from '../types.js';
+import { jest } from '@jest/globals';
+
 import { ManagerAgent } from '../manager.js';
 
-describe('ManagerAgent.parseDecision', () => {
-  const parseDecision = (output: string): ManagerDecision => {
+describe('ManagerAgent', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('generates mission plan from model output', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
-      promptsDir: `${process.cwd()}/prompts`,
+      promptsDir: 'prompts',
+      model: 'gpt-5.3-codex',
     });
-
-    return (
-      agent as unknown as {
-        parseDecision: (input: string) => ManagerDecision;
-      }
-    ).parseDecision(output);
-  };
-
-  it('parses task dispatch from fenced JSON', () => {
-    const output = [
-      'some logs',
-      '```json',
-      '{',
-      '  "taskId": "6",',
-      '  "reason": "do task"',
-      '}',
-      '```',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('dispatch_task');
-    if (decision.type === 'dispatch_task') {
-      expect(decision.taskId).toBe('6');
-    }
-  });
-
-  it('parses task dispatch briefing from fenced JSON', () => {
-    const output = [
-      '```json',
-      '{',
-      '  "taskId": "task-1",',
-      '  "briefing": "## Retry\\nFocus on session edge cases"',
-      '}',
-      '```',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('dispatch_task');
-    if (decision.type === 'dispatch_task') {
-      expect(decision.taskId).toBe('task-1');
-      expect(decision.briefing).toContain('Retry');
-    }
-  });
-
-  it('parses task dispatch from raw JSON with logs', () => {
-    const output = [
-      'thinking',
-      '**Analyzing issue**',
-      'exec',
-      'some command output...',
-      '{',
-      '  "taskId": "6",',
-      '  "reason": "fix parser {robust}"',
-      '}',
-      'tokens used',
-      '12345',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('dispatch_task');
-    if (decision.type === 'dispatch_task') {
-      expect(decision.taskId).toBe('6');
-    }
-  });
-
-  it('uses the last valid task dispatch when multiple JSON blocks exist', () => {
-    const output = [
-      '```json',
-      '{',
-      '  "taskId": "old-task",',
-      '  "reason": "old"',
-      '}',
-      '```',
-      'intermediate logs',
-      '{',
-      '  "taskId": "new-task",',
-      '  "reason": "new"',
-      '}',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('dispatch_task');
-    if (decision.type === 'dispatch_task') {
-      expect(decision.taskId).toBe('new-task');
-    }
-  });
-
-  it('parses TASK_DISPATCH fixed text format', () => {
-    const output = [
-      'progress logs...',
-      'TASK_DISPATCH',
-      'task-42',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('dispatch_task');
-    if (decision.type === 'dispatch_task') {
-      expect(decision.taskId).toBe('task-42');
-    }
-  });
-
-  it('parses TASK_DISPATCH keyed fallback format', () => {
-    const output = [
-      'TASK_DISPATCH',
-      'taskId: task-99',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('dispatch_task');
-    if (decision.type === 'dispatch_task') {
-      expect(decision.taskId).toBe('task-99');
-    }
-  });
-
-  it('parses ESCALATION from raw JSON', () => {
-    const output = [
-      'assistant output',
-      '{',
-      '  "id": "esc-123",',
-      '  "type": "QUESTION",',
-      '  "context": "task-6",',
-      '  "question": "Which option should we use?"',
-      '}',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('escalate');
-    if (decision.type === 'escalate') {
-      expect(decision.escalation.type).toBe('QUESTION');
-      expect(decision.escalation.question).toBe('Which option should we use?');
-    }
-  });
-
-  it('parses ASK_USER fixed text format with options', () => {
-    const output = [
-      'assistant output',
-      'ASK_USER',
-      'Context: task-6',
-      'Question: Which option should we use?',
-      'Options:',
-      '- A: Keep current behavior',
-      '- B: Use new fallback',
-      'Recommendation: B',
-      'AllowFreeText: false',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('ask_user');
-    if (decision.type === 'ask_user') {
-      expect(decision.prompt.question).toBe('Which option should we use?');
-      expect(decision.prompt.context).toBe('task-6');
-      expect(decision.prompt.options).toEqual([
-        { label: 'A', description: 'Keep current behavior' },
-        { label: 'B', description: 'Use new fallback' },
-      ]);
-      expect(decision.prompt.recommendation).toBe('B');
-      expect(decision.prompt.allowFreeText).toBe(false);
-    }
-  });
-
-  it('returns error when ASK_USER has no Question field', () => {
-    const output = [
-      'ASK_USER',
-      'Context: task-7',
-      'Options:',
-      '- A: First option',
-    ].join('\n');
-
-    const decision = parseDecision(output);
-    expect(decision.type).toBe('error');
-    if (decision.type === 'error') {
-      expect(decision.message).toBe('Could not parse Manager decision from output');
-    }
-  });
-
-  it('returns error when no decision can be parsed', () => {
-    const decision = parseDecision('thinking\nno JSON decision here');
-    expect(decision.type).toBe('error');
-    if (decision.type === 'error') {
-      expect(decision.message).toBe('Could not parse Manager decision from output');
-    }
-  });
-});
-
-describe('ManagerAgent.buildPrompt', () => {
-  it('injects tasks and maxIterations into manager prompt', async () => {
-    const agent = new ManagerAgent({
-      cwd: process.cwd(),
-      promptsDir: `${process.cwd()}/prompts`,
-    });
-
-    const prompt = await (
-      agent as unknown as {
-        buildPrompt: (input: {
-          iteration: number;
-          maxIterations: number;
-          tasks: Array<{ id: string; description: string; passes: boolean }> | null;
-          prd: string | null;
-          progress: string | null;
-          lastWorkReport: null;
-          pendingEscalation: null;
-        }) => Promise<string>;
-      }
-    ).buildPrompt({
-      iteration: 3,
-      maxIterations: 42,
-      tasks: [{ id: 'task-1', description: 'demo', passes: false }],
-      prd: null,
-      progress: null,
-      lastWorkReport: null,
-      pendingEscalation: null,
-    });
-
-    expect(prompt).toContain('Iteration 3 / 42');
-    expect(prompt).toContain('"id": "task-1"');
-    expect(prompt).toContain('TASK.json 初期化ルール');
-    expect(prompt).not.toContain('{TASK_JSON}');
-  });
-
-  it('injects review-only execution mode instructions into manager prompt', async () => {
-    const agent = new ManagerAgent({
-      cwd: process.cwd(),
-      promptsDir: `${process.cwd()}/prompts`,
-    });
-
-    const prompt = await (
-      agent as unknown as {
-        buildPrompt: (input: {
-          iteration: number;
-          maxIterations: number;
-          tasks: Array<{ id: string; description: string; passes: boolean }> | null;
-          prd: string | null;
-          progress: string | null;
-          lastWorkReport: null;
-          pendingEscalation: null;
-          executionMode?: 'default' | 'review-only';
-        }) => Promise<string>;
-      }
-    ).buildPrompt({
-      iteration: 1,
-      maxIterations: 10,
-      tasks: [{ id: 'review-code-g1', description: 'review', passes: false }],
-      prd: null,
-      progress: null,
-      lastWorkReport: null,
-      pendingEscalation: null,
-      executionMode: 'review-only',
-    });
-
-    expect(prompt).toContain('## 実行モード: review-only');
-    expect(prompt).toContain('Review-Only モード固有ルール');
-    expect(prompt).toContain('Product Review は行わない');
-    expect(prompt).toContain('「レビュー」はコードレビューのみを指す');
-    expect(prompt).not.toContain('{EXECUTION_MODE}');
-    expect(prompt).not.toContain('{MODE_INSTRUCTIONS}');
-  });
-});
-
-describe('ManagerAgent engine selection', () => {
-  const createAgent = (model?: string): ManagerAgent => {
-    return new ManagerAgent({
-      cwd: process.cwd(),
-      promptsDir: `${process.cwd()}/prompts`,
-      model,
-    });
-  };
-
-  const executeWithConfiguredEngine = async (
-    agent: ManagerAgent,
-    modelEffort: 'low' | 'medium' | 'high' | 'max' = 'high'
-  ) => {
-    return (
-      agent as unknown as {
-        executeWithConfiguredEngine: (
-          prompt: string,
-          effort: 'low' | 'medium' | 'high' | 'max'
-        ) => Promise<{
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
           success: boolean;
           output: string;
           exitCode: number;
         }>;
-      }
-    ).executeWithConfiguredEngine('test prompt', modelEffort);
-  };
-
-  it('uses Codex when model is not specified', async () => {
-    const agent = createAgent();
-    let codexExecuteCount = 0;
-    let claudeExecuteCount = 0;
-    (agent as unknown as { codexEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).codexEngine = {
-      execute: async () => {
-        codexExecuteCount++;
-        return { success: true, output: 'ok', exitCode: 0 };
-      },
+      };
     };
-    (agent as unknown as { claudeEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).claudeEngine = {
-      execute: async () => {
-        claudeExecuteCount++;
-        return { success: true, output: 'ok', exitCode: 0 };
-      },
-    };
+    const mockExecute = jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Auth system',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Tests pass'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Core',
+            description: 'Implement core',
+            validationContract: {
+              staticChecks: [{ id: 'typecheck', description: 'Typecheck', type: 'auto:typecheck', command: 'npm run typecheck' }],
+              testSuites: [{ id: 'test', description: 'Tests', type: 'auto:test', command: 'npm test' }],
+            },
+            features: [{ id: 'm1-f1', description: 'Implement auth', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
 
-    await executeWithConfiguredEngine(agent);
+    const plan = await agent.generateMissionPlan({
+      missionId: 'auth',
+      prd: '# Auth system',
+      approvalMethod: 'auto',
+      prdFile: 'PRD.md',
+    });
 
-    expect(codexExecuteCount).toBe(1);
-    expect(claudeExecuteCount).toBe(0);
+    expect(plan.version).toBe(2);
+    expect(plan.mission.goal).toBe('Auth system');
+    expect(plan.milestones[0]?.id).toBe('m1');
+    expect(plan.milestones[0]?.features[0]?.id).toBe('m1-f1');
+    expect(mockExecute).toHaveBeenCalled();
   });
 
-  it('uses Claude when model is claude family', async () => {
-    const agent = createAgent('sonnet');
-    let codexExecuteCount = 0;
-    let claudeExecuteCount = 0;
-    (agent as unknown as { codexEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).codexEngine = {
-      execute: async () => {
-        codexExecuteCount++;
-        return { success: true, output: 'ok', exitCode: 0 };
-      },
-    };
-    (agent as unknown as { claudeEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).claudeEngine = {
-      execute: async () => {
-        claudeExecuteCount++;
-        return { success: true, output: 'ok', exitCode: 0 };
-      },
-    };
-
-    await executeWithConfiguredEngine(agent);
-
-    expect(claudeExecuteCount).toBe(1);
-    expect(codexExecuteCount).toBe(0);
-  });
-
-  it('uses Codex when model includes codex', async () => {
-    const agent = createAgent('gpt-5.3-codex');
-    let codexExecuteCount = 0;
-    let claudeExecuteCount = 0;
-    (agent as unknown as { codexEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).codexEngine = {
-      execute: async () => {
-        codexExecuteCount++;
-        return { success: true, output: 'ok', exitCode: 0 };
-      },
-    };
-    (agent as unknown as { claudeEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).claudeEngine = {
-      execute: async () => {
-        claudeExecuteCount++;
-        return { success: true, output: 'ok', exitCode: 0 };
-      },
-    };
-
-    await executeWithConfiguredEngine(agent);
-
-    expect(codexExecuteCount).toBe(1);
-    expect(claudeExecuteCount).toBe(0);
-  });
-
-  it('passes resume threadId to Codex only once', async () => {
+  it('returns follow-up features from fallback when model output is invalid', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
-      promptsDir: `${process.cwd()}/prompts`,
+      promptsDir: 'prompts',
       model: 'gpt-5.3-codex',
-      resumeThreadId: 'thr_resume_manager',
     });
-    const capturedOptions: Array<{ threadId?: string }> = [];
-    (agent as unknown as { codexEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).codexEngine = {
-      execute: async (_prompt: string, options?: unknown) => {
-        capturedOptions.push(options as { threadId?: string });
-        return { success: true, output: 'ok', exitCode: 0 };
-      },
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          error?: string;
+          exitCode: number;
+        }>;
+      };
     };
-    (agent as unknown as { claudeEngine: { execute: (prompt: string, options?: unknown) => Promise<{ success: boolean; output: string; exitCode: number }> } }).claudeEngine = {
-      execute: async () => {
-        return { success: true, output: 'ok', exitCode: 0 };
-      },
-    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: false,
+      output: '',
+      error: 'failed',
+      exitCode: 1,
+    });
 
-    await executeWithConfiguredEngine(agent);
-    await executeWithConfiguredEngine(agent);
+    const followUps = await agent.generateFollowUpFeatures({
+      milestoneId: 'm1',
+      failures: [
+        {
+          checkId: 'test',
+          passed: false,
+          failure: {
+            summary: 'Jest failed',
+            affectedFiles: ['src/a.ts'],
+            errorMessages: ['error'],
+          },
+        },
+      ],
+      missionPlan: await agent.generateMissionPlan({
+        missionId: 'sample',
+        prd: '# Sample',
+      }),
+    });
 
-    expect(capturedOptions[0]?.threadId).toBe('thr_resume_manager');
-    expect(capturedOptions[1]?.threadId).toBeUndefined();
+    expect(followUps.length).toBeGreaterThan(0);
+    expect(followUps[0]?.description).toContain('Jest');
   });
 });

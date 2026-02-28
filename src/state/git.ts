@@ -1,101 +1,125 @@
 import { spawnSync, execSync } from 'node:child_process';
 
-/**
- * Git 状態
- */
 interface GitState {
-  /** 現在のブランチ名 */
   branch: string;
-  /** リモートにプッシュ済みか */
   isPushed: boolean;
-  /** PR情報（存在する場合） */
   pullRequest: { number: number; url: string } | null;
-  /** 最後のコミットハッシュ */
   lastCommitHash: string;
-  /** 取得時刻（ISO 8601） */
   fetchedAt: string;
 }
 
-/**
- * 現在のブランチ名を取得
- */
+function runGit(cwd: string, args: string[]): { ok: boolean; stdout: string; stderr: string; code: number } {
+  const result = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  return {
+    ok: result.status === 0,
+    stdout: (result.stdout ?? '').trim(),
+    stderr: (result.stderr ?? '').trim(),
+    code: result.status ?? 1,
+  };
+}
+
+function assertGit(cwd: string, args: string[], errorPrefix: string): string {
+  const result = runGit(cwd, args);
+  if (!result.ok) {
+    throw new Error(`${errorPrefix}: git ${args.join(' ')}\n${result.stderr}`);
+  }
+  return result.stdout;
+}
+
 export function getCurrentBranch(cwd: string): string {
-  const result = spawnSync('git', ['branch', '--show-current'], {
-    cwd,
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  if (result.status !== 0 || !result.stdout) {
-    return '';
-  }
-
-  return result.stdout.trim();
+  return runGit(cwd, ['branch', '--show-current']).stdout;
 }
 
-/**
- * 最後のコミットハッシュを取得
- */
 export function getLastCommitHash(cwd: string): string {
-  const result = spawnSync('git', ['rev-parse', 'HEAD'], {
+  return runGit(cwd, ['rev-parse', '--short', 'HEAD']).stdout;
+}
+
+export function getHeadCommitHash(cwd: string): string {
+  return assertGit(cwd, ['rev-parse', 'HEAD'], 'failed to get HEAD commit hash');
+}
+
+export function isWorkingTreeClean(cwd: string): boolean {
+  const status = runGit(cwd, ['status', '--porcelain']);
+  return status.ok && status.stdout.length === 0;
+}
+
+export function createBranch(cwd: string, branchName: string, baseBranch: string): void {
+  assertGit(cwd, ['checkout', baseBranch], `failed to checkout base branch ${baseBranch}`);
+  assertGit(cwd, ['checkout', '-B', branchName], `failed to create branch ${branchName}`);
+}
+
+export function checkoutBranch(cwd: string, branchName: string): void {
+  assertGit(cwd, ['checkout', branchName], `failed to checkout branch ${branchName}`);
+}
+
+export function hasConflicts(cwd: string, branchName: string, baseBranch: string): boolean {
+  assertGit(cwd, ['checkout', baseBranch], `failed to checkout base branch ${baseBranch}`);
+  const result = runGit(cwd, ['merge', '--no-commit', '--no-ff', branchName]);
+  const hasConflict = /CONFLICT/i.test(result.stdout) || /CONFLICT/i.test(result.stderr);
+  runGit(cwd, ['merge', '--abort']);
+  return hasConflict;
+}
+
+export function mergeBranch(cwd: string, branchName: string, baseBranch: string): void {
+  assertGit(cwd, ['checkout', baseBranch], `failed to checkout base branch ${baseBranch}`);
+  assertGit(cwd, ['merge', '--ff-only', branchName], `failed to merge ${branchName} to ${baseBranch}`);
+}
+
+export function commitAll(cwd: string, message: string): string {
+  assertGit(cwd, ['add', '-A'], 'failed to stage changes');
+  const result = runGit(cwd, ['commit', '-m', message]);
+  if (!result.ok) {
+    const noChanges = /nothing to commit|no changes added/i.test(result.stdout + result.stderr);
+    if (noChanges) {
+      return getHeadCommitHash(cwd);
+    }
+    throw new Error(`failed to commit changes: ${result.stderr || result.stdout}`);
+  }
+  return getHeadCommitHash(cwd);
+}
+
+export function runGitCommand(
+  cwd: string,
+  command: string
+): { exitCode: number; stdout: string; stderr: string; durationMs: number } {
+  const startedAt = Date.now();
+  const result = spawnSync('bash', ['-lc', command], {
     cwd,
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-
-  if (result.status !== 0 || !result.stdout) {
-    return '';
-  }
-
-  return result.stdout.trim().slice(0, 7);
+  return {
+    exitCode: result.status ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    durationMs: Date.now() - startedAt,
+  };
 }
 
-/**
- * リモートにプッシュ済みか確認
- */
 export function isPushedToRemote(cwd: string, branch: string): boolean {
   if (!branch) {
     return false;
   }
 
-  // リモート追跡ブランチが存在するか確認
-  const result = spawnSync(
-    'git',
-    ['rev-parse', '--verify', `origin/${branch}`],
-    {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }
-  );
-
-  if (result.status !== 0) {
+  const verify = runGit(cwd, ['rev-parse', '--verify', `origin/${branch}`]);
+  if (!verify.ok) {
     return false;
   }
 
-  // ローカルとリモートが同じコミットを指しているか確認
-  const localResult = spawnSync('git', ['rev-parse', branch], {
-    cwd,
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  const remoteResult = spawnSync('git', ['rev-parse', `origin/${branch}`], {
-    cwd,
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  if (localResult.status !== 0 || remoteResult.status !== 0) {
+  const local = runGit(cwd, ['rev-parse', branch]);
+  const remote = runGit(cwd, ['rev-parse', `origin/${branch}`]);
+  if (!local.ok || !remote.ok) {
     return false;
   }
 
-  return localResult.stdout.trim() === remoteResult.stdout.trim();
+  return local.stdout === remote.stdout;
 }
 
-/**
- * PR情報を取得
- */
 export function getPullRequest(
   cwd: string
 ): { number: number; url: string } | null {
@@ -106,7 +130,7 @@ export function getPullRequest(
       stdio: ['ignore', 'pipe', 'ignore'],
     });
 
-    const data = JSON.parse(output);
+    const data = JSON.parse(output) as { number?: number; url?: string };
     if (data.number && data.url) {
       return {
         number: data.number,
@@ -119,9 +143,6 @@ export function getPullRequest(
   }
 }
 
-/**
- * PRのCIステータスを取得
- */
 export function getCIStatus(cwd: string): 'passing' | 'failing' | 'pending' | 'unknown' {
   if (!getPullRequest(cwd)) {
     return 'unknown';
@@ -140,9 +161,9 @@ export function getCIStatus(cwd: string): 'passing' | 'failing' | 'pending' | 'u
       return 'unknown';
     }
 
-    const hasFail = checks.some(c => c.bucket === 'fail' || c.bucket === 'cancel');
-    const hasPending = checks.some(c => c.bucket === 'pending');
-    const allPass = checks.every(c => c.bucket === 'pass' || c.bucket === 'skipping');
+    const hasFail = checks.some((check) => check.bucket === 'fail' || check.bucket === 'cancel');
+    const hasPending = checks.some((check) => check.bucket === 'pending');
+    const allPass = checks.every((check) => check.bucket === 'pass' || check.bucket === 'skipping');
 
     if (hasFail) return 'failing';
     if (hasPending) return 'pending';
@@ -154,9 +175,6 @@ export function getCIStatus(cwd: string): 'passing' | 'failing' | 'pending' | 'u
   }
 }
 
-/**
- * Git状態を取得
- */
 export function fetchGitState(cwd: string): GitState {
   const branch = getCurrentBranch(cwd);
   const lastCommitHash = getLastCommitHash(cwd);
@@ -172,53 +190,39 @@ export function fetchGitState(cwd: string): GitState {
   };
 }
 
-/**
- * git push を実行
- */
 export function gitPush(cwd: string): boolean {
-  // まず通常の push を試みる
-  const pushResult = spawnSync('git', ['push'], {
+  const push = spawnSync('git', ['push'], {
     cwd,
     stdio: ['inherit', 'inherit', 'inherit'],
   });
 
-  if (pushResult.status === 0) {
+  if (push.status === 0) {
     return true;
   }
 
-  // リモートブランチがない場合は -u origin でプッシュ
   const branch = getCurrentBranch(cwd);
   if (!branch) {
     return false;
   }
 
-  const pushWithUpstreamResult = spawnSync(
-    'git',
-    ['push', '-u', 'origin', branch],
-    {
-      cwd,
-      stdio: ['inherit', 'inherit', 'inherit'],
-    }
-  );
+  const pushWithUpstream = spawnSync('git', ['push', '-u', 'origin', branch], {
+    cwd,
+    stdio: ['inherit', 'inherit', 'inherit'],
+  });
 
-  return pushWithUpstreamResult.status === 0;
+  return pushWithUpstream.status === 0;
 }
 
-/**
- * CIの完了を待機
- */
 export async function waitForCI(cwd: string): Promise<boolean> {
-  // PR が存在しない場合はスキップ
   if (!getPullRequest(cwd)) {
     return true;
   }
 
   try {
-    // gh pr checks --watch を使用
     execSync('gh pr checks --watch --fail-fast', {
       cwd,
       stdio: ['inherit', 'inherit', 'inherit'],
-      timeout: 600000, // 10分
+      timeout: 10 * 60 * 1000,
     });
     return true;
   } catch {

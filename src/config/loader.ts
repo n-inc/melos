@@ -1,53 +1,28 @@
-/**
- * Melos 設定ファイルローダー
- *
- * .melos.json ファイルからプロジェクト固有の設定を読み込む
- */
-
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/**
- * 設定ファイル名
- */
 export const CONFIG_FILE_NAME = '.melos.json';
 
-/**
- * Melos 設定ファイルの型
- */
+export type ModelName = string;
+
 export interface MelosConfig {
-  /** デフォルトモデル名（Manager/Worker 両方のデフォルト） */
-  model?: string;
-  /** 最大イテレーション数 */
   maxIterations?: number;
-  /** Manager 固有設定 */
-  manager?: {
-    /** Manager モデル名（model より優先） */
-    model?: string;
-    /** Claude effort レベル */
-    effort?: 'low' | 'medium' | 'high' | 'max';
+  models?: {
+    planner?: ModelName;
+    worker?: ModelName;
+    validator?: ModelName;
+    research?: ModelName;
   };
-  /** Worker 固有設定 */
-  worker?: {
-    /** Worker モデル名（model より優先） */
-    model?: string;
-    /** Codex effort レベル */
-    effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-    /**
-     * @deprecated `effort` を使用すること
-     * Codex 推論努力レベル（旧キー）
-     */
-    reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+  git?: {
+    enabled?: boolean;
+    baseBranch?: string;
+    autoPush?: boolean;
+    preMergeValidation?: boolean;
+    validationCommands?: string[];
   };
 }
 
-/**
- * 設定ファイルを読み込む
- *
- * @param cwd 作業ディレクトリ（デフォルト: process.cwd()）
- * @returns 設定オブジェクト（ファイルが存在しない場合は空オブジェクト）
- */
 export async function loadConfig(cwd: string = process.cwd()): Promise<MelosConfig> {
   const configPath = join(cwd, CONFIG_FILE_NAME);
 
@@ -65,12 +40,6 @@ export async function loadConfig(cwd: string = process.cwd()): Promise<MelosConf
   }
 }
 
-/**
- * 設定ファイルを同期的に読み込む
- *
- * @param cwd 作業ディレクトリ（デフォルト: process.cwd()）
- * @returns 設定オブジェクト（ファイルが存在しない場合は空オブジェクト）
- */
 export function loadConfigSync(cwd: string = process.cwd()): MelosConfig {
   const configPath = join(cwd, CONFIG_FILE_NAME);
 
@@ -88,65 +57,62 @@ export function loadConfigSync(cwd: string = process.cwd()): MelosConfig {
   }
 }
 
-/**
- * 設定を検証する
- */
 function validateConfig(config: MelosConfig): MelosConfig {
   const validated: MelosConfig = {};
 
-  // model: 文字列であればそのまま
-  if (typeof config.model === 'string') {
-    validated.model = config.model;
-  }
-
-  // maxIterations: 1〜1000 の整数
   if (typeof config.maxIterations === 'number') {
-    const num = Math.floor(config.maxIterations);
-    if (num >= 1 && num <= 1000) {
-      validated.maxIterations = num;
+    const maxIterations = Math.floor(config.maxIterations);
+    if (maxIterations >= 1 && maxIterations <= 10000) {
+      validated.maxIterations = maxIterations;
     }
   }
 
-  // manager セクション
-  if (config.manager && typeof config.manager === 'object') {
-    const manager: NonNullable<MelosConfig['manager']> = {};
-
-    if (typeof config.manager.model === 'string') {
-      manager.model = config.manager.model;
+  if (config.models && typeof config.models === 'object') {
+    const models: NonNullable<MelosConfig['models']> = {};
+    if (isNonEmptyString(config.models.planner)) {
+      models.planner = config.models.planner;
     }
-
-    if (config.manager.effort) {
-      const validEfforts = ['low', 'medium', 'high', 'max'];
-      if (validEfforts.includes(config.manager.effort)) {
-        manager.effort = config.manager.effort;
-      }
+    if (isNonEmptyString(config.models.worker)) {
+      models.worker = config.models.worker;
     }
-
-    if (Object.keys(manager).length > 0) {
-      validated.manager = manager;
+    if (isNonEmptyString(config.models.validator)) {
+      models.validator = config.models.validator;
+    }
+    if (isNonEmptyString(config.models.research)) {
+      models.research = config.models.research;
+    }
+    if (Object.keys(models).length > 0) {
+      validated.models = models;
     }
   }
 
-  // worker セクション
-  if (config.worker && typeof config.worker === 'object') {
-    const worker: NonNullable<MelosConfig['worker']> = {};
+  if (config.git && typeof config.git === 'object') {
+    const git: NonNullable<MelosConfig['git']> = {};
 
-    if (typeof config.worker.model === 'string') {
-      worker.model = config.worker.model;
+    if (typeof config.git.enabled === 'boolean') {
+      git.enabled = config.git.enabled;
+    }
+    if (isNonEmptyString(config.git.baseBranch)) {
+      git.baseBranch = config.git.baseBranch;
+    }
+    if (typeof config.git.autoPush === 'boolean') {
+      git.autoPush = config.git.autoPush;
+    }
+    if (typeof config.git.preMergeValidation === 'boolean') {
+      git.preMergeValidation = config.git.preMergeValidation;
+    }
+    if (Array.isArray(config.git.validationCommands)) {
+      git.validationCommands = config.git.validationCommands.filter(isNonEmptyString);
     }
 
-    const workerEffort = config.worker.effort ?? config.worker.reasoningEffort;
-    if (workerEffort) {
-      const validLevels = ['minimal', 'low', 'medium', 'high', 'xhigh'];
-      if (validLevels.includes(workerEffort)) {
-        worker.effort = workerEffort;
-      }
-    }
-
-    if (Object.keys(worker).length > 0) {
-      validated.worker = worker;
+    if (Object.keys(git).length > 0) {
+      validated.git = git;
     }
   }
 
   return validated;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
