@@ -76,9 +76,10 @@ describe('ui/tui views', () => {
   it('renders overview view sections', () => {
     const lines = overviewView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Overview');
-    expect(lines).toContain('Mission: Auth mission');
-    expect(lines).toContain('Recent Log');
-    expect(lines).toContain('Active Worker');
+    expect(lines).toContain('Active Feature');
+    expect(lines).toContain('Features');
+    expect(lines).toContain('Progress Log');
+    expect(lines).not.toContain('Active Worker');
   });
 
   it('renders features view with active feature details', () => {
@@ -92,7 +93,8 @@ describe('ui/tui views', () => {
   it('renders workers view table and logs', () => {
     const lines = workersView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Workers');
-    expect(lines).toContain('Worker Log');
+    expect(lines).toContain('Active Worker');
+    expect(lines).toContain('Worker Log Stream');
     expect(lines).toContain('m2-f3');
     expect(lines).toContain('Execute npm test -- auth');
   });

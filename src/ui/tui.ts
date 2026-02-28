@@ -1,5 +1,5 @@
 import { parseKey } from './tui-keymap.js';
-import { truncateDisplay, padDisplay } from './tui-ansi.js';
+import { truncateDisplay, padDisplay, getDisplayWidth } from './tui-ansi.js';
 import type { MissionControlState, TUIView, ViewId } from './tui-views.js';
 import { overviewView } from './tui-overview.js';
 import { featuresView } from './tui-features.js';
@@ -284,10 +284,16 @@ function buildFrame(
 ): string[] {
   const width = Math.max(options.width, 60);
   const height = Math.max(options.height, 20);
-  const contentHeight = height - 3;
+  const contentHeight = height - 4;
+  const usage = state.tokenUsage.total;
 
-  const header = truncateDisplay(
-    `Mission ${session.missionId} ${state.missionTitle}  ● ${state.missionState.toUpperCase()}  ${state.elapsedLabel}  ${state.progressLabel}`,
+  const header = composeTwoSidedLine(
+    `● Mission Control  ${state.missionTitle}`,
+    `Time ${state.elapsedLabel}  Input ${usage.input}  Cached ${usage.cached}  Output ${usage.output}`,
+    width
+  );
+  const status = truncateDisplay(
+    `● ${state.missionState.toUpperCase()} ${renderProgressBar(state.progressPercent, Math.max(10, Math.min(30, width - 36)))} ${state.progressLabel}`,
     width
   );
 
@@ -308,8 +314,25 @@ function buildFrame(
 
   return [
     padDisplay(header, width),
+    padDisplay(status, width),
     ...clipped,
     padDisplay(footer, width),
     padDisplay(prompt, width),
   ];
+}
+
+function composeTwoSidedLine(left: string, right: string, width: number): string {
+  const leftWidth = getDisplayWidth(left);
+  const rightWidth = getDisplayWidth(right);
+  if (leftWidth + 1 + rightWidth <= width) {
+    return `${left}${' '.repeat(width - leftWidth - rightWidth)}${right}`;
+  }
+  return truncateDisplay(`${left}  ${right}`, width);
+}
+
+function renderProgressBar(progressPercent: number, width: number): string {
+  const safeWidth = Math.max(6, width);
+  const clamped = Math.max(0, Math.min(100, progressPercent));
+  const filled = Math.round((safeWidth * clamped) / 100);
+  return `[${'█'.repeat(filled)}${'░'.repeat(Math.max(0, safeWidth - filled))}]`;
 }

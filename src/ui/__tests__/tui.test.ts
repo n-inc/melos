@@ -119,8 +119,10 @@ describe('ui/tui v0.8', () => {
 
     expect(rendered).toContain('\x1b[?1049h');
     expect(rendered).toContain('\x1b[?1049l');
-    expect(rendered).toContain('Auth system');
+    expect(rendered).toContain('Mission Control');
     expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
+    expect(rendered).toContain('Overview');
+    expect(rendered).not.toContain('Worker Log Stream');
     expect(rendered).toContain('melos>');
   });
 
@@ -191,5 +193,37 @@ describe('ui/tui v0.8', () => {
 
     expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGINT');
     killSpy.mockRestore();
+  });
+
+  it('switches to workers view only when W is pressed', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean; setRawMode?: (enabled: boolean) => void }).isTTY = true;
+    (input as unknown as { setRawMode?: (enabled: boolean) => void }).setRawMode = () => {
+      // no-op
+    };
+
+    const ui = createRuntimeUI(
+      'tui',
+      output as unknown as NodeJS.WriteStream,
+      input as unknown as NodeJS.ReadStream
+    );
+    ui.start(createSessionInfo());
+    ui.updateState(createState());
+    expect(rendered).not.toContain('Worker Log Stream');
+
+    input.write('W');
+    ui.stop();
+
+    expect(rendered).toContain('Workers');
+    expect(rendered).toContain('Worker Log Stream');
   });
 });

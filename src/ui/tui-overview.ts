@@ -1,38 +1,78 @@
 import type { TUIView, MissionControlState, ViewPort } from './tui-views.js';
 import { splitColumns, drawBox } from './tui-layout.js';
 
+function statusIcon(status: string): string {
+  switch (status) {
+    case 'done':
+      return '✓';
+    case 'in_progress':
+      return '●';
+    case 'failed':
+      return '✗';
+    case 'skipped':
+      return '⦿';
+    default:
+      return '○';
+  }
+}
+
+function wrapByCharCount(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars) {
+    return [text];
+  }
+  const out: string[] = [];
+  for (let index = 0; index < text.length; index += maxChars) {
+    out.push(text.slice(index, index + maxChars));
+  }
+  return out;
+}
+
 export const overviewView: TUIView = {
   id: 'overview',
   render(viewport: ViewPort, state: MissionControlState): string[] {
     const activeMilestone = state.milestones.find((milestone) => milestone.id === state.activeMilestoneId) ?? null;
     const activeFeature = activeMilestone?.features.find((feature) => feature.id === state.activeFeatureId) ?? null;
-    const latestWorker = state.workerRuns[state.workerRuns.length - 1];
+    const activeFeatureLabel = activeFeature
+      ? `${activeFeature.id} ${activeFeature.description}`
+      : '-';
+
+    const expectedBehaviorLines = activeFeature
+      ? wrapByCharCount(activeFeature.description, 42)
+      : ['-'];
 
     const leftLines = [
-      `Mission: ${state.missionTitle}`,
+      'Active Feature',
+      `${statusIcon(activeFeature?.status ?? 'pending')} ${activeFeatureLabel}`,
+      '',
+      `Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
       `State: ${state.missionState}`,
       `Progress: ${state.progressLabel}`,
-      `Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
-      `Feature: ${activeFeature ? `${activeFeature.id} ${activeFeature.description}` : '-'}`,
       `Branch: ${state.activeBranch ?? '-'}`,
+      '',
+      'Expected Behavior',
+      ...expectedBehaviorLines.map((line) => `  ${line}`),
     ];
+
+    const featureLines = state.milestones.flatMap((milestone) => {
+      const rows: string[] = [];
+      rows.push(`${statusIcon(milestone.status)} ${milestone.id} ${milestone.title}`);
+      for (const feature of milestone.features) {
+        const marker = feature.id === state.activeFeatureId ? '>' : ' ';
+        rows.push(`${marker}${statusIcon(feature.status)} ${feature.id} ${feature.description}`);
+      }
+      return rows;
+    }).slice(-10);
 
     const rightLines = [
-      'Recent Log',
-      ...state.progressLog.slice(-8).map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`),
+      'Features',
+      ...(featureLines.length > 0 ? featureLines : ['-']),
+      '',
+      'Progress Log',
+      ...state.progressLog.slice(-7).map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`),
     ];
 
-    const main = splitColumns(leftLines, rightLines, viewport.width, 0.5);
+    const main = splitColumns(leftLines, rightLines, viewport.width, 0.57);
 
-    const workerLines = latestWorker
-      ? [
-        `Worker #${latestWorker.id} ${latestWorker.status} ${latestWorker.durationLabel}`,
-        ...latestWorker.log.slice(-5),
-      ]
-      : ['No worker run yet'];
-
-    const boxed = drawBox('Overview', main, viewport.width);
-    const workerBox = drawBox('Active Worker', workerLines, viewport.width);
-    return [...boxed, '', ...workerBox];
+    return drawBox('Overview', main, viewport.width);
   },
 };
