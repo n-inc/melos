@@ -70,6 +70,7 @@ export function createRuntimeUI(
   let started = false;
   let controls: RuntimeUIControls = {};
   let currentView: ViewId = 'overview';
+  let userChangedView = false;
   let session: SessionInfo | null = null;
   let state: MissionControlState | null = null;
   let previousFrame: string[] = [];
@@ -83,14 +84,21 @@ export function createRuntimeUI(
   const getRows = () => output.rows ?? process.stderr.rows ?? DEFAULT_TERMINAL_ROWS;
 
   const render = () => {
-    if (!started || mode !== 'tui' || !session || !state) {
+    if (!started || mode !== 'tui' || !session) {
       return;
     }
 
-    const frame = buildFrame(session, state, {
+    const frame = state
+      ? buildFrame(session, state, {
+        width: getColumns(),
+        height: getRows(),
+        view: currentView,
+        steerMode,
+        steerBuffer,
+      })
+      : buildInitializingFrame(session, {
       width: getColumns(),
       height: getRows(),
-      view: currentView,
       steerMode,
       steerBuffer,
     });
@@ -139,12 +147,14 @@ export function createRuntimeUI(
         case 'next_view': {
           const index = VIEW_ORDER.indexOf(currentView);
           currentView = VIEW_ORDER[(index + 1) % VIEW_ORDER.length];
+          userChangedView = true;
           render();
           return;
         }
         case 'prev_view': {
           const index = VIEW_ORDER.indexOf(currentView);
           currentView = VIEW_ORDER[(index - 1 + VIEW_ORDER.length) % VIEW_ORDER.length];
+          userChangedView = true;
           render();
           return;
         }
@@ -153,10 +163,12 @@ export function createRuntimeUI(
           return;
         case 'goto_view':
           currentView = action.view;
+          userChangedView = true;
           render();
           return;
         case 'overview':
           currentView = 'overview';
+          userChangedView = true;
           render();
           return;
         case 'pause':
@@ -219,6 +231,8 @@ export function createRuntimeUI(
     session = nextSession;
     controls = nextControls;
     started = true;
+    currentView = 'overview';
+    userChangedView = false;
 
     if (mode === 'tui') {
       output.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l');
@@ -242,6 +256,11 @@ export function createRuntimeUI(
 
   const updateState = (nextState: MissionControlState) => {
     state = nextState;
+    if (nextState.pendingPrompt) {
+      currentView = 'overview';
+    } else if (!userChangedView) {
+      currentView = 'overview';
+    }
     if (mode === 'tui') {
       render();
       return;
@@ -332,6 +351,54 @@ function buildFrame(
     padDisplay(header, width),
     padDisplay(status, width),
     ...clipped,
+    padDisplay(footer, width),
+    padDisplay(prompt, width),
+  ];
+}
+
+function buildInitializingFrame(
+  session: SessionInfo,
+  options: {
+    width: number;
+    height: number;
+    steerMode: boolean;
+    steerBuffer: string;
+  }
+): string[] {
+  const width = Math.max(options.width, 60);
+  const height = Math.max(options.height, 20);
+  const contentHeight = height - 4;
+
+  const header = composeTwoSidedLine(
+    `● Mission Control  ${session.missionTitle}`,
+    'Time 0m 00s  Input 0  Cached 0  Output 0',
+    width
+  );
+  const status = truncateDisplay('● INITIALIZING [░░░░░░░░░░] 0/0 (0%)', width);
+  const lines = [
+    'Initializing mission runtime...',
+    '',
+    'Waiting for first status update from orchestrator.',
+    'This usually appears in a few seconds.',
+    '',
+    'If this does not change:',
+    '1. Confirm PRD.md exists',
+    '2. Confirm TASK.json is valid MissionPlan v2',
+    '3. Press Ctrl+C to abort and re-run',
+  ];
+  const clipped = [...lines];
+  while (clipped.length < contentHeight) {
+    clipped.push('');
+  }
+  const footer = truncateDisplay('Ctrl+C Abort  Tab Next  Shift+Tab Prev  Esc Overview', width);
+  const prompt = options.steerMode
+    ? truncateDisplay(`[STEER MODE] melos> ${options.steerBuffer}`, width)
+    : 'melos> initializing...';
+
+  return [
+    padDisplay(header, width),
+    padDisplay(status, width),
+    ...clipped.slice(0, contentHeight).map((line) => padDisplay(truncateDisplay(line, width), width)),
     padDisplay(footer, width),
     padDisplay(prompt, width),
   ];

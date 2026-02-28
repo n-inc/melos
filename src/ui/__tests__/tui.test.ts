@@ -126,6 +126,28 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('melos> Ctrl+G to steer');
   });
 
+  it('renders explicit initializing frame before first state update', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean }).isTTY = false;
+
+    const ui = createRuntimeUI('tui', output as unknown as NodeJS.WriteStream, input as unknown as NodeJS.ReadStream);
+    ui.start(createSessionInfo());
+    ui.stop();
+
+    expect(rendered).toContain('INITIALIZING');
+    expect(rendered).toContain('Waiting for first status update from orchestrator');
+    expect(rendered).toContain('Ctrl+C Abort');
+  });
+
   it('forwards key actions to runtime controls (pause/resume/steer)', () => {
     const output = new PassThrough();
     (output as unknown as { columns?: number }).columns = 100;
@@ -253,7 +275,7 @@ describe('ui/tui v0.8', () => {
     ui.updateState({
       ...createState(),
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval: y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
     });
 
     input.write('W');
@@ -262,7 +284,44 @@ describe('ui/tui v0.8', () => {
 
     expect(onResume).not.toHaveBeenCalled();
     expect(rendered).toContain('Input Required');
-    expect(rendered).toContain('[INPUT] Awaiting approval');
+    expect(rendered).toContain('[INPUT] Awaiting approval (single key)');
     expect(rendered).not.toContain('Worker Log Stream');
+  });
+
+  it('forces overview when pending input becomes active', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean; setRawMode?: (enabled: boolean) => void }).isTTY = true;
+    (input as unknown as { setRawMode?: (enabled: boolean) => void }).setRawMode = () => {
+      // no-op
+    };
+
+    const ui = createRuntimeUI(
+      'tui',
+      output as unknown as NodeJS.WriteStream,
+      input as unknown as NodeJS.ReadStream
+    );
+    ui.start(createSessionInfo());
+    ui.updateState(createState());
+    input.write('C');
+    expect(rendered).toContain('Costs');
+
+    ui.updateState({
+      ...createState(),
+      missionState: 'awaiting_approval',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+    });
+    ui.stop();
+
+    expect(rendered).toContain('Overview');
+    expect(rendered).toContain('Input Required');
   });
 });

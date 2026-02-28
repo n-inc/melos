@@ -1059,7 +1059,7 @@ export class Orchestrator {
     }
 
     const promptMessage = this.isTuiInputMode()
-      ? 'Validation loop detected: r=retry / s=skip / a=abort / m=modify'
+      ? 'Validation loop detected (single key): r=retry / s=skip / a=abort / m=modify'
       : 'Validation loop detected. Choose action [retry/skip/abort/modify]:';
     await this.setPendingPrompt(promptMessage);
 
@@ -1170,7 +1170,7 @@ export class Orchestrator {
     }
 
     const promptMessage = this.isTuiInputMode()
-      ? 'Awaiting approval: y=approve / n=regenerate / e=edit / Ctrl+C=abort'
+      ? 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort'
       : 'Approve this mission plan? [y=approve, n=regenerate, edit + Enter]:';
     await this.setPendingPrompt(promptMessage);
     if (!this.isTuiInputMode()) {
