@@ -172,6 +172,7 @@ export async function executeWithOptions(
   const orchestrator = new Orchestrator(orchestratorConfig);
 
   let signalExitCode: number | null = null;
+  let runFailureMessage: string | null = null;
   const handleSignal = (signal: NodeJS.Signals) => {
     if (signalExitCode !== null) {
       return;
@@ -212,8 +213,7 @@ export async function executeWithOptions(
 
     if (!result.success) {
       const detail = result.error ? ` (${result.error})` : '';
-      console.error(`実行失敗: ${result.reason}${detail}`);
-      process.exit(1);
+      runFailureMessage = `実行失敗: ${result.reason}${detail}`;
       return;
     }
   } finally {
@@ -221,6 +221,11 @@ export async function executeWithOptions(
     await clearRuntime(melosDir);
     process.removeListener('SIGINT', handleSignal);
     process.removeListener('SIGTERM', handleSignal);
+  }
+
+  if (runFailureMessage) {
+    console.error(runFailureMessage);
+    process.exitCode = 1;
   }
 }
 
