@@ -16,6 +16,7 @@ function createState(): MissionControlState {
     missionId: 'mission',
     missionTitle: 'テキスト統計ユーティリティの追加',
     missionState: 'running',
+    activity: 'Running m1-f2...',
     elapsedLabel: '5m 42s',
     progressLabel: '2/4 (50%)',
     progressPercent: 50,

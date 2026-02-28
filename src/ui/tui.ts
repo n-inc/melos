@@ -420,7 +420,7 @@ function buildFrame(
     : truncateDisplay(
       state.pendingPrompt
         ? `[INPUT] ${state.pendingPrompt}`
-        : 'melos> Ctrl+G to steer',
+        : `melos> ${state.activity}  (Ctrl+G steer)`,
       width
     );
 

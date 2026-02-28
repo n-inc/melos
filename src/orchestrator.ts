@@ -1269,6 +1269,8 @@ export class Orchestrator {
 
     const progressLabel = `${completedFeatures}/${totalFeatures} (${progressPercent}%)`;
     const elapsedLabel = formatElapsed(this.state.startedAt);
+    const lastProgress = this.kernelState.progressLog[this.kernelState.progressLog.length - 1];
+    const activity = this.resolveActivityLabel(missionPlan, lastProgress?.message);
     const activeBranch = this.state.gitStrategy?.activeBranch
       ?? (getCurrentBranch(this.config.cwd) || null);
 
@@ -1288,6 +1290,7 @@ export class Orchestrator {
       missionId: missionPlan.mission.id ?? this.resolveMissionId(),
       missionTitle: missionPlan.mission.goal,
       missionState: missionPlan.state,
+      activity,
       elapsedLabel,
       progressLabel,
       progressPercent,
@@ -1301,6 +1304,35 @@ export class Orchestrator {
       tokenUsage: this.tokenTracker.getSnapshot(),
       pendingPrompt: this.pendingPrompt,
     };
+  }
+
+  private resolveActivityLabel(missionPlan: MissionPlan, lastMessage?: string): string {
+    if (this.pendingPrompt) {
+      return `Waiting for input: ${this.pendingPrompt}`;
+    }
+    if (lastMessage && lastMessage.trim().length > 0) {
+      return lastMessage.trim();
+    }
+    switch (missionPlan.state) {
+      case 'planning':
+        return 'Planning mission from PRD.md...';
+      case 'awaiting_approval':
+        return 'Plan ready. Waiting for approval.';
+      case 'running':
+        return missionPlan.activeFeatureId
+          ? `Running ${missionPlan.activeFeatureId}...`
+          : 'Running mission iteration...';
+      case 'paused':
+        return 'Mission paused. Press R to resume.';
+      case 'completed':
+        return 'Mission completed.';
+      case 'failed':
+        return 'Mission failed.';
+      case 'aborted':
+        return 'Mission aborted.';
+      default:
+        return 'Preparing mission runtime...';
+    }
   }
 
   private async persistMissionPlan(): Promise<void> {
@@ -1520,40 +1552,120 @@ function normalizeStreamingText(value: string): string | null {
   return truncateMessage(compact, 140);
 }
 
-function formatAgentEventDetail(method: string, params: unknown): string | null {
+export function formatAgentEventDetail(method: string, params: unknown): string | null {
   const safeMethod = method.trim();
   if (!safeMethod) {
+    return null;
+  }
+
+  if (
+    safeMethod.includes('token_count')
+    || safeMethod.includes('rateLimits')
+    || safeMethod.includes('thread/tokenUsage')
+    || safeMethod.includes('/agent_message_delta')
+    || safeMethod.includes('/agent_message_content_delta')
+    || safeMethod.includes('/task_complete')
+    || safeMethod.includes('/turn/completed')
+  ) {
+    return null;
+  }
+
+  if (
+    safeMethod === 'item/started'
+    || safeMethod.endsWith('/item_started')
+    || safeMethod.endsWith('/item/started')
+  ) {
+    const item = extractRecord(params, 'item');
+    const type = normalizeItemType(extractString(item, 'type') ?? '');
+    if (type === 'commandexecution') {
+      const command = extractString(item, 'command');
+      return command ? `Execute ${truncateMessage(command, 120)}` : 'Execute command';
+    }
+    if (type === 'fileread') {
+      const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
+      if (!filePath) {
+        return 'Read file';
+      }
+      const limit = extractNumber(item, 'limit');
+      return limit !== null ? `Read ${filePath} (${limit} lines)` : `Read ${filePath}`;
+    }
+    if (type === 'filewrite' || type === 'fileedit') {
+      const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
+      return filePath ? `Write ${filePath}` : 'Write file';
+    }
+    return null;
+  }
+
+  if (
+    safeMethod === 'item/completed'
+    || safeMethod.endsWith('/item_completed')
+    || safeMethod.endsWith('/item/completed')
+  ) {
+    const item = extractRecord(params, 'item');
+    const type = normalizeItemType(extractString(item, 'type') ?? '');
+    if (type === 'commandexecution') {
+      const exitCode = extractNumber(item, 'exitCode');
+      const durationMs = extractNumber(item, 'durationMs');
+      const parts = [
+        exitCode !== null ? `exit ${exitCode}` : null,
+        durationMs !== null ? `${durationMs}ms` : null,
+      ].filter((v): v is string => v !== null);
+      return parts.length > 0 ? `Command finished (${parts.join(', ')})` : 'Command finished';
+    }
     return null;
   }
 
   if (safeMethod.endsWith('/outputDelta')) {
     const delta = extractString(params, 'delta');
     const normalized = delta ? normalizeStreamingText(delta) : null;
-    return normalized ? `Execute ${normalized}` : null;
+    return normalized && isMeaningfulLogFragment(normalized) ? normalized : null;
   }
 
   if (safeMethod.endsWith('/delta')) {
     const delta = extractString(params, 'delta');
     const normalized = delta ? normalizeStreamingText(delta) : null;
-    return normalized ? `Message ${normalized}` : null;
+    return normalized && isMeaningfulLogFragment(normalized) ? `Message ${normalized}` : null;
   }
 
   if (safeMethod.endsWith('/tool_use')) {
     const name = extractString(params, 'name');
-    return name ? `Tool ${name}` : safeMethod;
+    const input = extractRecord(params, 'input');
+    if (!name) {
+      return null;
+    }
+    if (name === 'Bash') {
+      const command = extractString(input, 'command');
+      return command ? `Execute ${truncateMessage(command, 120)}` : 'Execute command';
+    }
+    if (name === 'Read') {
+      const filePath = extractString(input, 'file_path');
+      const limit = extractNumber(input, 'limit');
+      if (!filePath) {
+        return 'Read file';
+      }
+      return limit !== null ? `Read ${filePath} (${limit} lines)` : `Read ${filePath}`;
+    }
+    if (name === 'Write' || name === 'Edit') {
+      const filePath = extractString(input, 'file_path');
+      return filePath ? `Write ${filePath}` : 'Write file';
+    }
+    return `Tool ${name}`;
   }
 
   if (safeMethod.endsWith('/tool_result')) {
     const content = extractString(params, 'content');
     const normalized = content ? normalizeStreamingText(content) : null;
-    return normalized ? `ToolResult ${normalized}` : safeMethod;
+    if (!normalized || !isMeaningfulLogFragment(normalized)) {
+      return null;
+    }
+    return `Result ${normalized}`;
   }
 
   if (safeMethod.endsWith('/result')) {
     return 'Agent result received';
   }
 
-  return safeMethod;
+  return null;
 }
 
 function extractString(value: unknown, key: string): string | null {
@@ -1563,6 +1675,45 @@ function extractString(value: unknown, key: string): string | null {
   const record = value as Record<string, unknown>;
   const candidate = record[key];
   return typeof candidate === 'string' ? candidate : null;
+}
+
+function extractRecord(value: unknown, key: string): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const candidate = record[key];
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return null;
+  }
+  return candidate as Record<string, unknown>;
+}
+
+function extractNumber(value: unknown, key: string): number | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const candidate = record[key];
+  return typeof candidate === 'number' ? candidate : null;
+}
+
+function normalizeItemType(value: string): string {
+  return value.toLowerCase().replace(/[^a-z]/g, '');
+}
+
+function isMeaningfulLogFragment(value: string): boolean {
+  const compact = value.trim();
+  if (compact.length < 2) {
+    return false;
+  }
+  if (/^[{}[\](),.:;"'`0-9+\-_/\\]+$/.test(compact)) {
+    return false;
+  }
+  if (/^codex\/event\//.test(compact.toLowerCase())) {
+    return false;
+  }
+  return true;
 }
 
 function mapEscalationSingleKey(value: string): 'retry' | 'skip' | 'abort' | 'modify' | null {

@@ -21,10 +21,11 @@ function createSessionInfo(): SessionInfo {
 }
 
 function createState(overrides: Partial<MissionControlState> = {}): MissionControlState {
-  return {
+  const base: MissionControlState = {
     missionId: 'mission',
     missionTitle: 'テキスト統計ユーティリティの追加',
     missionState: 'planning',
+    activity: 'Planning mission from PRD.md...',
     elapsedLabel: '0m 02s',
     progressLabel: '0/3 (0%)',
     progressPercent: 0,
@@ -85,7 +86,11 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         worker: { model: 'gpt-5.3-codex', input: 800, output: 700, cached: 200, cost: 0.01 },
       },
     },
+  };
+  return {
+    ...base,
     ...overrides,
+    activity: overrides.activity ?? base.activity,
   };
 }
 

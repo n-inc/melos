@@ -46,6 +46,7 @@ export const overviewView: TUIView = {
       '',
       `Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
       `State: ${state.missionState}`,
+      `Activity: ${state.activity}`,
       `Progress: ${state.progressLabel}`,
       `Branch: ${state.activeBranch ?? '-'}`,
       '',
@@ -53,6 +54,7 @@ export const overviewView: TUIView = {
       ...expectedBehaviorLines.map((line) => `  ${line}`),
     ];
 
+    const maxFeatureRows = Math.max(4, Math.min(6, viewport.height - 16));
     const featureLines = state.milestones.flatMap((milestone) => {
       const rows: string[] = [];
       rows.push(`${statusIcon(milestone.status)} ${milestone.id} ${milestone.title}`);
@@ -61,15 +63,14 @@ export const overviewView: TUIView = {
         rows.push(`${marker}${statusIcon(feature.status)} ${feature.id} ${feature.description}`);
       }
       return rows;
-    }).slice(-10);
+    }).slice(-maxFeatureRows);
 
-    const progressLines = state.progressLog.slice(-7).map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
+    const maxProgressRows = Math.max(3, Math.min(7, viewport.height - 17));
+    const progressLines = state.progressLog
+      .slice(-maxProgressRows)
+      .map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
     if (progressLines.length === 0) {
-      progressLines.push(
-        state.missionState === 'planning'
-          ? 'Waiting for planning activity...'
-          : 'No events yet'
-      );
+      progressLines.push(state.activity || 'No events yet');
     }
 
     const rightLines = [

@@ -10,6 +10,7 @@ function createState(): MissionControlState {
     missionId: 'auth',
     missionTitle: 'Auth mission',
     missionState: 'running',
+    activity: 'Running m2-f3...',
     elapsedLabel: '5m 42s',
     progressLabel: '3/5 (60%)',
     progressPercent: 60,
@@ -87,9 +88,10 @@ describe('ui/tui views', () => {
     const state = createState();
     state.progressLog = [];
     state.missionState = 'planning';
+    state.activity = 'Planning mission from PRD.md...';
     const lines = overviewView.render({ width: 100, height: 24 }, state).join('\n');
     expect(lines).toContain('Progress Log (mission events)');
-    expect(lines).toContain('Waiting for planning activity...');
+    expect(lines).toContain('Planning mission from PRD.md...');
   });
 
   it('renders features view with active feature details', () => {

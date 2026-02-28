@@ -36,6 +36,7 @@ export interface MissionControlState {
   missionId: string;
   missionTitle: string;
   missionState: MissionState;
+  activity: string;
   elapsedLabel: string;
   progressLabel: string;
   progressPercent: number;

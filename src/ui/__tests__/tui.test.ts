@@ -24,6 +24,7 @@ function createState(): MissionControlState {
     missionId: 'auth',
     missionTitle: 'Auth system',
     missionState: 'running',
+    activity: 'Running m1-f1...',
     elapsedLabel: '1m 30s',
     progressLabel: '1/3 (33%)',
     progressPercent: 33,
@@ -123,7 +124,7 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
     expect(rendered).toContain('Overview');
     expect(rendered).not.toContain('Worker Log Stream');
-    expect(rendered).toContain('melos> Ctrl+G to steer');
+    expect(rendered).toContain('melos> Running m1-f1...  (Ctrl+G steer)');
   });
 
   it('pauses stdin stream on stop to avoid hanging process', () => {
