@@ -1,6 +1,7 @@
 export type KeyAction =
   | { type: 'next_view' }
   | { type: 'goto_view'; view: 'overview' | 'features' | 'workers' | 'models' | 'costs' }
+  | { type: 'abort' }
   | { type: 'pause' }
   | { type: 'resume' }
   | { type: 'steer_mode' }
@@ -29,6 +30,8 @@ export function parseKey(chunk: string): KeyAction {
     case 'p':
     case 'P':
       return { type: 'pause' };
+    case '\u0003':
+      return { type: 'abort' };
     case 'r':
     case 'R':
       return { type: 'resume' };

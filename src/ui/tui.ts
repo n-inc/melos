@@ -134,6 +134,9 @@ export function createRuntimeUI(
           render();
           return;
         }
+        case 'abort':
+          process.kill(process.pid, 'SIGINT');
+          return;
         case 'goto_view':
           currentView = action.view;
           render();
@@ -159,6 +162,11 @@ export function createRuntimeUI(
     }
 
     // steer mode input handling
+    if (raw === '\u0003') {
+      process.kill(process.pid, 'SIGINT');
+      return;
+    }
+
     if (raw === '\u001b') {
       steerMode = false;
       steerBuffer = '';

@@ -164,4 +164,32 @@ describe('ui/tui v0.8', () => {
     expect(onResume).toHaveBeenCalledTimes(1);
     expect(onSteer).toHaveBeenCalledWith('skip m1-f1');
   });
+
+  it('maps Ctrl+C to SIGINT in raw mode', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean; setRawMode?: (enabled: boolean) => void }).isTTY = true;
+    (input as unknown as { setRawMode?: (enabled: boolean) => void }).setRawMode = () => {
+      // no-op
+    };
+
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+
+    const ui = createRuntimeUI(
+      'tui',
+      output as unknown as NodeJS.WriteStream,
+      input as unknown as NodeJS.ReadStream
+    );
+    ui.start(createSessionInfo());
+    ui.updateState(createState());
+
+    input.write('\u0003');
+    ui.stop();
+
+    expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGINT');
+    killSpy.mockRestore();
+  });
 });
