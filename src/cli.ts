@@ -1,10 +1,12 @@
 import { Command } from 'commander';
 import { readFileSync, existsSync } from 'node:fs';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Orchestrator, type OrchestratorConfig } from './orchestrator.js';
 import { loadConfig, type MelosConfig } from './config/index.js';
+import { loadMissionPlan, type MissionState } from './state/mission.js';
 import {
   clearRuntime,
   isProcessAlive,
@@ -36,6 +38,20 @@ export type KillCommandResult =
   | { status: 'killed'; pid: number }
   | { status: 'not_running' }
   | { status: 'stale'; pid: number };
+
+const ARCHIVE_ON_RUN_STATES = new Set<MissionState>(['completed', 'failed', 'aborted']);
+const DEFAULT_PRD_TEMPLATE = [
+  '# New Mission',
+  '',
+  '## Goal',
+  '- Describe the product goal here.',
+  '',
+  '## Scope',
+  '- Describe what to implement.',
+  '',
+  '## Constraints',
+  '- No backward compatibility layer.',
+].join('\n');
 
 export function createProgram(): Command {
   const program = new Command();
@@ -135,6 +151,17 @@ export async function executeWithOptions(
   const missionFilePath = join(cwd, 'TASK.json');
   const prdFilePath = join(cwd, 'PRD.md');
 
+  const preflightMessages = await prepareRunPreflight({
+    cwd,
+    melosDir,
+    missionFilePath,
+    prdFilePath,
+    resume: runtimeOptions.resume,
+  });
+  for (const message of preflightMessages) {
+    process.stderr.write(`[melos] ${message}\n`);
+  }
+
   const terminalCapabilities: TerminalCapabilities = {
     stdinIsTTY: process.stdin.isTTY === true,
     stdoutIsTTY: process.stdout.isTTY === true,
@@ -227,6 +254,69 @@ export async function executeWithOptions(
     console.error(runFailureMessage);
     process.exitCode = 1;
   }
+}
+
+interface RunPreflightInput {
+  cwd: string;
+  melosDir: string;
+  missionFilePath: string;
+  prdFilePath: string;
+  resume: boolean;
+}
+
+export async function prepareRunPreflight(input: RunPreflightInput): Promise<string[]> {
+  if (input.resume) {
+    return [];
+  }
+
+  const messages: string[] = [];
+
+  if (!existsSync(input.prdFilePath)) {
+    await writeFile(input.prdFilePath, `${DEFAULT_PRD_TEMPLATE}\n`, 'utf-8');
+    messages.push(`PRD.md が見つからなかったためテンプレートを作成しました: ${input.prdFilePath}`);
+  }
+
+  if (!existsSync(input.missionFilePath)) {
+    return messages;
+  }
+
+  try {
+    const missionPlan = await loadMissionPlan(input.missionFilePath);
+    if (!ARCHIVE_ON_RUN_STATES.has(missionPlan.state)) {
+      return messages;
+    }
+
+    const archivedPath = await archiveTaskFile(
+      input.melosDir,
+      input.missionFilePath,
+      `state-${missionPlan.state}`
+    );
+    messages.push(
+      `TASK.json が終了状態 (${missionPlan.state}) だったため退避し、新規ミッションを開始します: ${archivedPath}`
+    );
+    return messages;
+  } catch (error) {
+    const archivedPath = await archiveTaskFile(input.melosDir, input.missionFilePath, 'invalid');
+    const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
+    messages.push(
+      `TASK.json の読み込みに失敗したため退避し、新規ミッションを開始します: ${archivedPath}`
+    );
+    messages.push(`読み込みエラー: ${reason}`);
+    return messages;
+  }
+}
+
+async function archiveTaskFile(
+  melosDir: string,
+  missionFilePath: string,
+  reason: string
+): Promise<string> {
+  const archiveDir = join(melosDir, 'archive');
+  await mkdir(archiveDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const archivePath = join(archiveDir, `TASK.${stamp}.${reason}.json`);
+  await rename(missionFilePath, archivePath);
+  return archivePath;
 }
 
 function resolveGitStrategy(
