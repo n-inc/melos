@@ -1,4 +1,5 @@
 import { PassThrough } from 'node:stream';
+import { jest } from '@jest/globals';
 
 import {
   createRuntimeUI,
@@ -119,5 +120,48 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('\x1b[?1049h');
     expect(rendered).toContain('\x1b[?1049l');
     expect(rendered).toContain('Auth system');
+    expect(rendered).toContain('Tab Next  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
+    expect(rendered).toContain('melos>');
+  });
+
+  it('forwards key actions to runtime controls (pause/resume/steer)', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean; setRawMode?: (enabled: boolean) => void }).isTTY = true;
+    (input as unknown as { setRawMode?: (enabled: boolean) => void }).setRawMode = () => {
+      // no-op
+    };
+
+    const onPause = jest.fn();
+    const onResume = jest.fn();
+    const onSteer = jest.fn();
+
+    const ui = createRuntimeUI(
+      'tui',
+      output as unknown as NodeJS.WriteStream,
+      input as unknown as NodeJS.ReadStream
+    );
+
+    ui.start(createSessionInfo(), {
+      onPause,
+      onResume,
+      onSteer,
+    });
+    ui.updateState(createState());
+
+    input.write('p');
+    input.write('r');
+    input.write('\u0007');
+    input.write('skip m1-f1');
+    input.write('\n');
+
+    ui.stop();
+
+    expect(onPause).toHaveBeenCalledTimes(1);
+    expect(onResume).toHaveBeenCalledTimes(1);
+    expect(onSteer).toHaveBeenCalledWith('skip m1-f1');
   });
 });

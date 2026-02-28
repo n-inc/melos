@@ -381,6 +381,10 @@ export class Orchestrator {
       const snapshot = await loadSnapshot<{ kernel: MissionKernelState }>(this.config.melosDir);
       if (snapshot?.state?.kernel) {
         this.kernelState = snapshot.state.kernel;
+        const replayEvents = this.eventLog.readAfter(snapshot.seq);
+        for (const event of replayEvents) {
+          this.kernelState = reduceMissionEvent(this.kernelState, event);
+        }
       } else {
         this.kernelState = replayMissionEvents(this.eventLog.readAll());
       }
