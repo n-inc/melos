@@ -52,6 +52,109 @@ export interface ClaudeEngineOptions extends EngineOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Claude thinking budget（旧モデル向け、1024〜31999） */
   thinkingBudget?: number;
+  /** エージェントメッセージ差分（統一UI向け） */
+  onStream?: (chunk: string) => void;
+  /** コマンド出力差分（将来拡張用） */
+  onCommandOutput?: (chunk: string) => void;
+  /** イベント通知（tool_use / tool_result など） */
+  onEvent?: (method: string, params: unknown) => void;
+  /** true の場合、端末への直接出力を抑止してコールバック経由に統一する */
+  suppressTerminalOutput?: boolean;
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function extractToolResultText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  const parts: string[] = [];
+  for (const item of content) {
+    if (typeof item === 'string') {
+      parts.push(item);
+      continue;
+    }
+    const record = toRecord(item);
+    if (!record) {
+      continue;
+    }
+    if (typeof record.text === 'string') {
+      parts.push(record.text);
+    }
+  }
+  return parts.join('\n');
+}
+
+function emitClaudeStreamEvent(
+  event: unknown,
+  callbacks: Pick<ClaudeEngineOptions, 'onStream' | 'onEvent'>
+): void {
+  const record = toRecord(event);
+  if (!record) {
+    return;
+  }
+
+  const type = typeof record.type === 'string' ? record.type : '';
+  const message = toRecord(record.message);
+  const content = Array.isArray(message?.content) ? message.content : [];
+
+  if (type === 'assistant') {
+    for (const rawBlock of content) {
+      const block = toRecord(rawBlock);
+      if (!block) {
+        continue;
+      }
+      if (block.type === 'text' && typeof block.text === 'string') {
+        callbacks.onStream?.(block.text.replace(/\r\n/g, '\n') + '\n');
+        continue;
+      }
+      if (block.type === 'tool_use') {
+        callbacks.onEvent?.('claude/tool_use', {
+          name: typeof block.name === 'string' ? block.name : '',
+          input: toRecord(block.input) ?? {},
+        });
+      }
+    }
+    return;
+  }
+
+  if (type === 'user') {
+    for (const rawBlock of content) {
+      const block = toRecord(rawBlock);
+      if (!block || block.type !== 'tool_result') {
+        continue;
+      }
+      const params: Record<string, unknown> = {
+        content: extractToolResultText(block.content),
+      };
+      if (typeof block.is_error === 'boolean') {
+        params.is_error = block.is_error;
+      }
+      if (typeof block.exit_code === 'number') {
+        params.exit_code = block.exit_code;
+      }
+      if (typeof block.duration_ms === 'number') {
+        params.duration_ms = block.duration_ms;
+      }
+      callbacks.onEvent?.('claude/tool_result', {
+        ...params,
+      });
+    }
+    return;
+  }
+
+  if (type === 'result') {
+    callbacks.onEvent?.('claude/result', record);
+  }
 }
 
 /**
@@ -100,6 +203,9 @@ export class ClaudeEngine extends Engine {
       model,
       effort,
       thinkingBudget,
+      onStream,
+      onEvent,
+      suppressTerminalOutput = false,
     } = options;
 
     const args: string[] = [];
@@ -142,6 +248,8 @@ export class ClaudeEngine extends Engine {
       let stderr = '';
       let timeoutId: NodeJS.Timeout | undefined;
       const jsonlBuffer = printMode ? new JsonlBuffer() : null;
+      const hasExternalStreamHandler = Boolean(onStream || onEvent);
+      let callbackBuffer = '';
       const cleanup = () => {
         if (timeoutId) {
           clearTimeout(timeoutId);
@@ -164,20 +272,44 @@ export class ClaudeEngine extends Engine {
         // printMode の場合は JSONL をパースしてフォーマット表示
         if (jsonlBuffer) {
           const formatted = jsonlBuffer.processChunk(chunk);
-          for (const line of formatted) {
-            // スピナー行をクリアしてから出力
-            process.stdout.write('\x1b[2K\r' + line + '\n');
+          if (!hasExternalStreamHandler && !suppressTerminalOutput) {
+            for (const line of formatted) {
+              // スピナー行をクリアしてから出力
+              process.stdout.write('\x1b[2K\r' + line + '\n');
+            }
           }
         } else {
           // 非 printMode はそのまま出力
-          process.stdout.write(chunk);
+          if (!hasExternalStreamHandler && !suppressTerminalOutput) {
+            process.stdout.write(chunk);
+          }
+        }
+
+        if (hasExternalStreamHandler) {
+          callbackBuffer += chunk;
+          const lines = callbackBuffer.split('\n');
+          callbackBuffer = lines.pop() ?? '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) {
+              continue;
+            }
+            try {
+              emitClaudeStreamEvent(JSON.parse(trimmed), { onStream, onEvent });
+            } catch {
+              // JSONL 以外は無視
+            }
+          }
         }
       });
 
       child.stderr?.on('data', (data: Buffer) => {
         const chunk = data.toString();
         stderr += chunk;
-        process.stderr.write(chunk);
+        if (!suppressTerminalOutput) {
+          process.stderr.write(chunk);
+        }
+        onEvent?.('claude/stderr', { text: chunk });
       });
 
       child.on('close', (code) => {
@@ -186,9 +318,18 @@ export class ClaudeEngine extends Engine {
         // バッファに残っているデータを処理
         if (jsonlBuffer) {
           const remaining = jsonlBuffer.flush();
-          for (const line of remaining) {
-            // スピナー行をクリアしてから出力
-            process.stdout.write('\x1b[2K\r' + line + '\n');
+          if (!hasExternalStreamHandler && !suppressTerminalOutput) {
+            for (const line of remaining) {
+              // スピナー行をクリアしてから出力
+              process.stdout.write('\x1b[2K\r' + line + '\n');
+            }
+          }
+        }
+        if (hasExternalStreamHandler && callbackBuffer.trim().length > 0) {
+          try {
+            emitClaudeStreamEvent(JSON.parse(callbackBuffer.trim()), { onStream, onEvent });
+          } catch {
+            // JSONL 以外は無視
           }
         }
 

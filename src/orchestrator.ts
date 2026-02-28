@@ -90,6 +90,7 @@ export interface OrchestratorConfig {
   };
   resume?: boolean;
   missionId?: string;
+  runtimeUIMode?: 'tui' | 'plain';
   onStatusUpdate?: (state: MissionControlState) => void | Promise<void>;
 }
 
@@ -127,6 +128,7 @@ export class Orchestrator {
   private pausePromise: Promise<void> | null = null;
   private resumePause: (() => void) | null = null;
   private workerRunCounter = 0;
+  private pendingPrompt: string | null = null;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -154,6 +156,7 @@ export class Orchestrator {
       model: this.modelRouter.getModel('planner'),
       effort: config.managerEffort ?? 'high',
       requestTimeoutMs: 180_000,
+      suppressTerminalOutput: config.runtimeUIMode === 'tui',
     };
     this.manager = new ManagerAgent(managerConfig);
 
@@ -164,6 +167,7 @@ export class Orchestrator {
       reasoningEffort: config.workerReasoningEffort ?? 'high',
       claudeModel: this.modelRouter.getModel('worker'),
       claudeEffort: config.managerEffort ?? 'high',
+      suppressTerminalOutput: config.runtimeUIMode === 'tui',
     };
     this.worker = new WorkerAgent(workerConfig);
 
@@ -459,6 +463,16 @@ export class Orchestrator {
       interactiveGoal: this.config.interactivePlanning ? current.mission.goal : undefined,
       approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
       prdFile: this.config.prdFile,
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          phase: 'planning',
+          message: `planning: ${detail}`,
+        });
+      },
     });
 
     const withPhase = transitionMissionState(generated, 'awaiting_approval');
@@ -559,7 +573,21 @@ export class Orchestrator {
       throw new Error(`Active feature context not found: ${pendingMilestone.id}/${nextFeature.id}`);
     }
 
-    const briefing = await this.manager.generateFeatureBriefing(this.buildManagerInput(updatedMilestone, updatedFeature));
+    const briefing = await this.manager.generateFeatureBriefing({
+      ...this.buildManagerInput(updatedMilestone, updatedFeature),
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          action: 'briefing',
+          milestoneId: updatedMilestone.id,
+          featureId: updatedFeature.id,
+          message: detail,
+        });
+      },
+    });
     this.emitEvent('manager_decision', 'manager', {
       action: 'dispatch_feature',
       milestoneId: updatedMilestone.id,
@@ -773,6 +801,17 @@ export class Orchestrator {
       milestoneId,
       failures: results.filter((result) => !result.passed),
       missionPlan,
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          action: 'followup_planning',
+          milestoneId,
+          message: detail,
+        });
+      },
     });
 
     const milestoneForFollowUps = missionPlan.milestones.find((item) => item.id === milestoneId);
@@ -883,6 +922,26 @@ export class Orchestrator {
       briefing,
       currentBranch: branchName,
       baseBranch,
+      onCommandOutputDelta: (chunk) => {
+        const message = normalizeStreamingText(chunk);
+        if (!message) {
+          return;
+        }
+        this.emitEvent('worker_checkpoint', 'worker', {
+          runId,
+          message,
+        });
+      },
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('worker_checkpoint', 'worker', {
+          runId,
+          message: detail,
+        });
+      },
     };
 
     const result = await this.worker.run(workerInput);
@@ -999,15 +1058,38 @@ export class Orchestrator {
       return 'retry';
     }
 
-    process.stderr.write('\nValidation loop detected. Choose action [retry/skip/abort/modify]: ');
-    const answer = await readLine(process.stdin);
+    const promptMessage = this.isTuiInputMode()
+      ? 'Validation loop detected: r=retry / s=skip / a=abort / m=modify'
+      : 'Validation loop detected. Choose action [retry/skip/abort/modify]:';
+    await this.setPendingPrompt(promptMessage);
+
+    if (!this.isTuiInputMode()) {
+      process.stderr.write(`\n${promptMessage} `);
+    }
+    const answer = this.isTuiInputMode()
+      ? await readSingleKey(process.stdin, ['r', 's', 'a', 'm'])
+      : await readLine(process.stdin);
+    await this.setPendingPrompt(null);
+
+    if (answer === '\u0003' || this.aborted) {
+      return 'abort';
+    }
+
     const normalized = answer.trim().toLowerCase();
-    if (normalized === 'skip' || normalized === 'abort' || normalized === 'modify') {
+    const mapped = this.isTuiInputMode() ? mapEscalationSingleKey(normalized) : normalized;
+    if (mapped === 'skip' || mapped === 'abort' || mapped === 'modify') {
       this.emitEvent('escalation_answered', 'orchestrator', {
         milestoneId: milestone.id,
-        answer: normalized,
+        answer: mapped,
       });
-      return normalized;
+      return mapped;
+    }
+    if (mapped === 'retry') {
+      this.emitEvent('escalation_answered', 'orchestrator', {
+        milestoneId: milestone.id,
+        answer: 'retry',
+      });
+      return 'retry';
     }
 
     this.emitEvent('escalation_answered', 'orchestrator', {
@@ -1087,8 +1169,18 @@ export class Orchestrator {
       return true;
     }
 
-    process.stderr.write('\nApprove this mission plan? [y=approve, n=regenerate, edit + Enter]: ');
-    const rawAnswer = await readLine(process.stdin);
+    const promptMessage = this.isTuiInputMode()
+      ? 'Awaiting approval: y=approve / n=regenerate / e=edit / Ctrl+C=abort'
+      : 'Approve this mission plan? [y=approve, n=regenerate, edit + Enter]:';
+    await this.setPendingPrompt(promptMessage);
+    if (!this.isTuiInputMode()) {
+      process.stderr.write(`\n${promptMessage} `);
+    }
+
+    const rawAnswer = this.isTuiInputMode()
+      ? await readSingleKey(process.stdin, ['y', 'n', 'e'])
+      : await readLine(process.stdin);
+    await this.setPendingPrompt(null);
     if (rawAnswer === '\u0003' || this.aborted) {
       return false;
     }
@@ -1096,7 +1188,7 @@ export class Orchestrator {
     if (answer === 'n' || answer === 'no') {
       return false;
     }
-    if (answer === 'edit') {
+    if (answer === 'edit' || answer === 'e') {
       return false;
     }
     return true;
@@ -1188,6 +1280,7 @@ export class Orchestrator {
       workerRuns,
       modelAssignments: assignments,
       tokenUsage: this.tokenTracker.getSnapshot(),
+      pendingPrompt: this.pendingPrompt,
     };
   }
 
@@ -1199,6 +1292,19 @@ export class Orchestrator {
     await saveMissionPlan(this.config.missionFile, this.state.missionPlan);
     this.kernelState.missionPlan = this.state.missionPlan;
     await this.persistRuntimeState();
+  }
+
+  private isTuiInputMode(): boolean {
+    return this.config.runtimeUIMode === 'tui';
+  }
+
+  private async setPendingPrompt(prompt: string | null): Promise<void> {
+    this.pendingPrompt = prompt;
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'pending_input',
+      message: prompt ?? 'pending input cleared',
+    });
+    await this.emitStatusUpdate();
   }
 
   private async persistRuntimeState(): Promise<void> {
@@ -1348,6 +1454,33 @@ export function readLine(stream: NodeJS.ReadStream): Promise<string> {
   });
 }
 
+export function readSingleKey(stream: NodeJS.ReadStream, allowedKeys: string[]): Promise<string> {
+  const normalizedAllowed = new Set(allowedKeys.map((key) => key.toLowerCase()));
+  return new Promise((resolve) => {
+    const onData = (chunk: Buffer | string) => {
+      const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      if (text.includes('\u0003')) {
+        stream.removeListener('data', onData);
+        resolve('\u0003');
+        return;
+      }
+
+      for (const char of text) {
+        if (char.trim().length === 0) {
+          continue;
+        }
+        const lower = char.toLowerCase();
+        if (normalizedAllowed.has(lower)) {
+          stream.removeListener('data', onData);
+          resolve(lower);
+          return;
+        }
+      }
+    };
+    stream.on('data', onData);
+  });
+}
+
 function findLineBreakIndex(text: string): number {
   const crIndex = text.indexOf('\r');
   const lfIndex = text.indexOf('\n');
@@ -1358,4 +1491,72 @@ function findLineBreakIndex(text: string): number {
     return crIndex;
   }
   return Math.min(crIndex, lfIndex);
+}
+
+function normalizeStreamingText(value: string): string | null {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (!compact) {
+    return null;
+  }
+  return truncateMessage(compact, 140);
+}
+
+function formatAgentEventDetail(method: string, params: unknown): string | null {
+  const safeMethod = method.trim();
+  if (!safeMethod) {
+    return null;
+  }
+
+  if (safeMethod.endsWith('/outputDelta')) {
+    const delta = extractString(params, 'delta');
+    const normalized = delta ? normalizeStreamingText(delta) : null;
+    return normalized ? `Execute ${normalized}` : null;
+  }
+
+  if (safeMethod.endsWith('/delta')) {
+    const delta = extractString(params, 'delta');
+    const normalized = delta ? normalizeStreamingText(delta) : null;
+    return normalized ? `Message ${normalized}` : null;
+  }
+
+  if (safeMethod.endsWith('/tool_use')) {
+    const name = extractString(params, 'name');
+    return name ? `Tool ${name}` : safeMethod;
+  }
+
+  if (safeMethod.endsWith('/tool_result')) {
+    const content = extractString(params, 'content');
+    const normalized = content ? normalizeStreamingText(content) : null;
+    return normalized ? `ToolResult ${normalized}` : safeMethod;
+  }
+
+  if (safeMethod.endsWith('/result')) {
+    return 'Agent result received';
+  }
+
+  return safeMethod;
+}
+
+function extractString(value: unknown, key: string): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const candidate = record[key];
+  return typeof candidate === 'string' ? candidate : null;
+}
+
+function mapEscalationSingleKey(value: string): 'retry' | 'skip' | 'abort' | 'modify' | null {
+  switch (value) {
+    case 'r':
+      return 'retry';
+    case 's':
+      return 'skip';
+    case 'a':
+      return 'abort';
+    case 'm':
+      return 'modify';
+    default:
+      return null;
+  }
 }

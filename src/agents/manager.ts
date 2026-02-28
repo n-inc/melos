@@ -27,6 +27,7 @@ export interface ManagerAgentConfig {
   model?: string;
   effort?: 'low' | 'medium' | 'high' | 'max';
   requestTimeoutMs?: number;
+  suppressTerminalOutput?: boolean;
   resumeThreadId?: string;
 }
 
@@ -454,6 +455,7 @@ export class ManagerAgent implements Agent {
         model: this.config.model,
         reasoningEffort: this.mapEffortForCodex(effort),
         execMode: true,
+        suppressTerminalOutput: this.config.suppressTerminalOutput === true,
         threadId,
         onStream: callbacks.onAgentMessageDelta,
         onCommandOutput: callbacks.onCommandOutputDelta,
@@ -472,6 +474,7 @@ export class ManagerAgent implements Agent {
       effort,
       skipPermissions: true,
       printMode: true,
+      suppressTerminalOutput: this.config.suppressTerminalOutput === true,
       onStream: callbacks.onAgentMessageDelta,
       onEvent: callbacks.onAppServerEvent,
     };

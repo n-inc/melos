@@ -24,6 +24,7 @@ export interface WorkerAgentConfig {
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   claudeModel?: string;
   claudeEffort?: 'low' | 'medium' | 'high' | 'max';
+  suppressTerminalOutput?: boolean;
   resumeThreadId?: string;
   resumeFeatureId?: string;
 }
@@ -330,6 +331,7 @@ export class WorkerAgent implements Agent {
       model: this.config.model,
       reasoningEffort: this.config.reasoningEffort || 'high',
       execMode: true,
+      suppressTerminalOutput: this.config.suppressTerminalOutput === true,
       threadId,
       onStream: callbacks.onAgentMessageDelta,
       onCommandOutput: callbacks.onCommandOutputDelta,
@@ -346,6 +348,7 @@ export class WorkerAgent implements Agent {
       effort: this.config.claudeEffort,
       skipPermissions: true,
       printMode: true,
+      suppressTerminalOutput: this.config.suppressTerminalOutput === true,
       onStream: callbacks.onAgentMessageDelta,
       onEvent: callbacks.onAppServerEvent,
     };

@@ -123,7 +123,7 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
     expect(rendered).toContain('Overview');
     expect(rendered).not.toContain('Worker Log Stream');
-    expect(rendered).toContain('melos>');
+    expect(rendered).toContain('melos> Ctrl+G to steer');
   });
 
   it('forwards key actions to runtime controls (pause/resume/steer)', () => {
@@ -225,5 +225,44 @@ describe('ui/tui v0.8', () => {
 
     expect(rendered).toContain('Workers');
     expect(rendered).toContain('Worker Log Stream');
+  });
+
+  it('locks hotkeys while pending input is active', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean; setRawMode?: (enabled: boolean) => void }).isTTY = true;
+    (input as unknown as { setRawMode?: (enabled: boolean) => void }).setRawMode = () => {
+      // no-op
+    };
+
+    const onResume = jest.fn();
+    const ui = createRuntimeUI(
+      'tui',
+      output as unknown as NodeJS.WriteStream,
+      input as unknown as NodeJS.ReadStream
+    );
+    ui.start(createSessionInfo(), { onResume });
+    ui.updateState({
+      ...createState(),
+      missionState: 'awaiting_approval',
+      pendingPrompt: 'Awaiting approval: y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+    });
+
+    input.write('W');
+    input.write('r');
+    ui.stop();
+
+    expect(onResume).not.toHaveBeenCalled();
+    expect(rendered).toContain('Input Required');
+    expect(rendered).toContain('[INPUT] Awaiting approval');
+    expect(rendered).not.toContain('Worker Log Stream');
   });
 });

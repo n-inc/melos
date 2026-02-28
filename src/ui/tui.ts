@@ -125,6 +125,14 @@ export function createRuntimeUI(
       return;
     }
 
+    const inputLocked = !steerMode && Boolean(state?.pendingPrompt);
+    if (inputLocked) {
+      if (raw === '\u0003') {
+        process.kill(process.pid, 'SIGINT');
+      }
+      return;
+    }
+
     if (!steerMode) {
       const action = parseKey(raw);
       switch (action.type) {
@@ -305,12 +313,20 @@ function buildFrame(
   }
 
   const footer = truncateDisplay(
-    `Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
+    state.pendingPrompt
+      ? `Input Required  ${state.pendingPrompt}`
+      : `Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
 
-  const promptPrefix = options.steerMode ? '[STEER MODE] melos> ' : 'melos> ';
-  const prompt = truncateDisplay(`${promptPrefix}${options.steerBuffer}`, width);
+  const prompt = options.steerMode
+    ? truncateDisplay(`[STEER MODE] melos> ${options.steerBuffer}`, width)
+    : truncateDisplay(
+      state.pendingPrompt
+        ? `[INPUT] ${state.pendingPrompt}`
+        : 'melos> Ctrl+G to steer',
+      width
+    );
 
   return [
     padDisplay(header, width),

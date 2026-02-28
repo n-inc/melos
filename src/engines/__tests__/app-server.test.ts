@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { jest } from '@jest/globals';
 import { AppServerEngine } from '../app-server.js';
 import { JsonRpcTransport } from '../jsonrpc-transport.js';
 
@@ -243,5 +244,61 @@ describe('AppServerEngine', () => {
     expect(steerCall).toBeDefined();
     expect(result.success).toBe(true);
     expect(result.output).toBe('updated');
+  });
+
+  it('suppresses terminal writes when suppressTerminalOutput is enabled', async () => {
+    const transport = new MockTransport();
+    const child = createFakeChildProcess();
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        return { thread: { id: 'thr_4' } };
+      }
+      if (method === 'turn/start') {
+        setImmediate(async () => {
+          (child.stderr as PassThrough).write('worker stderr noise\n');
+          await transport.emitNotification('item/commandExecution/outputDelta', {
+            threadId: 'thr_4',
+            turnId: 'turn_4',
+            itemId: 'item_4',
+            delta: 'running tests...',
+          });
+          await transport.emitNotification('turn/completed', {
+            threadId: 'thr_4',
+            turn: {
+              id: 'turn_4',
+              status: 'completed',
+              error: null,
+            },
+          });
+        });
+        return { turn: { id: 'turn_4' } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const stderrSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const events: Array<{ method: string; params: unknown }> = [];
+
+    const engine = new AppServerEngine({
+      spawnProcess: () => child,
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    const result = await engine.execute('suppress output', {
+      suppressTerminalOutput: true,
+      onEvent: (method, params) => {
+        events.push({ method, params });
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(events.some((entry) => entry.method === 'app-server/stderr')).toBe(true);
+    const writes = stderrSpy.mock.calls.map((call) => String(call[0] ?? ''));
+    expect(writes.some((line) => line.includes('worker stderr noise'))).toBe(false);
+    expect(writes.some((line) => line.includes('running tests...'))).toBe(false);
+    stderrSpy.mockRestore();
   });
 });

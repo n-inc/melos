@@ -47,6 +47,7 @@ export interface MissionControlState {
   workerRuns: WorkerRunView[];
   modelAssignments: Record<ModelRole, ModelAssignment>;
   tokenUsage: TokenUsageSnapshot;
+  pendingPrompt?: string | null;
 }
 
 export interface ViewPort {

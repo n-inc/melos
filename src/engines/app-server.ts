@@ -44,6 +44,7 @@ export interface AppServerEngineOptions extends EngineOptions {
   onCommandOutput?: (chunk: string) => void;
   onEvent?: (method: string, params: unknown) => void;
   execMode?: boolean;
+  suppressTerminalOutput?: boolean;
 }
 
 interface AppServerEngineDependencies {
@@ -78,6 +79,8 @@ export class AppServerEngine extends Engine {
   private isExecuting = false;
   private activeThreadId: string | null = null;
   private activeTurnId: string | null = null;
+  private suppressTerminalOutput = false;
+  private onEventSink: ((method: string, params: unknown) => void) | null = null;
 
   constructor(dependencies: AppServerEngineDependencies = {}) {
     super();
@@ -104,8 +107,6 @@ export class AppServerEngine extends Engine {
 
     this.isExecuting = true;
     try {
-      await this.ensureRunning();
-
       const {
         cwd = process.cwd(),
         timeout = 15 * 60 * 1000,
@@ -119,7 +120,11 @@ export class AppServerEngine extends Engine {
         onEvent = () => {
           // no-op
         },
+        suppressTerminalOutput = false,
       } = options;
+      this.suppressTerminalOutput = suppressTerminalOutput;
+      this.onEventSink = onEvent;
+      await this.ensureRunning();
 
       const threadId = requestedThreadId
         ? await this.resumeThread(requestedThreadId, {
@@ -154,7 +159,9 @@ export class AppServerEngine extends Engine {
               onCommandOutput(chunk);
               return;
             }
-            process.stderr.write('\x1b[2K\r' + chunk);
+            if (!suppressTerminalOutput) {
+              process.stderr.write('\x1b[2K\r' + chunk);
+            }
           },
           onEvent,
         }
@@ -202,6 +209,8 @@ export class AppServerEngine extends Engine {
     } finally {
       this.isExecuting = false;
       this.activeTurnId = null;
+      this.suppressTerminalOutput = false;
+      this.onEventSink = null;
     }
   }
 
@@ -298,9 +307,10 @@ export class AppServerEngine extends Engine {
 
     child.stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf-8');
-      if (text.trim().length > 0) {
+      if (text.trim().length > 0 && !this.suppressTerminalOutput) {
         process.stderr.write(text);
       }
+      this.onEventSink?.('app-server/stderr', { text });
     });
 
     child.on('close', () => {

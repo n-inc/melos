@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 
-import { readLine } from '../orchestrator.js';
+import { readLine, readSingleKey } from '../orchestrator.js';
 
 describe('orchestrator readLine', () => {
   it('resolves immediately for single-key approval in raw mode', async () => {
@@ -38,6 +38,22 @@ describe('orchestrator readLine', () => {
   it('resolves with control-c marker when Ctrl+C is pressed', async () => {
     const input = new PassThrough();
     const promise = readLine(input as unknown as NodeJS.ReadStream);
+
+    input.write('\u0003');
+    await expect(promise).resolves.toBe('\u0003');
+  });
+
+  it('readSingleKey resolves when allowed key is pressed', async () => {
+    const input = new PassThrough();
+    const promise = readSingleKey(input as unknown as NodeJS.ReadStream, ['y', 'n', 'e']);
+
+    input.write('e');
+    await expect(promise).resolves.toBe('e');
+  });
+
+  it('readSingleKey resolves with control-c marker', async () => {
+    const input = new PassThrough();
+    const promise = readSingleKey(input as unknown as NodeJS.ReadStream, ['r', 's', 'a', 'm']);
 
     input.write('\u0003');
     await expect(promise).resolves.toBe('\u0003');

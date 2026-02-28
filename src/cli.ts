@@ -178,6 +178,7 @@ export async function executeWithOptions(
     dryRun: options.dryRun === true,
     resume: runtimeOptions.resume,
     missionId: options.missionId,
+    runtimeUIMode: uiMode,
     gitStrategy: resolveGitStrategy(options, fileConfig),
     onStatusUpdate: async (state) => {
       runtimeUI.updateState(state);
