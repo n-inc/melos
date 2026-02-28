@@ -56,10 +56,10 @@ function createState(): MissionControlState {
       },
     ],
     modelAssignments: {
-      planner: { role: 'planner', engine: 'claude', model: 'opus' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex' },
-      validator: { role: 'validator', engine: 'claude', model: 'sonnet' },
-      research: { role: 'research', engine: 'claude', model: 'sonnet' },
+      planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
     tokenUsage: {
       total: { input: 100, output: 50, cached: 20, cost: 0.01 },
@@ -120,7 +120,7 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('\x1b[?1049h');
     expect(rendered).toContain('\x1b[?1049l');
     expect(rendered).toContain('Auth system');
-    expect(rendered).toContain('Tab Next  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
+    expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
     expect(rendered).toContain('melos>');
   });
 

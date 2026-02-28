@@ -55,8 +55,8 @@ npx melos kill
   "models": {
     "planner": "opus",
     "worker": "gpt-5.3-codex",
-    "validator": "sonnet",
-    "research": "sonnet"
+    "validator": "gpt-5.3-codex",
+    "research": "opus"
   },
   "git": {
     "enabled": true,

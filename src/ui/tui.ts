@@ -134,6 +134,12 @@ export function createRuntimeUI(
           render();
           return;
         }
+        case 'prev_view': {
+          const index = VIEW_ORDER.indexOf(currentView);
+          currentView = VIEW_ORDER[(index - 1 + VIEW_ORDER.length) % VIEW_ORDER.length];
+          render();
+          return;
+        }
         case 'abort':
           process.kill(process.pid, 'SIGINT');
           return;
@@ -293,7 +299,7 @@ function buildFrame(
   }
 
   const footer = truncateDisplay(
-    `Tab Next  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
+    `Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
 

@@ -256,8 +256,8 @@ function resolveModels(options: CLIOptions, config: MelosConfig): {
   return {
     planner: options.plannerModel ?? config.models?.planner ?? fallback,
     worker: options.workerModel ?? config.models?.worker ?? workerFallback,
-    validator: options.validatorModel ?? config.models?.validator ?? config.models?.planner ?? 'sonnet',
-    research: options.researchModel ?? config.models?.research ?? config.models?.validator ?? 'sonnet',
+    validator: options.validatorModel ?? config.models?.validator ?? 'gpt-5.3-codex',
+    research: options.researchModel ?? config.models?.research ?? 'opus',
   };
 }
 

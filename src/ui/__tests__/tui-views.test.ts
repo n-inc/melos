@@ -57,10 +57,10 @@ function createState(): MissionControlState {
       },
     ],
     modelAssignments: {
-      planner: { role: 'planner', engine: 'claude', model: 'opus' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex' },
-      validator: { role: 'validator', engine: 'claude', model: 'sonnet' },
-      research: { role: 'research', engine: 'claude', model: 'sonnet' },
+      planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
     tokenUsage: {
       total: { input: 12200, output: 7900, cached: 2450, cost: 0.23 },
@@ -102,6 +102,9 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Models');
     expect(lines).toContain('planner');
     expect(lines).toContain('gpt-5.3-codex');
+    expect(lines).toContain('Effort');
+    expect(lines).toContain('max');
+    expect(lines).toContain('high');
   });
 
   it('renders costs view totals', () => {

@@ -4,6 +4,7 @@ export interface ModelAssignment {
   role: ModelRole;
   model: string;
   engine: 'claude' | 'codex';
+  effort: string;
 }
 
 export interface ModelRouterConfig {
@@ -67,6 +68,23 @@ export class ModelRouter {
     return model.toLowerCase().includes('codex') ? 'codex' : 'claude';
   }
 
+  resolveEffort(model: string): string {
+    const normalized = model.toLowerCase();
+    if (normalized.includes('codex')) {
+      return 'high';
+    }
+    if (normalized === 'opus') {
+      return 'max';
+    }
+    if (normalized === 'sonnet') {
+      return 'high';
+    }
+    if (normalized === 'haiku') {
+      return 'low';
+    }
+    return 'medium';
+  }
+
   getAssignments(): Record<ModelRole, ModelAssignment> {
     return {
       planner: this.toAssignment('planner'),
@@ -82,6 +100,7 @@ export class ModelRouter {
       role,
       model,
       engine: this.resolveEngine(model),
+      effort: this.resolveEffort(model),
     };
   }
 }

@@ -9,12 +9,13 @@ export const modelsView: TUIView = {
       assignment.role,
       assignment.engine,
       assignment.model,
+      assignment.effort,
     ]);
 
     const table = drawTable(
-      ['Role', 'Engine', 'Model'],
+      ['Role', 'Engine', 'Model', 'Effort'],
       rows,
-      [12, 10, 32]
+      [12, 10, 28, 10]
     );
 
     return drawBox('Models', table, viewport.width);

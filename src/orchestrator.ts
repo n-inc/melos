@@ -135,8 +135,8 @@ export class Orchestrator {
       assignments: {
         planner: config.plannerModel ?? 'opus',
         worker: config.workerModel ?? 'gpt-5.3-codex',
-        validator: config.validatorModel ?? 'sonnet',
-        research: config.researchModel ?? 'sonnet',
+        validator: config.validatorModel ?? 'gpt-5.3-codex',
+        research: config.researchModel ?? 'opus',
       },
       escalationPolicy: {
         enabled: true,

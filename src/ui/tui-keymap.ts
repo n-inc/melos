@@ -1,5 +1,6 @@
 export type KeyAction =
   | { type: 'next_view' }
+  | { type: 'prev_view' }
   | { type: 'goto_view'; view: 'overview' | 'features' | 'workers' | 'models' | 'costs' }
   | { type: 'abort' }
   | { type: 'pause' }
@@ -15,6 +16,8 @@ export function parseKey(chunk: string): KeyAction {
   switch (chunk) {
     case '\t':
       return { type: 'next_view' };
+    case '\u001b[Z':
+      return { type: 'prev_view' };
     case 'f':
     case 'F':
       return { type: 'goto_view', view: 'features' };
