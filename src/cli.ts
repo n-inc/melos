@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { readFileSync, existsSync } from 'node:fs';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, rename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -40,18 +40,6 @@ export type KillCommandResult =
   | { status: 'stale'; pid: number };
 
 const ARCHIVE_ON_RUN_STATES = new Set<MissionState>(['completed', 'failed', 'aborted']);
-const DEFAULT_PRD_TEMPLATE = [
-  '# New Mission',
-  '',
-  '## Goal',
-  '- Describe the product goal here.',
-  '',
-  '## Scope',
-  '- Describe what to implement.',
-  '',
-  '## Constraints',
-  '- No backward compatibility layer.',
-].join('\n');
 
 export function createProgram(): Command {
   const program = new Command();
@@ -272,8 +260,10 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
   const messages: string[] = [];
 
   if (!existsSync(input.prdFilePath)) {
-    await writeFile(input.prdFilePath, `${DEFAULT_PRD_TEMPLATE}\n`, 'utf-8');
-    messages.push(`PRD.md が見つからなかったためテンプレートを作成しました: ${input.prdFilePath}`);
+    throw new Error([
+      `PRD.md が見つからないためミッションを開始できません: ${input.prdFilePath}`,
+      '先に PRD.md を作成してから `melos run` を実行してください。',
+    ].join('\n'));
   }
 
   if (!existsSync(input.missionFilePath)) {

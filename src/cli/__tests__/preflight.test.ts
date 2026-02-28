@@ -6,23 +6,22 @@ import { createMissionPlan } from '../../state/mission.js';
 import { prepareRunPreflight } from '../../cli.js';
 
 describe('cli preflight', () => {
-  it('creates PRD template when PRD.md is missing', async () => {
+  it('fails fast when PRD.md is missing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-preflight-prd-'));
-    const messages = await prepareRunPreflight({
+    await expect(prepareRunPreflight({
       cwd,
       melosDir: join(cwd, '.melos'),
       missionFilePath: join(cwd, 'TASK.json'),
       prdFilePath: join(cwd, 'PRD.md'),
       resume: false,
-    });
-
-    expect(existsSync(join(cwd, 'PRD.md'))).toBe(true);
-    expect(messages.some((message) => message.includes('PRD.md が見つからなかった'))).toBe(true);
+    })).rejects.toThrow(/PRD.md が見つからないためミッションを開始できません/);
+    expect(existsSync(join(cwd, 'PRD.md'))).toBe(false);
   });
 
   it('archives terminal-state TASK.json and starts fresh run', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-preflight-archive-state-'));
     const missionFilePath = join(cwd, 'TASK.json');
+    writeFileSync(join(cwd, 'PRD.md'), '# Mission\n', 'utf-8');
     const mission = createMissionPlan({
       goal: 'Sample mission',
       milestones: [
@@ -57,6 +56,7 @@ describe('cli preflight', () => {
   it('archives invalid TASK.json with actionable message', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-preflight-archive-invalid-'));
     const missionFilePath = join(cwd, 'TASK.json');
+    writeFileSync(join(cwd, 'PRD.md'), '# Mission\n', 'utf-8');
     writeFileSync(missionFilePath, JSON.stringify([
       { id: '1', description: 'legacy task', passes: false },
     ]), 'utf-8');
