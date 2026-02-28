@@ -83,6 +83,15 @@ describe('ui/tui views', () => {
     expect(lines).not.toContain('Execute npm test -- auth');
   });
 
+  it('renders overview fallback message when progress log is empty', () => {
+    const state = createState();
+    state.progressLog = [];
+    state.missionState = 'planning';
+    const lines = overviewView.render({ width: 100, height: 24 }, state).join('\n');
+    expect(lines).toContain('Progress Log (mission events)');
+    expect(lines).toContain('Waiting for planning activity...');
+  });
+
   it('renders features view with active feature details', () => {
     const lines = featuresView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Features');
@@ -108,6 +117,8 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Effort');
     expect(lines).toContain('max');
     expect(lines).toContain('high');
+    expect(lines).toContain('1 Planner');
+    expect(lines).toContain('4 Research');
   });
 
   it('renders costs view totals', () => {

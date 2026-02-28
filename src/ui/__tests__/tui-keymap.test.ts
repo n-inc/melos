@@ -4,6 +4,7 @@ describe('ui/tui-keymap', () => {
   it('parses mission control hotkeys', () => {
     expect(parseKey('\t')).toEqual({ type: 'next_view' });
     expect(parseKey('\u001b[Z')).toEqual({ type: 'prev_view' });
+    expect(parseKey('\u001b[1;2Z')).toEqual({ type: 'prev_view' });
     expect(parseKey('f')).toEqual({ type: 'goto_view', view: 'features' });
     expect(parseKey('W')).toEqual({ type: 'goto_view', view: 'workers' });
     expect(parseKey('m')).toEqual({ type: 'goto_view', view: 'models' });

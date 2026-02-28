@@ -63,12 +63,21 @@ export const overviewView: TUIView = {
       return rows;
     }).slice(-10);
 
+    const progressLines = state.progressLog.slice(-7).map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
+    if (progressLines.length === 0) {
+      progressLines.push(
+        state.missionState === 'planning'
+          ? 'Waiting for planning activity...'
+          : 'No events yet'
+      );
+    }
+
     const rightLines = [
       'Features',
       ...(featureLines.length > 0 ? featureLines : ['-']),
       '',
-      'Progress Log',
-      ...state.progressLog.slice(-7).map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`),
+      'Progress Log (mission events)',
+      ...progressLines,
     ];
 
     const main = splitColumns(leftLines, rightLines, viewport.width, 0.57);

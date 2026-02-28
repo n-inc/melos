@@ -7,6 +7,7 @@ import {
   createAppServerEventLogger,
   createSpinner,
   createStreamRenderer,
+  formatQuestionBoxLines,
   printHandoffContent,
   printCompletion,
 } from '../display.js';
@@ -121,6 +122,32 @@ describe('display.ts', () => {
       const bar = createColoredProgressBar(5, 10);
       const plain = stripAnsi(bar);
       expect(plain.length).toBe(12);
+    });
+  });
+
+  describe('formatQuestionBoxLines', () => {
+    const stripAnsi = (str: string) => str.replace(/\x1b\[[0-9;]*m/g, '');
+
+    test('質問・選択肢・推奨を含むボックスを生成', () => {
+      const lines = formatQuestionBoxLines({
+        question: '認証方式はどちらを使いますか？',
+        context: 'task-4',
+        options: [
+          { label: 'JWT', description: 'token based' },
+          { label: 'Session', description: 'server side session' },
+        ],
+        recommendation: 'JWT',
+      });
+
+      const output = stripAnsi(lines.join('\n'));
+      expect(output).toContain('╭');
+      expect(output).toContain('ユーザー確認');
+      expect(output).toContain('質問: 認証方式はどちらを使いますか？');
+      expect(output).toContain('1. JWT - token based');
+      expect(output).toContain('2. Session - server side session');
+      expect(output).toContain('推奨: JWT');
+      expect(output).toContain('回答方法: 番号 / ラベル / 自由入力');
+      expect(output).toContain('╰');
     });
   });
 
@@ -268,10 +295,16 @@ describe('display.ts', () => {
   describe('createStreamRenderer', () => {
     let stderrOutput: string[];
     let originalWrite: typeof process.stderr.write;
+    let originalIsTTY: boolean | undefined;
 
     beforeEach(() => {
       stderrOutput = [];
       originalWrite = process.stderr.write;
+      originalIsTTY = process.stderr.isTTY;
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: true,
+        configurable: true,
+      });
       process.stderr.write = ((chunk: string) => {
         stderrOutput.push(chunk);
         return true;
@@ -280,6 +313,10 @@ describe('display.ts', () => {
 
     afterEach(() => {
       process.stderr.write = originalWrite;
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: originalIsTTY,
+        configurable: true,
+      });
     });
 
     test('renders agent deltas as plain lines', () => {
@@ -301,15 +338,37 @@ describe('display.ts', () => {
       expect(output).toContain('npm test');
       expect(output).toContain('ok');
     });
+
+    test('non-tty では行クリアシーケンスを出さない', () => {
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: false,
+        configurable: true,
+      });
+
+      const renderer = createStreamRenderer();
+      renderer.writeAgentDelta('hello\nworld');
+      renderer.finish();
+
+      const output = stderrOutput.join('');
+      expect(output).not.toContain('\x1b[2K\r');
+      expect(output).toContain('hello');
+      expect(output).toContain('world');
+    });
   });
 
   describe('createAppServerEventLogger', () => {
     let stderrOutput: string[];
     let originalWrite: typeof process.stderr.write;
+    let originalIsTTY: boolean | undefined;
 
     beforeEach(() => {
       stderrOutput = [];
       originalWrite = process.stderr.write;
+      originalIsTTY = process.stderr.isTTY;
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: true,
+        configurable: true,
+      });
       process.stderr.write = ((chunk: string) => {
         stderrOutput.push(chunk);
         return true;
@@ -318,6 +377,10 @@ describe('display.ts', () => {
 
     afterEach(() => {
       process.stderr.write = originalWrite;
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: originalIsTTY,
+        configurable: true,
+      });
     });
 
     test('prints event method and params summary', () => {
@@ -336,6 +399,7 @@ describe('display.ts', () => {
       logger.writeEvent('item/started', {
         item: { type: 'commandExecution', command: '/bin/zsh -lc "npm test"' },
       });
+      logger.writeCommandDelta('line1\nline2\nline3\nline4\n');
       logger.writeEvent('item/completed', {
         item: { type: 'commandExecution', status: 'completed', exitCode: 0, durationMs: 123 },
       });
@@ -345,10 +409,10 @@ describe('display.ts', () => {
 
       const output = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
       expect(output).not.toContain('Analyzing requirements');
-      expect(output).toContain('command: /bin/zsh -lc "npm test"');
-      expect(output).not.toContain('exit=0');
-      expect(output).toContain('command failed');
-      expect(output).toContain('exit=1');
+      expect(output).toContain('● Bash: /bin/zsh -lc "npm test"');
+      expect(output).toContain('✓ 完了 (exit 0, 123ms)');
+      expect(output).toContain('出力 4行（展開: e）');
+      expect(output).toContain('✗ 失敗 (exit 1, 123ms)');
     });
 
     test('prints edited diff summary when file change is available', () => {
@@ -366,11 +430,72 @@ describe('display.ts', () => {
       });
 
       const output = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
-      expect(output).toContain('Edited src/a.ts (+1 -1)');
+      expect(output).toContain('● Write src/a.ts (+1 -1)');
       expect(output).toContain('@@ -1,3 +1,3 @@');
       expect(output).toContain('const keep = true;');
       expect(output).toContain('-old');
-      expect(output).toContain('+new');
+      expect(output).toContain('展開: e');
+    });
+
+    test('renders Codex and Claude tool events in the same card format', () => {
+      const codexLogger = createAppServerEventLogger('worker');
+      codexLogger.writeEvent('item/started', {
+        item: { type: 'commandExecution', command: 'npm run test' },
+      });
+      codexLogger.writeEvent('item/completed', {
+        item: { type: 'commandExecution', status: 'completed', exitCode: 0, durationMs: 10 },
+      });
+      const codexOutput = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
+
+      stderrOutput = [];
+
+      const claudeLogger = createAppServerEventLogger('worker');
+      claudeLogger.writeEvent('claude/tool_use', {
+        name: 'Bash',
+        input: { command: 'npm run test' },
+      });
+      claudeLogger.writeEvent('claude/tool_result', {
+        content: 'ok',
+      });
+      const claudeOutput = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
+
+      expect(codexOutput).toContain('● Bash: npm run test');
+      expect(claudeOutput).toContain('● Bash: npm run test');
+      expect(codexOutput).toContain('✓ 完了');
+      expect(claudeOutput).toContain('✓ 完了');
+    });
+
+    test('Claude tool_result の is_error=true で Bash カードを失敗表示する', () => {
+      const logger = createAppServerEventLogger('worker');
+      logger.writeEvent('claude/tool_use', {
+        name: 'Bash',
+        input: { command: 'npm run test' },
+      });
+      logger.writeEvent('claude/tool_result', {
+        content: 'command failed',
+        is_error: true,
+        exit_code: 1,
+      });
+
+      const output = stderrOutput.join('').replace(/\x1b\[[0-9;]*m/g, '');
+      expect(output).toContain('● Bash: npm run test');
+      expect(output).toContain('✗ 失敗 (exit 1)');
+      expect(output).not.toContain('✓ 完了');
+    });
+
+    test('non-tty では装飾ANSIシーケンスを出さない', () => {
+      Object.defineProperty(process.stderr, 'isTTY', {
+        value: false,
+        configurable: true,
+      });
+
+      const logger = createAppServerEventLogger('worker');
+      logger.writeEvent('turn/completed', { turn: { id: 'turn_1', status: 'completed' } });
+
+      const output = stderrOutput.join('');
+      expect(output).not.toContain('\x1b[2K\r');
+      expect(output).not.toContain('\x1b[2m');
+      expect(output).toContain('turn completed');
     });
   });
 

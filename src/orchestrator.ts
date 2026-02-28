@@ -62,7 +62,7 @@ import {
 import { loadSnapshot, saveSnapshot } from './state/snapshot.js';
 import { Watchdog } from './state/watchdog.js';
 import { TokenTracker } from './state/token-tracker.js';
-import { ModelRouter } from './models/router.js';
+import { ModelRouter, type ModelRole } from './models/router.js';
 import type { MissionControlState, MissionMilestoneView, WorkerRunView } from './ui/tui-views.js';
 
 export interface OrchestratorConfig {
@@ -111,6 +111,8 @@ interface RuntimeState {
   gitStrategy: GitStrategyState | null;
   startedAt: Date;
 }
+
+const MODEL_ROTATION: string[] = ['gpt-5.3-codex', 'opus', 'sonnet', 'haiku'];
 
 export class Orchestrator {
   private readonly config: OrchestratorConfig;
@@ -376,6 +378,23 @@ export class Orchestrator {
     }
 
     return { status: 'accepted' };
+  }
+
+  async cycleModel(role: ModelRole): Promise<void> {
+    const current = this.modelRouter.getModel(role);
+    const normalized = current.toLowerCase();
+    const index = MODEL_ROTATION.findIndex((candidate) => candidate === normalized);
+    const nextModel = index >= 0
+      ? MODEL_ROTATION[(index + 1) % MODEL_ROTATION.length]
+      : MODEL_ROTATION[0];
+    this.modelRouter.setModel(role, nextModel);
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'model_changed',
+      role,
+      model: nextModel,
+      message: `model for ${role} changed to ${nextModel}`,
+    });
+    await this.emitStatusUpdate();
   }
 
   private async loadState(): Promise<void> {

@@ -12,7 +12,7 @@ exports[`ui/tui visual snapshots awaiting approval frame snapshot (input require
 ║ State: awaiting_approval                                │ ○ m2 Validation                      … ║
 ║ Progress: 2/4 (50%)                                     │  ○ m2-f1 Run validations             … ║
 ║ Branch: melos/mission/m1-f2                             │                                      … ║
-║                                                         │ Progress Log                         … ║
+║                                                         │ Progress Log (mission events)        … ║
 ║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
 ║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
 ║                                                         │ 09:00:10 worker #1 started           … ║
@@ -62,7 +62,7 @@ If this does not change:
                                                                                                     
                                                                                                     
                                                                                                     
-Ctrl+C Abort  Tab Next  Shift+Tab Prev  Esc Overview                                                
+Ctrl+C Abort  Waiting for first state update...                                                     
 melos> initializing...                                                                              "
 `;
 
@@ -78,7 +78,7 @@ exports[`ui/tui visual snapshots narrow terminal snapshot (80x24) 1`] = `
 ║ State: running                              │ ○ m2 Validation              … ║
 ║ Progress: 2/4 (50%)                         │  ○ m2-f1 Run validations     … ║
 ║ Branch: melos/mission/m1-f2                 │                              … ║
-║                                             │ Progress Log                 … ║
+║                                             │ Progress Log (mission events)… ║
 ║ Expected Behavior                           │ 09:00:00 mission run started … ║
 ║   Implement parser and CLI options          │ 09:00:05 Planning mission... … ║
 ║                                             │ 09:00:10 worker #1 started   … ║
@@ -105,7 +105,7 @@ exports[`ui/tui visual snapshots overview frame snapshot 1`] = `
 ║ State: running                                          │ ○ m2 Validation                      … ║
 ║ Progress: 2/4 (50%)                                     │  ○ m2-f1 Run validations             … ║
 ║ Branch: melos/mission/m1-f2                             │                                      … ║
-║                                                         │ Progress Log                         … ║
+║                                                         │ Progress Log (mission events)        … ║
 ║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
 ║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
 ║                                                         │ 09:00:10 worker #1 started           … ║

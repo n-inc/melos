@@ -220,6 +220,9 @@ export async function executeWithOptions(
       onSteer: (instruction) => {
         void orchestrator.steer(instruction);
       },
+      onCycleModel: (role) => {
+        void orchestrator.cycleModel(role);
+      },
     });
 
     const result = await orchestrator.run();

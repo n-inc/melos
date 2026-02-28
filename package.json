@@ -18,7 +18,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "test:tui": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/ui/__tests__/tui.test.ts src/ui/__tests__/tui-contract.test.ts src/ui/__tests__/tui-views.test.ts src/ui/__tests__/tui-keymap.test.ts --runInBand",
+    "test:tui": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/ui/__tests__/tui.test.ts src/ui/__tests__/tui-contract.test.ts src/ui/__tests__/tui-runtime-screen.test.ts src/ui/__tests__/tui-views.test.ts src/ui/__tests__/tui-keymap.test.ts --runInBand",
     "test:tui:visual": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/ui/__tests__/tui-visual.test.ts --runInBand",
     "build": "tsc"
   },

@@ -17,6 +17,7 @@ export function parseKey(chunk: string): KeyAction {
     case '\t':
       return { type: 'next_view' };
     case '\u001b[Z':
+    case '\u001b[1;2Z':
       return { type: 'prev_view' };
     case 'f':
     case 'F':

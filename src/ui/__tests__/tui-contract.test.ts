@@ -108,6 +108,7 @@ function createHarness() {
   const onPause = jest.fn();
   const onResume = jest.fn();
   const onSteer = jest.fn();
+  const onCycleModel = jest.fn();
 
   const ui = createRuntimeUI(
     'tui',
@@ -122,6 +123,7 @@ function createHarness() {
     onPause,
     onResume,
     onSteer,
+    onCycleModel,
   };
 }
 
@@ -132,6 +134,7 @@ describe('ui/tui contract', () => {
       onPause: h.onPause,
       onResume: h.onResume,
       onSteer: h.onSteer,
+      onCycleModel: h.onCycleModel,
     });
     expect(h.getRendered()).toContain('INITIALIZING');
     expect(h.getRendered()).toContain('Waiting for first status update from orchestrator');
@@ -150,6 +153,7 @@ describe('ui/tui contract', () => {
       onPause: h.onPause,
       onResume: h.onResume,
       onSteer: h.onSteer,
+      onCycleModel: h.onCycleModel,
     });
     h.ui.updateState(createState());
 
@@ -183,6 +187,7 @@ describe('ui/tui contract', () => {
       onPause: h.onPause,
       onResume: h.onResume,
       onSteer: h.onSteer,
+      onCycleModel: h.onCycleModel,
     });
     expect(h.getRendered()).toContain('INITIALIZING');
 
@@ -286,6 +291,7 @@ describe('ui/tui contract', () => {
       onPause: h.onPause,
       onResume: h.onResume,
       onSteer: h.onSteer,
+      onCycleModel: h.onCycleModel,
     });
     h.ui.updateState(createState());
 
@@ -308,6 +314,51 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).not.toContain('Worker Log Stream');
     expect(h.onPause).not.toHaveBeenCalled();
     expect(h.onResume).not.toHaveBeenCalled();
+  });
+
+  it('cycles models from models view with number keys', () => {
+    const h = createHarness();
+    h.ui.start(createSessionInfo(), {
+      onCycleModel: h.onCycleModel,
+    });
+    h.ui.updateState(createState());
+
+    h.input.write('M');
+    h.input.write('1');
+    h.input.write('2');
+    h.input.write('3');
+    h.input.write('4');
+    h.ui.stop();
+
+    expect(h.onCycleModel).toHaveBeenNthCalledWith(1, 'planner');
+    expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'worker');
+    expect(h.onCycleModel).toHaveBeenNthCalledWith(3, 'validator');
+    expect(h.onCycleModel).toHaveBeenNthCalledWith(4, 'research');
+  });
+
+  it('cancels steer mode when pending prompt starts', () => {
+    const h = createHarness();
+    h.ui.start(createSessionInfo(), {
+      onSteer: h.onSteer,
+    });
+    h.ui.updateState(createState());
+
+    h.input.write('\u0007');
+    h.input.write('skip m1-f1');
+    expect(h.getRendered()).toContain('[STEER MODE]');
+
+    h.ui.updateState(createState({
+      missionState: 'awaiting_approval',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+    }));
+
+    const rendered = h.getRendered();
+    expect(rendered).toContain('Input Required  Awaiting approval');
+    expect(rendered.lastIndexOf('Input Required')).toBeGreaterThan(rendered.lastIndexOf('[STEER MODE]'));
+
+    h.input.write('\n');
+    h.ui.stop();
+    expect(h.onSteer).not.toHaveBeenCalled();
   });
 
   it('supports steer, pause/resume, and ctrl+c in normal mode', () => {

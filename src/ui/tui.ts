@@ -1,6 +1,7 @@
 import { parseKey } from './tui-keymap.js';
 import { truncateDisplay, padDisplay, getDisplayWidth } from './tui-ansi.js';
 import type { MissionControlState, TUIView, ViewId } from './tui-views.js';
+import type { ModelRole } from '../models/router.js';
 import { overviewView } from './tui-overview.js';
 import { featuresView } from './tui-features.js';
 import { workersView } from './tui-workers.js';
@@ -31,6 +32,7 @@ export interface RuntimeUIControls {
   onPause?: () => void;
   onResume?: () => void;
   onSteer?: (instruction: string) => void;
+  onCycleModel?: (role: ModelRole) => void;
 }
 
 export interface RuntimeUI {
@@ -50,6 +52,21 @@ const VIEW_MAP: Record<ViewId, TUIView> = {
   models: modelsView,
   costs: costsView,
 };
+
+function resolveModelHotkey(raw: string): ModelRole | null {
+  switch (raw) {
+    case '1':
+      return 'planner';
+    case '2':
+      return 'worker';
+    case '3':
+      return 'validator';
+    case '4':
+      return 'research';
+    default:
+      return null;
+  }
+}
 
 export function shouldUseTUI(options: TUIOptions, terminal: TerminalCapabilities): boolean {
   if (options.plain) {
@@ -77,6 +94,7 @@ export function createRuntimeUI(
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   let rawModeEnabled = false;
+  let inputResumed = false;
   let steerMode = false;
   let steerBuffer = '';
 
@@ -141,8 +159,13 @@ export function createRuntimeUI(
       return;
     }
 
-    const inputLocked = !steerMode && Boolean(state?.pendingPrompt);
+    const inputLocked = Boolean(state?.pendingPrompt);
     if (inputLocked) {
+      if (steerMode) {
+        steerMode = false;
+        steerBuffer = '';
+        render();
+      }
       if (raw === '\u0003') {
         process.kill(process.pid, 'SIGINT');
       }
@@ -150,6 +173,14 @@ export function createRuntimeUI(
     }
 
     if (!steerMode) {
+      if (currentView === 'models') {
+        const role = resolveModelHotkey(raw);
+        if (role) {
+          controls.onCycleModel?.(role);
+          return;
+        }
+      }
+
       const action = parseKey(raw);
       switch (action.type) {
         case 'next_view': {
@@ -254,6 +285,7 @@ export function createRuntimeUI(
       }
       input.on('data', handleKeyChunk);
       input.resume();
+      inputResumed = true;
       render();
       return;
     }
@@ -292,6 +324,10 @@ export function createRuntimeUI(
     }
 
     input.removeListener('data', handleKeyChunk);
+    if (inputResumed && typeof input.pause === 'function') {
+      input.pause();
+      inputResumed = false;
+    }
     if (rawModeEnabled && input.isTTY && typeof input.setRawMode === 'function') {
       input.setRawMode(false);
       rawModeEnabled = false;
@@ -373,7 +409,9 @@ function buildFrame(
   const footer = truncateDisplay(
     state.pendingPrompt
       ? `Input Required  ${state.pendingPrompt}`
-      : `Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
+      : options.view === 'models'
+        ? `Tab Next  Shift+Tab Prev  F/W/M/C View  1 Planner 2 Worker 3 Validator 4 Research`
+        : `Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
 
@@ -429,7 +467,7 @@ function buildInitializingFrame(
   while (clipped.length < contentHeight) {
     clipped.push('');
   }
-  const footer = truncateDisplay('Ctrl+C Abort  Tab Next  Shift+Tab Prev  Esc Overview', width);
+  const footer = truncateDisplay('Ctrl+C Abort  Waiting for first state update...', width);
   const prompt = options.steerMode
     ? truncateDisplay(`[STEER MODE] melos> ${options.steerBuffer}`, width)
     : 'melos> initializing...';

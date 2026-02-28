@@ -89,6 +89,10 @@ function shouldEnableSpinner(): boolean {
   return process.stderr.isTTY === true;
 }
 
+function supportsInlineTerminalControl(): boolean {
+  return process.stderr.isTTY === true;
+}
+
 /**
  * モード表示名
  */
@@ -98,6 +102,14 @@ const MODE_NAMES: Record<ExecutionMode, string> = {
   'ci-fix-only': 'CI修正のみ',
   'task-only': 'タスクのみ',
 };
+
+export interface QuestionBoxPrompt {
+  question: string;
+  context?: string;
+  options?: Array<{ label: string; description: string }>;
+  recommendation?: string;
+  allowFreeText?: boolean;
+}
 
 /**
  * 経過時間をフォーマット
@@ -372,6 +384,8 @@ export interface StreamRenderer {
  */
 export interface AppServerEventLogger {
   writeEvent: (method: string, params: unknown) => void;
+  writeCommandDelta: (chunk: string) => void;
+  finish: () => void;
 }
 
 /**
@@ -485,11 +499,15 @@ export function createSpinner(
  */
 export function createStreamRenderer(): StreamRenderer {
   const showThinking = process.env.MELOS_SHOW_THINKING === '1';
+  const inlineControlSupported = supportsInlineTerminalControl();
   let agentBuffer = '';
   let commandBuffer = '';
   let partialAgentFlushTimer: NodeJS.Timeout | null = null;
 
   const clearStatusLine = () => {
+    if (!inlineControlSupported) {
+      return;
+    }
     process.stderr.write('\x1b[2K\r');
   };
 
@@ -606,21 +624,195 @@ export function createAppServerEventLogger(
   agentLabel: 'manager' | 'worker'
 ): AppServerEventLogger {
   void agentLabel;
+  const inlineControlSupported = supportsInlineTerminalControl();
+  const prefix = inlineControlSupported ? '\x1b[2K\r' : '';
+  const maxPreviewLines = 3;
+  const maxPreviewWidth = 160;
+
+  let activeCommand: string | null = null;
+  let commandBuffer = '';
+  let commandOutputLines = 0;
+  let commandPreview: string[] = [];
+
+  const writeLine = (line: string) => {
+    process.stderr.write(`${prefix}${line}\n`);
+  };
+
+  const resetCommandState = () => {
+    activeCommand = null;
+    commandBuffer = '';
+    commandOutputLines = 0;
+    commandPreview = [];
+  };
+
+  const appendCommandOutputLine = (line: string) => {
+    const normalized = line.replace(/\r$/, '');
+    if (normalized.length === 0) {
+      return;
+    }
+    commandOutputLines += 1;
+    if (commandPreview.length < maxPreviewLines) {
+      commandPreview.push(truncateLine(normalized, maxPreviewWidth));
+    }
+  };
+
+  const flushCommandBuffer = (force: boolean) => {
+    const lines = commandBuffer.split('\n');
+    commandBuffer = lines.pop() ?? '';
+    for (const line of lines) {
+      appendCommandOutputLine(line);
+    }
+    if (force && commandBuffer.length > 0) {
+      appendCommandOutputLine(commandBuffer);
+      commandBuffer = '';
+    }
+  };
+
+  const emitCommandOutputSummary = () => {
+    if (commandOutputLines === 0) {
+      return;
+    }
+    for (const line of commandPreview) {
+      writeLine(`  │ ${line}`);
+    }
+    if (commandOutputLines > commandPreview.length) {
+      writeLine(`  └─ 出力 ${commandOutputLines}行（展開: e）`);
+    }
+  };
+
+  const beginCommandCard = (command: string | null) => {
+    const title = command ? truncateLine(command, 140) : '(command)';
+    activeCommand = title;
+    commandBuffer = '';
+    commandOutputLines = 0;
+    commandPreview = [];
+    writeLine(`● Bash: ${title}`);
+  };
+
+  const finishCommandCard = (
+    status: string,
+    exitCode: number | null,
+    durationMs: number | null
+  ) => {
+    flushCommandBuffer(true);
+    const isSuccess = status !== 'failed' && (exitCode === null || exitCode === 0);
+    const parts = [
+      exitCode !== null ? `exit ${exitCode}` : null,
+      durationMs !== null ? `${durationMs}ms` : null,
+    ].filter((value): value is string => value !== null);
+    writeLine(`  ${isSuccess ? '✓ 完了' : '✗ 失敗'}${parts.length > 0 ? ` (${parts.join(', ')})` : ''}`);
+    emitCommandOutputSummary();
+    resetCommandState();
+  };
+
+  const emitClaudeToolUse = (params: unknown) => {
+    const data = toRecord(params);
+    if (!data) {
+      return;
+    }
+    const name = readStringAny(data, ['name']) ?? 'Tool';
+    const input = readRecordAny(data, ['input']) ?? {};
+    if (name === 'Bash') {
+      beginCommandCard(readStringAny(input, ['command']));
+      return;
+    }
+    if (name === 'Read') {
+      const filePath = readStringAny(input, ['file_path']) ?? '(unknown)';
+      const limit = readNumberAny(input, ['limit']);
+      const suffix = typeof limit === 'number' ? ` (${limit} lines)` : '';
+      writeLine(`● Read ${filePath}${suffix}`);
+      return;
+    }
+    if (name === 'Write' || name === 'Edit') {
+      const filePath = readStringAny(input, ['file_path']) ?? '(unknown)';
+      const oldString = readStringAny(input, ['old_string']) ?? '';
+      const newString = readStringAny(input, ['new_string']) ?? readStringAny(input, ['content']) ?? '';
+      const diffLines = [
+        ...contentToDiffLines(oldString, '-'),
+        ...contentToDiffLines(newString, '+'),
+      ];
+      writeLine(`● Write ${filePath}`);
+      for (const line of diffLines.slice(0, maxPreviewLines)) {
+        writeLine(`  ${truncateDiffLine(line, maxPreviewWidth)}`);
+      }
+      if (diffLines.length > maxPreviewLines) {
+        writeLine(`  └─ +${diffLines.length - maxPreviewLines}行（展開: e）`);
+      }
+      return;
+    }
+    writeLine(`● ${name}: ${truncateLine(JSON.stringify(input), 120)}`);
+  };
+
+  const emitClaudeToolResult = (params: unknown) => {
+    const data = toRecord(params);
+    const content = readStringAny(data, ['content']) ?? '';
+    const isError = readBooleanAny(data, ['is_error', 'isError']) ?? false;
+    const exitCode = readNumberAny(data, ['exit_code', 'exitCode']);
+    const durationMs = readNumberAny(data, ['duration_ms', 'durationMs']);
+    if (content.length > 0) {
+      commandBuffer += content.replace(/\r\n/g, '\n');
+    }
+    if (activeCommand) {
+      finishCommandCard(isError ? 'failed' : 'completed', exitCode, durationMs);
+      return;
+    }
+    if (content.length > 0) {
+      writeLine(`  └─ ${truncateLine(content, 140)}`);
+    }
+  };
+
   return {
     writeEvent: (method: string, params: unknown) => {
+      if (method === 'claude/tool_use') {
+        emitClaudeToolUse(params);
+        return;
+      }
+      if (method === 'claude/tool_result') {
+        emitClaudeToolResult(params);
+        return;
+      }
+
       const editLines = formatEditEventLines(method, params);
       if (editLines.length > 0) {
         for (const line of editLines) {
-          process.stderr.write(`\x1b[2K\r${line}\n`);
+          writeLine(line);
         }
         return;
+      }
+
+      if (method === 'item/started' || method === 'item/completed') {
+        const data = toRecord(params);
+        const item = readRecordAny(data, ['item']);
+        const itemType = normalizeItemType(readStringAny(item, ['type']) ?? '');
+        if (itemType === 'commandexecution') {
+          if (method === 'item/started') {
+            beginCommandCard(readStringAny(item, ['command']));
+            return;
+          }
+          finishCommandCard(
+            readStringAny(item, ['status']) ?? 'completed',
+            readNumberAny(item, ['exitCode']),
+            readNumberAny(item, ['durationMs'])
+          );
+          return;
+        }
       }
 
       const line = formatAppServerEventLine(method, params);
       if (!line) {
         return;
       }
-      process.stderr.write(`\x1b[2K\r${Colors.DIM}${line}${Colors.NC}\n`);
+      writeLine(line);
+    },
+    writeCommandDelta: (chunk: string) => {
+      if (!chunk) {
+        return;
+      }
+      commandBuffer += chunk.replace(/\r\n/g, '\n');
+      flushCommandBuffer(false);
+    },
+    finish: () => {
+      flushCommandBuffer(true);
     },
   };
 }
@@ -674,26 +866,7 @@ function formatAppServerEventLine(method: string, params: unknown): string | nul
       return null;
     }
     if (normalizedItemType === 'commandexecution') {
-      const command = readStringAny(item, ['command']);
-      if (phase === 'started') {
-        return command ? `command: ${truncateLine(command, 140)}` : 'command started';
-      }
-      const status = readStringAny(item, ['status']) ?? 'completed';
-      const exitCode = readNumberAny(item, ['exitCode']);
-      const durationMs = readNumberAny(item, ['durationMs']);
-      const isFailure = status === 'failed' || (typeof exitCode === 'number' && exitCode !== 0);
-
-      // 成功時の completed ログはノイズになりやすいため非表示にする。
-      if (!isFailure) {
-        return null;
-      }
-
-      const result = [
-        status,
-        typeof exitCode === 'number' ? `exit=${exitCode}` : null,
-        typeof durationMs === 'number' ? `${durationMs}ms` : null,
-      ].filter((v): v is string => v !== null).join(', ');
-      return result ? `command failed (${result})` : 'command failed';
+      return null;
     }
     if (normalizedItemType === 'mcptoolcall') {
       return `mcp tool ${phase}`;
@@ -740,12 +913,6 @@ function formatAppServerEventLine(method: string, params: unknown): string | nul
     return null;
   }
 
-  if (method === 'codex/event/apply_patch_end' || method === 'codex/event/patch_apply_end') {
-    const msg = toRecord(data.msg);
-    const status = readStringAny(msg, ['status']) ?? 'completed';
-    return `patch ${status}`;
-  }
-
   // delta や内部イベントの大量出力は表示しない（ストリーム表示と重複する）
   if (
     method.startsWith('item/agentMessage/')
@@ -783,35 +950,20 @@ function formatEditEventLines(method: string, params: unknown): string[] {
 
   const lines: string[] = [];
   const maxFiles = 4;
+  const maxDiffLines = 3;
   for (const preview of previews.slice(0, maxFiles)) {
-    lines.push(
-      `${Colors.CYAN}•${Colors.NC} Edited ${preview.path} ${Colors.DIM}(+${preview.added} -${preview.removed})${Colors.NC}`
-    );
-
-    const maxDiffLines = 10;
+    lines.push(`● Write ${preview.path} (+${preview.added} -${preview.removed})`);
     const visible = preview.diffLines.slice(0, maxDiffLines);
     for (const line of visible) {
-      if (line.startsWith('+')) {
-        lines.push(`${Colors.GREEN}  ${line}${Colors.NC}`);
-      } else if (line.startsWith('-')) {
-        lines.push(`${Colors.RED}  ${line}${Colors.NC}`);
-      } else if (line.startsWith('@@')) {
-        lines.push(`${Colors.CYAN}  ${line}${Colors.NC}`);
-      } else if (line.startsWith(' ')) {
-        lines.push(`${Colors.DIM}  ${line}${Colors.NC}`);
-      } else {
-        lines.push(`${Colors.DIM}  ${line}${Colors.NC}`);
-      }
+      lines.push(`  ${line}`);
     }
     if (preview.diffLines.length > maxDiffLines) {
-      lines.push(
-        `${Colors.DIM}  ... (${preview.diffLines.length - maxDiffLines} more lines)${Colors.NC}`
-      );
+      lines.push(`  └─ +${preview.diffLines.length - maxDiffLines}行（展開: e）`);
     }
   }
 
   if (previews.length > maxFiles) {
-    lines.push(`${Colors.DIM}... (${previews.length - maxFiles} more files)${Colors.NC}`);
+    lines.push(`... (${previews.length - maxFiles} more files)`);
   }
 
   return lines;
@@ -993,6 +1145,19 @@ function readNumberAny(source: Record<string, unknown> | null, keys: string[]): 
   return null;
 }
 
+function readBooleanAny(source: Record<string, unknown> | null, keys: string[]): boolean | null {
+  if (!source) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'boolean') {
+      return value;
+    }
+  }
+  return null;
+}
+
 function truncateLine(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (normalized.length <= maxLength) {
@@ -1006,6 +1171,36 @@ function truncateDiffLine(value: string, maxLength: number): string {
     return value;
   }
   return value.slice(0, maxLength - 3) + '...';
+}
+
+function wrapByDisplayWidth(value: string, maxWidth: number): string[] {
+  const normalized = value.replace(/\r\n/g, '\n');
+  const rawLines = normalized.split('\n');
+  const wrapped: string[] = [];
+
+  for (const rawLine of rawLines) {
+    if (rawLine.length === 0) {
+      wrapped.push('');
+      continue;
+    }
+
+    let current = '';
+    let width = 0;
+    for (const char of rawLine) {
+      const charWidth = getCharWidth(char);
+      if (width + charWidth > maxWidth && current.length > 0) {
+        wrapped.push(current);
+        current = char;
+        width = charWidth;
+      } else {
+        current += char;
+        width += charWidth;
+      }
+    }
+    wrapped.push(current);
+  }
+
+  return wrapped;
 }
 
 function readRecordAny(
@@ -1049,6 +1244,73 @@ function roundBoxLine(content: string, width: number = BOX_WIDTH): string {
   const padding = width - 2 - displayWidth;
   const spaces = padding > 0 ? ' '.repeat(padding) : '';
   return `${Colors.BRIGHT_CYAN}${Box.VERTICAL}${Colors.NC}${content}${spaces}${Colors.BRIGHT_CYAN}${Box.VERTICAL}${Colors.NC}`;
+}
+
+export function formatQuestionBoxLines(
+  prompt: QuestionBoxPrompt,
+  width: number = 62
+): string[] {
+  const lines: string[] = [];
+  const bodyWidth = Math.max(1, width - 4);
+
+  lines.push('');
+  lines.push(roundBoxTop('ユーザー確認', width));
+
+  if (prompt.context && prompt.context.trim().length > 0) {
+    const contextLines = wrapByDisplayWidth(prompt.context.trim(), bodyWidth);
+    for (const [index, contextLine] of contextLines.entries()) {
+      const prefix = index === 0 ? `${Colors.DIM}コンテキスト:${Colors.NC} ` : '  ';
+      lines.push(roundBoxLine(` ${prefix}${contextLine}`, width));
+    }
+    lines.push(roundBoxLine('', width));
+  }
+
+  const questionLines = wrapByDisplayWidth(prompt.question.trim(), bodyWidth);
+  for (const [index, questionLine] of questionLines.entries()) {
+    const prefix = index === 0 ? `${Colors.BOLD}質問:${Colors.NC} ` : '   ';
+    lines.push(roundBoxLine(` ${prefix}${questionLine}`, width));
+  }
+
+  const options = prompt.options ?? [];
+  if (options.length > 0) {
+    lines.push(roundBoxLine('', width));
+    for (let i = 0; i < options.length; i++) {
+      const option = options[i];
+      const optionText = `${i + 1}. ${option.label} - ${option.description}`;
+      const optionLines = wrapByDisplayWidth(optionText, bodyWidth);
+      for (const optionLine of optionLines) {
+        lines.push(roundBoxLine(` ${optionLine}`, width));
+      }
+    }
+  }
+
+  if (prompt.recommendation && prompt.recommendation.trim().length > 0) {
+    lines.push(roundBoxLine('', width));
+    const recommendationLines = wrapByDisplayWidth(
+      `推奨: ${prompt.recommendation.trim()}`,
+      bodyWidth
+    );
+    for (const recommendationLine of recommendationLines) {
+      lines.push(roundBoxLine(` ${Colors.BRIGHT_GREEN}${recommendationLine}${Colors.NC}`, width));
+    }
+  }
+
+  lines.push(roundBoxLine('', width));
+  lines.push(roundBoxLine(' 回答方法: 番号 / ラベル / 自由入力', width));
+  lines.push(roundBoxBottom(width));
+  lines.push('');
+
+  return lines;
+}
+
+export function printQuestionBox(
+  prompt: QuestionBoxPrompt,
+  output: NodeJS.WriteStream = process.stderr
+): void {
+  const lines = formatQuestionBoxLines(prompt);
+  for (const line of lines) {
+    output.write(line + '\n');
+  }
 }
 
 /**

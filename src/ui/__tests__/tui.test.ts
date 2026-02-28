@@ -126,6 +126,27 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('melos> Ctrl+G to steer');
   });
 
+  it('pauses stdin stream on stop to avoid hanging process', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean; setRawMode?: (enabled: boolean) => void }).isTTY = true;
+    (input as unknown as { setRawMode?: (enabled: boolean) => void }).setRawMode = () => {
+      // no-op
+    };
+    const pauseSpy = jest.spyOn(input, 'pause');
+
+    const ui = createRuntimeUI('tui', output as unknown as NodeJS.WriteStream, input as unknown as NodeJS.ReadStream);
+    ui.start(createSessionInfo());
+    ui.updateState(createState());
+    ui.stop();
+
+    expect(pauseSpy).toHaveBeenCalled();
+    pauseSpy.mockRestore();
+  });
+
   it('renders explicit initializing frame before first state update', () => {
     const output = new PassThrough();
     (output as unknown as { columns?: number }).columns = 100;

@@ -322,4 +322,35 @@ describe('Orchestrator v0.8', () => {
     const flattened = snapshots.flatMap((snapshot) => snapshot.progressLog.map((entry) => entry.message));
     expect(flattened.some((message) => message.includes('echo after snapshot'))).toBe(true);
   });
+
+  it('cycles model assignment for a role from Mission Control command', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-model-cycle-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Model cycle mission\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 1,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: true,
+      resume: false,
+    });
+
+    const router = (orchestrator as unknown as {
+      modelRouter: { getModel: (role: 'validator') => string };
+    }).modelRouter;
+
+    expect(router.getModel('validator')).toBe('gpt-5.3-codex');
+    await orchestrator.cycleModel('validator');
+    expect(router.getModel('validator')).toBe('opus');
+    await orchestrator.cycleModel('validator');
+    expect(router.getModel('validator')).toBe('sonnet');
+  });
 });
