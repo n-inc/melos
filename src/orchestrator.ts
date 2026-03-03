@@ -13,7 +13,6 @@ import {
   loadMissionPlan,
   saveMissionPlan,
   transitionMissionState,
-  createMissionPlan,
   getNextPendingMilestone,
   getNextPendingFeature,
   areAllMilestonesDone,
@@ -437,37 +436,7 @@ export class Orchestrator {
     }
 
     if (!this.state.missionPlan) {
-      this.state.missionPlan = createMissionPlan({
-        missionId: this.resolveMissionId(),
-        goal: extractGoalFromPrd(this.state.prd) ?? 'Mission goal is not defined',
-        constraints: ['No backward compatibility layer'],
-        successCriteria: ['All validations pass'],
-        prdFile: this.config.prdFile,
-        milestones: [
-          {
-            id: 'm1',
-            title: 'Initial planning milestone',
-            description: 'Generate mission plan from PRD',
-            order: 1,
-            status: 'pending',
-            validationContract: {
-              staticChecks: [],
-              testSuites: [],
-            },
-            features: [
-              {
-                id: 'm1-f1',
-                description: 'Generate complete mission plan',
-                status: 'pending',
-                attempts: 0,
-                model: 'codex',
-              },
-            ],
-          },
-        ],
-        state: 'planning',
-      });
-      await this.persistMissionPlan();
+      this.activityLabel = 'Planning mission from PRD.md...';
     }
 
     if (this.state.gitStrategy && this.config.resume) {
@@ -477,15 +446,12 @@ export class Orchestrator {
       }
     }
 
-    this.kernelState.missionPlan = this.state.missionPlan;
+    this.kernelState.missionPlan = this.state.missionPlan ?? null;
     await this.emitStatusUpdate();
   }
 
   private async runPlanningPhase(): Promise<void> {
     const current = this.state.missionPlan;
-    if (!current) {
-      return;
-    }
 
     this.activityLabel = `Planning mission with ${this.modelRouter.getModel('planner')}...`;
     this.emitEvent('manager_started', 'manager', {
@@ -503,7 +469,7 @@ export class Orchestrator {
       generated = await this.manager.generateMissionPlan({
         missionId: this.resolveMissionId(),
         prd: this.state.prd,
-        interactiveGoal: this.config.interactivePlanning ? current.mission.goal : undefined,
+        interactiveGoal: this.config.interactivePlanning ? current?.mission.goal : undefined,
         approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
         prdFile: this.config.prdFile,
         onAppServerEvent: (method, params) => {
@@ -1336,17 +1302,61 @@ export class Orchestrator {
   }
 
   private async emitStatusUpdate(): Promise<void> {
-    if (!this.config.onStatusUpdate || !this.state.missionPlan) {
+    if (!this.config.onStatusUpdate) {
       return;
     }
 
-    const missionPlan = this.state.missionPlan;
-    const missionState = this.buildMissionControlState(missionPlan);
+    const missionState = this.buildMissionControlState(this.state.missionPlan);
     await this.config.onStatusUpdate(missionState);
   }
 
-  private buildMissionControlState(missionPlan: MissionPlan): MissionControlState {
+  private buildMissionControlState(missionPlan: MissionPlan | null): MissionControlState {
     const assignments = this.modelRouter.getAssignments();
+    const elapsedLabel = formatElapsed(this.state.startedAt);
+    const activeBranch = this.state.gitStrategy?.activeBranch
+      ?? (getCurrentBranch(this.config.cwd) || null);
+    const workerRuns: WorkerRunView[] = this.kernelState.workerRuns.slice(-20).map((run) => ({
+      id: run.id,
+      type: run.type,
+      featureId: run.featureId,
+      milestoneId: run.milestoneId,
+      status: run.status,
+      durationLabel: computeDurationLabel(run.startedAt, run.endedAt),
+      engine: run.engine,
+      model: run.model,
+      log: run.log,
+    }));
+
+    if (!missionPlan) {
+      const fallbackTitle = extractGoalFromPrd(this.state.prd) ?? 'Mission planning';
+      const fallbackActivity = this.pendingPrompt
+        ? `Waiting for input: ${this.pendingPrompt}`
+        : (this.activityLabel.trim().length > 0
+          ? this.activityLabel.trim()
+          : 'Planning mission from PRD.md...');
+      return {
+        missionId: this.resolveMissionId(),
+        missionTitle: fallbackTitle,
+        missionState: 'planning',
+        prdPreviewLines: buildPrdPreviewLines(this.state.prd),
+        taskPreviewLines: buildTaskPlanningLines(),
+        activity: fallbackActivity,
+        elapsedLabel,
+        progressLabel: '0/0 (0%)',
+        progressPercent: 0,
+        activeMilestoneId: null,
+        activeFeatureId: null,
+        activeBranch,
+        milestones: [],
+        progressLog: this.kernelState.progressLog.slice(-80),
+        managerLog: (this.kernelState.managerLog ?? []).slice(-120),
+        workerRuns,
+        modelAssignments: assignments,
+        tokenUsage: this.tokenTracker.getSnapshot(),
+        pendingPrompt: this.pendingPrompt,
+      };
+    }
+
     const milestones: MissionMilestoneView[] = missionPlan.milestones.map((milestone) => ({
       id: milestone.id,
       title: milestone.title,
@@ -1368,22 +1378,7 @@ export class Orchestrator {
     const progressPercent = totalFeatures === 0 ? 0 : Math.floor((completedFeatures / totalFeatures) * 100);
 
     const progressLabel = `${completedFeatures}/${totalFeatures} (${progressPercent}%)`;
-    const elapsedLabel = formatElapsed(this.state.startedAt);
     const activity = this.resolveActivityLabel(missionPlan);
-    const activeBranch = this.state.gitStrategy?.activeBranch
-      ?? (getCurrentBranch(this.config.cwd) || null);
-
-    const workerRuns: WorkerRunView[] = this.kernelState.workerRuns.slice(-20).map((run) => ({
-      id: run.id,
-      type: run.type,
-      featureId: run.featureId,
-      milestoneId: run.milestoneId,
-      status: run.status,
-      durationLabel: computeDurationLabel(run.startedAt, run.endedAt),
-      engine: run.engine,
-      model: run.model,
-      log: run.log,
-    }));
 
     return {
       missionId: missionPlan.mission.id ?? this.resolveMissionId(),
@@ -1606,6 +1601,16 @@ function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
   lines.push(...JSON.stringify(missionPlan, null, 2).split(/\r?\n/));
   lines.push('```');
   return lines;
+}
+
+function buildTaskPlanningLines(): string[] {
+  return [
+    '# TASK generation in progress',
+    '',
+    'Manager is reading PRD.md and generating milestones/features/validation contracts.',
+    'No default placeholder task is shown during planning.',
+    'TASK.json preview will appear here once the mission plan is generated.',
+  ];
 }
 
 function asFeatureCheckbox(status: Feature['status']): string {
