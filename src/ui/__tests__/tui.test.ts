@@ -288,26 +288,31 @@ describe('ui/tui v0.8', () => {
     };
 
     const onResume = jest.fn();
+    const onCycleModel = jest.fn();
     const ui = createRuntimeUI(
       'tui',
       output as unknown as NodeJS.WriteStream,
       input as unknown as NodeJS.ReadStream
     );
-    ui.start(createSessionInfo(), { onResume });
+    ui.start(createSessionInfo(), { onResume, onCycleModel });
     ui.updateState({
       ...createState(),
       missionState: 'awaiting_approval',
       pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
     });
 
+    input.write('M');
+    input.write('2');
     input.write('W');
     input.write('r');
     ui.stop();
 
     expect(onResume).not.toHaveBeenCalled();
+    expect(onCycleModel).toHaveBeenCalledWith('worker');
     expect(rendered).toContain('Input Required');
     expect(rendered).toContain('[INPUT] Awaiting approval (single key)');
     expect(rendered).not.toContain('Worker Log Stream');
+    expect(rendered).toContain('Models');
   });
 
   it('forces overview when pending input becomes active', () => {
@@ -344,6 +349,43 @@ describe('ui/tui v0.8', () => {
     ui.stop();
 
     expect(rendered).toContain('Overview');
+    expect(rendered).toContain('Input Required');
+  });
+
+  it('keeps models view during pending input when user switched to models', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean; setRawMode?: (enabled: boolean) => void }).isTTY = true;
+    (input as unknown as { setRawMode?: (enabled: boolean) => void }).setRawMode = () => {
+      // no-op
+    };
+
+    const ui = createRuntimeUI(
+      'tui',
+      output as unknown as NodeJS.WriteStream,
+      input as unknown as NodeJS.ReadStream
+    );
+    ui.start(createSessionInfo());
+    ui.updateState(createState());
+    input.write('M');
+    expect(rendered).toContain('Models');
+
+    ui.updateState({
+      ...createState(),
+      missionState: 'awaiting_approval',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+    });
+    ui.stop();
+
+    expect(rendered).toContain('Models');
     expect(rendered).toContain('Input Required');
   });
 });

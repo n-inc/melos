@@ -281,7 +281,7 @@ describe('ui/tui runtime screen contract', () => {
     h.ui.stop();
   });
 
-  it('locks navigation and control keys while pending input is active', () => {
+  it('locks navigation/control while pending input is active, but allows model changes', () => {
     const h = createHarness();
     h.ui.start(createSession(), {
       onPause: h.onPause,
@@ -301,15 +301,20 @@ describe('ui/tui runtime screen contract', () => {
     expect(h.screen()).toContain('Input Required');
     expect(h.screen()).toContain('[INPUT] Awaiting approval (single key):');
 
+    h.input.write('M');
+    expect(h.screen()).toContain('Models');
+
+    h.input.write('2');
     h.input.write('\t');
     h.input.write('W');
     h.input.write('C');
     h.input.write('p');
     h.input.write('r');
-    expect(h.screen()).toContain('Overview');
+    expect(h.screen()).toContain('Models');
     expect(h.screen()).not.toContain('Workers');
     expect(h.onPause).not.toHaveBeenCalled();
     expect(h.onResume).not.toHaveBeenCalled();
+    expect(h.onCycleModel).toHaveBeenCalledWith('worker');
 
     h.ui.stop();
   });

@@ -392,6 +392,12 @@ export class Orchestrator {
       ? MODEL_ROTATION[(index + 1) % MODEL_ROTATION.length]
       : MODEL_ROTATION[0];
     this.modelRouter.setModel(role, nextModel);
+    if (role === 'planner') {
+      this.manager.setModel(nextModel);
+    }
+    if (role === 'worker') {
+      this.worker.setRuntimeModel(nextModel);
+    }
     this.emitEvent('manager_decision', 'orchestrator', {
       action: 'model_changed',
       role,
@@ -881,6 +887,14 @@ export class Orchestrator {
     feature: Feature,
     briefing?: string
   ): Promise<WorkerResult> {
+    const selectedWorkerModel = this.modelRouter.getModel('worker');
+    const selectedWorkerEngine = this.modelRouter.resolveEngine(selectedWorkerModel);
+    const executionFeature: Feature = {
+      ...feature,
+      model: selectedWorkerEngine === 'claude' ? 'claude' : 'codex',
+    };
+    this.worker.setRuntimeModel(selectedWorkerModel);
+
     let branchName: string | null = null;
     let baseBranch: string | undefined;
 
@@ -916,8 +930,8 @@ export class Orchestrator {
       milestoneId: milestone.id,
       featureId: feature.id,
       branch: branchName,
-      engine: feature.model === 'claude' ? 'claude' : 'codex',
-      model: feature.model === 'claude' ? this.modelRouter.getModel('planner') : this.modelRouter.getModel('worker'),
+      engine: selectedWorkerEngine,
+      model: selectedWorkerModel,
     });
 
     if (this.config.dryRun) {
@@ -955,7 +969,7 @@ export class Orchestrator {
       iteration: this.requireMissionPlan().totalIterations + 1,
       missionPlan: this.requireMissionPlan(),
       milestone,
-      feature,
+      feature: executionFeature,
       prd: this.state.prd,
       briefing,
       currentBranch: branchName,

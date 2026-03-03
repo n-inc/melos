@@ -211,6 +211,10 @@ export class ManagerAgent implements Agent {
     this.codexEngine.abort();
   }
 
+  setModel(model: string): void {
+    this.config.model = model;
+  }
+
   getActiveThreadId(): string | null {
     return this.codexEngine.getActiveThreadId();
   }

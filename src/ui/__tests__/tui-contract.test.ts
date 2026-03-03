@@ -290,7 +290,7 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).toContain('worker-log-v2');
   });
 
-  it('locks hotkeys while input prompt is pending and forces overview', () => {
+  it('locks most hotkeys while input prompt is pending, but allows model switching', () => {
     const h = createHarness();
     h.ui.start(createSessionInfo(), {
       onPause: h.onPause,
@@ -311,6 +311,10 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).toContain('Input Required');
     expect(h.getRendered()).toContain('[INPUT] Awaiting approval (single key)');
 
+    h.input.write('M');
+    expect(h.getRendered()).toContain('Models');
+
+    h.input.write('2');
     h.input.write('W');
     h.input.write('p');
     h.input.write('r');
@@ -319,6 +323,7 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).not.toContain('Worker Log Stream');
     expect(h.onPause).not.toHaveBeenCalled();
     expect(h.onResume).not.toHaveBeenCalled();
+    expect(h.onCycleModel).toHaveBeenCalledWith('worker');
   });
 
   it('cycles models from models view with number keys', () => {

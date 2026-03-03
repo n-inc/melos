@@ -168,6 +168,26 @@ export function createRuntimeUI(
       }
       if (raw === '\u0003') {
         process.kill(process.pid, 'SIGINT');
+        return;
+      }
+
+      const role = resolveModelHotkey(raw);
+      if (role) {
+        controls.onCycleModel?.(role);
+        return;
+      }
+
+      const action = parseKey(raw);
+      if (action.type === 'goto_view' && action.view === 'models') {
+        currentView = 'models';
+        userChangedView = true;
+        render();
+        return;
+      }
+      if (action.type === 'overview') {
+        currentView = 'overview';
+        userChangedView = true;
+        render();
       }
       return;
     }
@@ -301,7 +321,9 @@ export function createRuntimeUI(
       currentView = 'overview';
       userChangedView = false;
     } else if (nextState.pendingPrompt) {
-      currentView = 'overview';
+      if (currentView !== 'models') {
+        currentView = 'overview';
+      }
     } else if (!userChangedView) {
       currentView = 'overview';
     }

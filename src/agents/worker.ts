@@ -126,6 +126,11 @@ export class WorkerAgent implements Agent {
     this.claudeEngine.abort();
   }
 
+  setRuntimeModel(model: string): void {
+    this.config.model = model;
+    this.config.claudeModel = model;
+  }
+
   getActiveThreadId(): string | null {
     return this.engine.getActiveThreadId();
   }

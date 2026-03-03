@@ -353,4 +353,108 @@ describe('Orchestrator v0.8', () => {
     await orchestrator.cycleModel('validator');
     expect(router.getModel('validator')).toBe('sonnet');
   });
+
+  it('executes worker with opus after pre-approval model switch', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-worker-opus-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Worker model switch mission\n\nVerify worker model.', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'worker-opus',
+      goal: 'Verify worker model switch before approval',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['worker uses opus'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Single feature execution',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement feature',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+
+    const workerInputs: Array<{ featureModel?: string }> = [];
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
+      workerInputs.push({ featureModel: input.feature.model });
+      return {
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: input.milestone.id,
+          featureId: input.feature.id,
+          status: 'SUCCESS',
+          summary: 'done',
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const states: Array<{
+      workerModel: string;
+      workerRuns: Array<{ engine?: string; model?: string }>;
+    }> = [];
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      onStatusUpdate: async (state) => {
+        states.push({
+          workerModel: state.modelAssignments.worker.model,
+          workerRuns: state.workerRuns.map((run) => ({ engine: run.engine, model: run.model })),
+        });
+      },
+    });
+
+    await orchestrator.cycleModel('worker');
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(workerInputs).toEqual([{ featureModel: 'claude' }]);
+    expect(states.some((state) => state.workerModel === 'opus')).toBe(true);
+    expect(
+      states.some((state) => state.workerRuns.some((run) => run.engine === 'claude' && run.model === 'opus'))
+    ).toBe(true);
+  });
 });
