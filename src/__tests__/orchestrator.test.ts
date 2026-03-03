@@ -181,10 +181,10 @@ describe('Orchestrator v0.8', () => {
     expect(anySnapshot?.taskPreviewLines).toEqual(expect.arrayContaining(['# TASK generation in progress']));
 
     const plannedSnapshot = snapshots.find((state) =>
-      state.taskPreviewLines?.some((line) => line.includes('Raw TASK.json'))
+      state.taskPreviewLines?.some((line) => line.includes('Milestones / Features'))
     );
-    expect(plannedSnapshot?.taskPreviewLines).toEqual(expect.arrayContaining(['Raw TASK.json']));
-    expect(plannedSnapshot?.taskPreviewLines?.some((line) => line.includes('"milestones"'))).toBe(true);
+    expect(plannedSnapshot?.taskPreviewLines).toEqual(expect.arrayContaining(['Milestones / Features']));
+    expect(plannedSnapshot?.taskPreviewLines).toEqual(expect.arrayContaining(['Tip: Open TASK.json directly for raw JSON if needed.']));
 
     const progressMessages = snapshots.flatMap((state) => state.progressLog.map((entry) => entry.message));
     expect(progressMessages.some((message) => message.includes('planning: Read PRD.md'))).toBe(true);

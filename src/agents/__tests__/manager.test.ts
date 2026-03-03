@@ -220,15 +220,22 @@ describe('ManagerAgent', () => {
     const events: Array<{ method: string; params: unknown }> = [];
     const plan = await agent.generateMissionPlan({
       missionId: 'ja-fallback',
-      prd: '## ペルソナ別LPの実装\n\n要件を実装する。',
+      prd: [
+        '## ペルソナ別LPの実装',
+        '- ForPageLayout を実装する',
+        '- ページルーティングを追加する',
+        '## SEO',
+        '- JSON-LD を追加する',
+        '- canonical / og を設定する',
+      ].join('\n'),
       onAppServerEvent: (method, params) => {
         events.push({ method, params });
       },
     });
 
     expect(plan.mission.goal).toBe('ペルソナ別LPの実装');
-    expect(plan.milestones[0]?.title).toBe('コア実装');
-    expect(plan.milestones[0]?.features[0]?.description).toBe('PRD の要求スコープを実装する');
+    expect(plan.milestones.length).toBeGreaterThanOrEqual(2);
+    expect(plan.milestones[0]?.features[0]?.description).toContain('ForPageLayout');
     expect(events.some((event) => event.method === 'manager/fallback')).toBe(true);
   });
 
@@ -282,6 +289,53 @@ describe('ManagerAgent', () => {
 
     expect(plan.mission.goal).toBe('ペルソナLP実装');
     expect(plan.milestones[0]?.id).toBe('m1');
+    expect(plan.milestones[0]?.features[0]?.description).toBe('ルーティング実装');
+  });
+
+  it('accepts planner output in MissionPlan-like shape with mission object and tasks alias', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.3-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: JSON.stringify({
+        version: 2,
+        mission: {
+          goal: 'ペルソナLP実装',
+          constraints: ['後方互換なし'],
+          successCriteria: ['テスト通過'],
+        },
+        milestones: [
+          {
+            id: 'm1',
+            title: '基盤',
+            description: '共通土台',
+            tasks: [
+              { id: 'm1-f1', title: 'ルーティング実装', model: 'codex' },
+            ],
+          },
+        ],
+      }),
+      exitCode: 0,
+    });
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'mission-shape',
+      prd: '## ペルソナLP実装',
+    });
+
+    expect(plan.mission.goal).toBe('ペルソナLP実装');
     expect(plan.milestones[0]?.features[0]?.description).toBe('ルーティング実装');
   });
 });

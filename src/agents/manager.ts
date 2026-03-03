@@ -57,6 +57,16 @@ interface MissionPlanningOutput {
 }
 
 type DocumentLanguage = 'ja' | 'en';
+interface LocalizedFallbackTemplate {
+  fallbackGoal: string;
+  defaultConstraint: string;
+  defaultSuccess: string;
+  milestoneTitlePrefix: string;
+  milestoneDescriptionPrefix: string;
+  typecheckDescription: string;
+  testDescription: string;
+  featureFallbackDescription: string;
+}
 
 export class ManagerAgent implements Agent {
   readonly name = 'manager';
@@ -87,12 +97,18 @@ export class ManagerAgent implements Agent {
   }): Promise<MissionPlan> {
     const preferredLanguage = detectPreferredLanguage(input.prd, input.interactiveGoal);
     const prompt = this.buildMissionPlanPrompt(input.prd, input.interactiveGoal, preferredLanguage);
+    const planningTimeoutMs = Math.max(300_000, this.config.requestTimeoutMs ?? 180_000);
 
-    const result = await this.executeWithConfiguredEngine(prompt, this.config.effort ?? 'high', {
-      onAgentMessageDelta: input.onAgentMessageDelta,
-      onCommandOutputDelta: input.onCommandOutputDelta,
-      onAppServerEvent: input.onAppServerEvent,
-    });
+    const result = await this.executeWithConfiguredEngine(
+      prompt,
+      this.config.effort ?? 'high',
+      {
+        onAgentMessageDelta: input.onAgentMessageDelta,
+        onCommandOutputDelta: input.onCommandOutputDelta,
+        onAppServerEvent: input.onAppServerEvent,
+      },
+      { timeoutMs: planningTimeoutMs }
+    );
 
     if (!result.success) {
       input.onAppServerEvent?.('manager/fallback', {
@@ -252,81 +268,69 @@ export class ManagerAgent implements Agent {
     },
     preferredLanguage: DocumentLanguage
   ): MissionPlan {
-    const localized = preferredLanguage === 'ja'
-      ? {
-        fallbackGoal: 'PRDの要件を実装する',
-        constraint: '後方互換レイヤーを実装しない',
-        success: 'すべてのマイルストーン検証を通過する',
-        milestoneTitle: 'コア実装',
-        milestoneDescription: 'PRD の要求をエンドツーエンドで実装する',
-        typecheckDescription: 'Typecheck を通過する',
-        testDescription: 'テストスイートを通過する',
-        featureDescription: 'PRD の要求スコープを実装する',
-      }
-      : {
-        fallbackGoal: 'Implement the requested product changes',
-        constraint: 'No backward compatibility layer',
-        success: 'All milestone validations pass',
-        milestoneTitle: 'Core implementation',
-        milestoneDescription: 'Implement the mission scope end-to-end',
-        typecheckDescription: 'Typecheck must pass',
-        testDescription: 'Test suite must pass',
-        featureDescription: 'Implement requested scope from PRD',
-      };
+    const localized = buildLocalizedFallbackTemplate(preferredLanguage);
+    const derived = deriveFallbackPlanFromPrd(input.prd, localized);
 
     const goal = input.interactiveGoal?.trim()
       || extractGoalFromPrd(input.prd)
       || localized.fallbackGoal;
+    const constraints = derived?.constraints.length
+      ? derived.constraints
+      : [localized.defaultConstraint];
+    const successCriteria = derived?.successCriteria.length
+      ? derived.successCriteria
+      : [localized.defaultSuccess];
+    const milestones = (derived?.milestones.length ? derived.milestones : [{
+      title: `${localized.milestoneTitlePrefix} 1`,
+      description: `${localized.milestoneDescriptionPrefix} 1`,
+      features: [localized.featureFallbackDescription],
+    }]).map((milestone, milestoneIndex) => ({
+      id: `m${milestoneIndex + 1}`,
+      title: milestone.title,
+      description: milestone.description,
+      status: 'pending' as const,
+      order: milestoneIndex + 1,
+      validationContract: {
+        ...createEmptyValidationContract(),
+        staticChecks: [
+          {
+            id: `m${milestoneIndex + 1}-typecheck`,
+            description: localized.typecheckDescription,
+            type: 'auto:typecheck' as const,
+            command: 'npm run typecheck',
+            passed: false,
+            failureCount: 0,
+          },
+        ],
+        testSuites: [
+          {
+            id: `m${milestoneIndex + 1}-test`,
+            description: localized.testDescription,
+            type: 'auto:test' as const,
+            command: 'npm test',
+            passed: false,
+            failureCount: 0,
+          },
+        ],
+      },
+      features: milestone.features.map((featureDescription, featureIndex) => ({
+        id: `m${milestoneIndex + 1}-f${featureIndex + 1}`,
+        description: featureDescription,
+        status: 'pending' as const,
+        model: inferFeatureModel(featureDescription),
+        attempts: 0,
+      })),
+    }));
 
     return createMissionPlan({
       missionId: input.missionId,
       goal,
-      constraints: [localized.constraint],
-      successCriteria: [localized.success],
+      constraints,
+      successCriteria,
       prdFile: input.prdFile,
       approvalMethod: input.approvalMethod,
       state: 'planning',
-      milestones: [
-        {
-          id: 'm1',
-          title: localized.milestoneTitle,
-          description: localized.milestoneDescription,
-          status: 'pending',
-          order: 1,
-          validationContract: {
-            ...createEmptyValidationContract(),
-            staticChecks: [
-              {
-                id: 'typecheck',
-                description: localized.typecheckDescription,
-                type: 'auto:typecheck',
-                command: 'npm run typecheck',
-                passed: false,
-                failureCount: 0,
-              },
-            ],
-            testSuites: [
-              {
-                id: 'test',
-                description: localized.testDescription,
-                type: 'auto:test',
-                command: 'npm test',
-                passed: false,
-                failureCount: 0,
-              },
-            ],
-          },
-          features: [
-            {
-              id: 'm1-f1',
-              description: localized.featureDescription,
-              status: 'pending',
-              model: 'codex',
-              attempts: 0,
-            },
-          ],
-        },
-      ],
+      milestones,
     });
   }
 
@@ -479,17 +483,19 @@ export class ManagerAgent implements Agent {
       onAgentMessageDelta?: (chunk: string) => void;
       onCommandOutputDelta?: (chunk: string) => void;
       onAppServerEvent?: (method: string, params: unknown) => void;
-    } = {}
+    } = {},
+    options: { timeoutMs?: number } = {}
   ): Promise<EngineResult> {
+    const timeoutMs = options.timeoutMs ?? this.config.requestTimeoutMs ?? 180_000;
     if (this.shouldUseCodexEngine(this.config.model)) {
       this.activeEngine = 'codex';
       const threadId = this.resumeThreadId ?? undefined;
       if (threadId) {
         this.resumeThreadId = null;
       }
-      const options: AppServerEngineOptions = {
+      const engineOptions: AppServerEngineOptions = {
         cwd: this.config.cwd,
-        timeout: this.config.requestTimeoutMs ?? 180_000,
+        timeout: timeoutMs,
         model: this.config.model,
         reasoningEffort: this.mapEffortForCodex(effort),
         execMode: true,
@@ -499,15 +505,15 @@ export class ManagerAgent implements Agent {
         onCommandOutput: callbacks.onCommandOutputDelta,
         onEvent: callbacks.onAppServerEvent,
       };
-      return this.codexEngine.execute(prompt, options).finally(() => {
+      return this.codexEngine.execute(prompt, engineOptions).finally(() => {
         this.activeEngine = null;
       });
     }
 
     this.activeEngine = 'claude';
-    const options: ClaudeEngineOptions = {
+    const engineOptions: ClaudeEngineOptions = {
       cwd: this.config.cwd,
-      timeout: this.config.requestTimeoutMs ?? 180_000,
+      timeout: timeoutMs,
       model: this.config.model,
       effort,
       skipPermissions: true,
@@ -516,7 +522,7 @@ export class ManagerAgent implements Agent {
       onStream: callbacks.onAgentMessageDelta,
       onEvent: callbacks.onAppServerEvent,
     };
-    return this.claudeEngine.execute(prompt, options).finally(() => {
+    return this.claudeEngine.execute(prompt, engineOptions).finally(() => {
       this.activeEngine = null;
     });
   }
@@ -573,15 +579,28 @@ function extractGoalFromPrd(prd: string | null): string | null {
   }
 
   const lines = prd.split(/\r?\n/);
-  const firstHeading = lines.find((line) => /^\s{0,3}#{1,6}\s+\S/.test(line));
-  if (firstHeading) {
-    const title = firstHeading.replace(/^\s{0,3}#{1,6}\s+/, '').trim();
-    if (title.length > 0) {
-      return truncateMessage(title, 160);
-    }
+  const headings = lines
+    .filter((line) => /^\s{0,3}#{1,6}\s+\S/.test(line))
+    .map((line) => line.replace(/^\s{0,3}#{1,6}\s+/, '').trim())
+    .filter((line) => line.length > 0);
+  const preferredHeading = headings.find((heading) => !isGenericHeading(heading));
+  if (preferredHeading) {
+    return truncateMessage(preferredHeading, 160);
+  }
+  if (headings[0]) {
+    return truncateMessage(headings[0], 160);
   }
 
-  const firstText = lines.find((line) => line.trim().length > 0);
+  const firstText = lines.find((line) => {
+    const normalized = line.trim();
+    if (!normalized) {
+      return false;
+    }
+    if (/^\s*[-*+]\s+/.test(normalized) || /^\s*\d+\.\s+/.test(normalized)) {
+      return true;
+    }
+    return normalized.length >= 8;
+  });
   if (!firstText) {
     return null;
   }
@@ -690,9 +709,14 @@ function normalizePlanningOutput(value: unknown): MissionPlanningOutput | null {
   }
 
   const root = value as Record<string, unknown>;
-  const goal = toNonEmptyString(root.goal);
-  const constraints = toStringArray(root.constraints);
-  const successCriteria = toStringArray(root.successCriteria);
+  const mission = toRecord(root.mission);
+  const goal = toNonEmptyString(root.goal) ?? toNonEmptyString(mission?.goal);
+  const constraints = toStringArray(root.constraints).length > 0
+    ? toStringArray(root.constraints)
+    : toStringArray(mission?.constraints);
+  const successCriteria = toStringArray(root.successCriteria).length > 0
+    ? toStringArray(root.successCriteria)
+    : toStringArray(mission?.successCriteria);
   const rawMilestones = Array.isArray(root.milestones) ? root.milestones : [];
 
   if (!goal || rawMilestones.length === 0) {
@@ -726,7 +750,9 @@ function normalizePlanningMilestone(
   const milestone = value as Record<string, unknown>;
   const title = toNonEmptyString(milestone.title) ?? `Milestone ${milestoneIndex + 1}`;
   const description = toNonEmptyString(milestone.description) ?? `Implement milestone ${milestoneIndex + 1}`;
-  const rawFeatures = Array.isArray(milestone.features) ? milestone.features : [];
+  const rawFeatures = Array.isArray(milestone.features)
+    ? milestone.features
+    : (Array.isArray(milestone.tasks) ? milestone.tasks : (Array.isArray(milestone.items) ? milestone.items : []));
   if (rawFeatures.length === 0) {
     return null;
   }
@@ -756,7 +782,10 @@ function normalizePlanningFeature(
     return null;
   }
   const feature = value as Record<string, unknown>;
-  const description = toNonEmptyString(feature.description) ?? 'No description provided';
+  const description = toNonEmptyString(feature.description)
+    ?? toNonEmptyString(feature.title)
+    ?? toNonEmptyString(feature.task)
+    ?? 'No description provided';
   const model = toNonEmptyString(feature.model);
   return {
     id: toNonEmptyString(feature.id) ?? undefined,
@@ -843,6 +872,199 @@ function toStringArray(value: unknown): string[] {
   return value
     .map((item) => toNonEmptyString(item))
     .filter((item): item is string => item !== null);
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function isGenericHeading(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  const generic = new Set([
+    '概要',
+    '背景',
+    '背景・動機',
+    '目的',
+    'ゴール',
+    '要件',
+    '仕様',
+    'summary',
+    'overview',
+    'background',
+    'goal',
+    'requirements',
+    'specification',
+  ]);
+  return generic.has(normalized);
+}
+
+function buildLocalizedFallbackTemplate(language: DocumentLanguage): LocalizedFallbackTemplate {
+  if (language === 'ja') {
+    return {
+      fallbackGoal: 'PRDの要件を実装する',
+      defaultConstraint: '後方互換レイヤーを実装しない',
+      defaultSuccess: 'すべてのマイルストーン検証を通過する',
+      milestoneTitlePrefix: 'PRD実装',
+      milestoneDescriptionPrefix: 'PRD 要件を段階的に実装するフェーズ',
+      typecheckDescription: 'Typecheck を通過する',
+      testDescription: 'テストスイートを通過する',
+      featureFallbackDescription: 'PRD の要求スコープを実装する',
+    };
+  }
+  return {
+    fallbackGoal: 'Implement the requested product changes',
+    defaultConstraint: 'No backward compatibility layer',
+    defaultSuccess: 'All milestone validations pass',
+    milestoneTitlePrefix: 'PRD implementation',
+    milestoneDescriptionPrefix: 'Implement PRD requirements in this phase',
+    typecheckDescription: 'Typecheck must pass',
+    testDescription: 'Test suite must pass',
+    featureFallbackDescription: 'Implement requested scope from PRD',
+  };
+}
+
+function deriveFallbackPlanFromPrd(
+  prd: string | null,
+  localized: LocalizedFallbackTemplate
+): {
+  constraints: string[];
+  successCriteria: string[];
+  milestones: Array<{ title: string; description: string; features: string[] }>;
+} | null {
+  if (!prd || prd.trim().length === 0) {
+    return null;
+  }
+
+  const lines = prd.split(/\r?\n/);
+  const sections = parsePrdSections(lines)
+    .filter((section) => !isGenericHeading(section.title))
+    .map((section) => ({
+      title: section.title,
+      bullets: extractSectionFeatureBullets(section.lines),
+      descriptionLine: section.lines.find((line) => line.trim().length > 0) ?? '',
+    }))
+    .filter((section) => section.bullets.length > 0 || section.descriptionLine.length > 0);
+
+  let milestones = sections.slice(0, 5).map((section, index) => {
+    const features = (section.bullets.length > 0
+      ? section.bullets
+      : [truncateMessage(section.descriptionLine.trim(), 120)])
+      .slice(0, 5)
+      .filter((text) => text.length > 0);
+    return {
+      title: section.title,
+      description: section.descriptionLine.trim().length > 0
+        ? truncateMessage(section.descriptionLine.trim(), 140)
+        : `${localized.milestoneDescriptionPrefix} ${index + 1}`,
+      features,
+    };
+  }).filter((milestone) => milestone.features.length > 0);
+
+  if (milestones.length === 0) {
+    const globalBullets = lines
+      .map((line) => normalizeBulletLine(line))
+      .filter((line): line is string => line !== null)
+      .filter((line) => line.length >= 8)
+      .slice(0, 12);
+    if (globalBullets.length > 0) {
+      const chunkSize = Math.max(2, Math.ceil(globalBullets.length / 3));
+      milestones = chunkArray(globalBullets, chunkSize).map((chunk, index) => ({
+        title: `${localized.milestoneTitlePrefix} ${index + 1}`,
+        description: `${localized.milestoneDescriptionPrefix} ${index + 1}`,
+        features: chunk,
+      }));
+    }
+  }
+
+  const constraints = extractKeywordLines(lines, ['制約', 'constraint', 'must', '必須', 'しない', '禁止']).slice(0, 6);
+  const successCriteria = extractKeywordLines(lines, ['受け入れ', 'acceptance', '成功', '完了条件', '検証', 'test', 'validation']).slice(0, 8);
+
+  return {
+    constraints,
+    successCriteria,
+    milestones,
+  };
+}
+
+function parsePrdSections(lines: string[]): Array<{ title: string; lines: string[] }> {
+  const sections: Array<{ title: string; lines: string[] }> = [];
+  let current: { title: string; lines: string[] } | null = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const headingMatch = line.match(/^\s{0,3}#{2,4}\s+(.+)$/);
+    if (headingMatch) {
+      if (current) {
+        sections.push(current);
+      }
+      current = { title: headingMatch[1].trim(), lines: [] };
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    current.lines.push(rawLine);
+  }
+
+  if (current) {
+    sections.push(current);
+  }
+  return sections;
+}
+
+function extractSectionFeatureBullets(lines: string[]): string[] {
+  return lines
+    .map((line) => normalizeBulletLine(line))
+    .filter((line): line is string => line !== null)
+    .filter((line) => line.length >= 8)
+    .slice(0, 8);
+}
+
+function normalizeBulletLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const bulletMatch = trimmed.match(/^[-*+]\s+(.+)$/);
+  if (bulletMatch) {
+    return truncateMessage(bulletMatch[1].trim(), 140);
+  }
+  const numberedMatch = trimmed.match(/^\d+\.\s+(.+)$/);
+  if (numberedMatch) {
+    return truncateMessage(numberedMatch[1].trim(), 140);
+  }
+  return null;
+}
+
+function extractKeywordLines(lines: string[], keywords: string[]): string[] {
+  const loweredKeywords = keywords.map((keyword) => keyword.toLowerCase());
+  const out: string[] = [];
+  for (const rawLine of lines) {
+    const normalized = rawLine.trim();
+    if (normalized.length < 6) {
+      continue;
+    }
+    const lower = normalized.toLowerCase();
+    if (!loweredKeywords.some((keyword) => lower.includes(keyword))) {
+      continue;
+    }
+    const cleaned = normalized.replace(/^[-*+]\s+/, '').replace(/^\d+\.\s+/, '');
+    if (!out.includes(cleaned)) {
+      out.push(truncateMessage(cleaned, 160));
+    }
+  }
+  return out;
+}
+
+function chunkArray<T>(values: T[], chunkSize: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < values.length; i += chunkSize) {
+    chunks.push(values.slice(i, i + chunkSize));
+  }
+  return chunks;
 }
 
 function truncateMessage(value: string, maxLength: number): string {

@@ -159,7 +159,7 @@ export class Orchestrator {
       promptsDir: join(config.cwd, 'prompts'),
       model: this.modelRouter.getModel('planner'),
       effort: config.managerEffort ?? 'high',
-      requestTimeoutMs: 180_000,
+      requestTimeoutMs: 900_000,
       suppressTerminalOutput: config.runtimeUIMode === 'tui',
     };
     this.manager = new ManagerAgent(managerConfig);
@@ -1529,12 +1529,17 @@ function extractGoalFromPrd(prd: string | null): string | null {
   }
 
   const lines = prd.split(/\r?\n/);
-  const heading = lines.find((line) => /^\s{0,3}#{1,6}\s+\S/.test(line));
-  if (heading) {
-    const goal = heading.replace(/^\s{0,3}#{1,6}\s+/, '').trim();
-    if (goal.length > 0) {
-      return truncateMessage(goal, 160);
-    }
+  const generic = new Set(['概要', '背景', '背景・動機', '目的', 'summary', 'overview', 'background', 'goal']);
+  const headings = lines
+    .filter((line) => /^\s{0,3}#{1,6}\s+\S/.test(line))
+    .map((line) => line.replace(/^\s{0,3}#{1,6}\s+/, '').trim())
+    .filter((line) => line.length > 0);
+  const preferred = headings.find((heading) => !generic.has(heading.toLowerCase()));
+  if (preferred) {
+    return truncateMessage(preferred, 160);
+  }
+  if (headings[0]) {
+    return truncateMessage(headings[0], 160);
   }
 
   const firstText = lines.find((line) => line.trim().length > 0);
@@ -1595,11 +1600,7 @@ function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
     }
     lines.push('');
   }
-
-  lines.push('Raw TASK.json');
-  lines.push('```json');
-  lines.push(...JSON.stringify(missionPlan, null, 2).split(/\r?\n/));
-  lines.push('```');
+  lines.push('Tip: Open TASK.json directly for raw JSON if needed.');
   return lines;
 }
 
