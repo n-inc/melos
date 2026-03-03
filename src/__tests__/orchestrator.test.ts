@@ -495,6 +495,100 @@ describe('Orchestrator v0.8', () => {
     expect(flattened.some((message) => message.includes('echo after snapshot'))).toBe(true);
   });
 
+  it('resumes safely from snapshot that lacks logEntries when no replay events exist', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-resume-no-logentries-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Resume mission\n', 'utf-8');
+
+    const completedPlan = createMissionPlan({
+      missionId: 'resume-no-logentries',
+      goal: 'Resume without logEntries',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['No crash'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Done',
+          description: 'Already done',
+          order: 1,
+          status: 'done',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'done',
+              status: 'done',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'completed',
+    });
+    writeFileSync(missionPath, `${JSON.stringify(completedPlan, null, 2)}\n`, 'utf-8');
+
+    const eventsPath = join(melosDir, 'events.jsonl');
+    writeFileSync(eventsPath, [
+      JSON.stringify({
+        seq: 1,
+        type: 'mission_started',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        iteration: 0,
+        agent: 'orchestrator',
+        payload: { message: 'start' },
+      }),
+      '',
+    ].join('\n'), 'utf-8');
+
+    writeFileSync(join(melosDir, 'state.json'), JSON.stringify({
+      seq: 1,
+      savedAt: '2026-01-01T00:00:01.500Z',
+      state: {
+        kernel: {
+          missionPlan: completedPlan,
+          iteration: 1,
+          workerRuns: [],
+          progressLog: [],
+          activeWorkerRunId: null,
+          gitStrategy: null,
+          tokenUsage: {
+            total: { input: 0, output: 0, cached: 0, cost: 0 },
+            byRole: {},
+          },
+        },
+      },
+    }, null, 2), 'utf-8');
+
+    const snapshots: MissionControlState[] = [];
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 3,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: true,
+      onStatusUpdate: async (state) => {
+        snapshots.push(state);
+      },
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe('completed');
+    expect(snapshots.length).toBeGreaterThan(0);
+  });
+
   it('recovers aborted mission state on resume and continues from pending feature', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-resume-aborted-'));
     const melosDir = join(cwd, '.melos');

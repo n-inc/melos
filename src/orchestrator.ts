@@ -424,7 +424,7 @@ export class Orchestrator {
     if (this.config.resume) {
       const snapshot = await loadSnapshot<{ kernel: MissionKernelState }>(this.config.melosDir);
       if (snapshot?.state?.kernel) {
-        this.kernelState = snapshot.state.kernel;
+        this.kernelState = normalizeKernelState(snapshot.state.kernel);
         const replayEvents = this.eventLog.readAfter(snapshot.seq);
         for (const event of replayEvents) {
           this.kernelState = reduceMissionEvent(this.kernelState, event);
@@ -2162,4 +2162,28 @@ function recoverMissionPlanForResume(plan: MissionPlan): MissionPlan {
   const activeFeature = activeMilestone ? getNextPendingFeature(activeMilestone) : null;
   recovered = setActiveFeature(recovered, activeFeature?.id ?? null);
   return recovered;
+}
+
+function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
+  const base = createInitialKernelState();
+  const workerRuns = Array.isArray(kernel.workerRuns)
+    ? kernel.workerRuns.map((run) => ({
+      ...run,
+      log: Array.isArray(run.log) ? run.log : [],
+    }))
+    : [];
+  const progressLog = Array.isArray(kernel.progressLog) ? kernel.progressLog : [];
+  const managerLog = Array.isArray(kernel.managerLog) ? kernel.managerLog : [];
+  const logEntries = Array.isArray(kernel.logEntries) ? kernel.logEntries : [];
+
+  return {
+    ...base,
+    ...kernel,
+    workerRuns,
+    progressLog,
+    managerLog,
+    logEntries,
+    currentActor: kernel.currentActor ?? 'idle',
+    tokenUsage: kernel.tokenUsage ?? base.tokenUsage,
+  };
 }
