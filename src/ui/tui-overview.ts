@@ -72,11 +72,18 @@ export const overviewView: TUIView = {
       progressLines.push(state.activity || 'No events yet');
     }
 
+    const logModeLine = state.missionState === 'awaiting_approval'
+      ? 'Live Stream: paused (awaiting approval: press y)'
+      : state.missionState === 'running'
+        ? 'Live Stream: worker details in Workers view (W)'
+        : 'Live Stream: mission event history';
+
     const rightLines = [
       'Features',
       ...(featureLines.length > 0 ? featureLines : ['-']),
       '',
       'Progress Log (mission events)',
+      logModeLine,
       ...progressLines,
     ];
 

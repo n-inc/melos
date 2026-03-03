@@ -37,6 +37,12 @@ export const featuresView: TUIView = {
       recentLogLines.push(state.activity || 'No mission events yet');
     }
 
+    const logModeLine = state.missionState === 'awaiting_approval'
+      ? 'Log mode: history only (awaiting approval: press y)'
+      : state.missionState === 'running'
+        ? 'Log mode: worker stream in Workers view (W)'
+        : 'Log mode: mission event history';
+
     const right = [
       'Details',
       `Active Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
@@ -45,7 +51,8 @@ export const featuresView: TUIView = {
       `Activity: ${state.activity}`,
       `Progress: ${state.progressLabel}`,
       '',
-      'Recent Log',
+      'Recent Log (events)',
+      logModeLine,
       ...recentLogLines,
       '',
       'Hint: Worker execution log is in Workers view (W).',

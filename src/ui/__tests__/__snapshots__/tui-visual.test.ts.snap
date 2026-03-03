@@ -13,11 +13,11 @@ exports[`ui/tui visual snapshots awaiting approval frame snapshot (input require
 ║ Activity: Running m1-f2...                              │  ○ m2-f1 Run validations             … ║
 ║ Progress: 2/4 (50%)                                     │                                      … ║
 ║ Branch: melos/mission/m1-f2                             │ Progress Log (mission events)        … ║
-║                                                         │ 09:00:00 mission run started         … ║
-║ Expected Behavior                                       │ 09:00:05 Planning mission...         … ║
-║   Implement parser and CLI options                      │ 09:00:10 worker #1 started           … ║
+║                                                         │ Live Stream: paused (awaiting approva… ║
+║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
+║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
+║                                                         │ 09:00:10 worker #1 started           … ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
-
 
 
 
@@ -78,10 +78,10 @@ exports[`ui/tui visual snapshots narrow terminal snapshot (80x24) 1`] = `
 ║ State: running                              │  ○ m2-f1 Run validations     … ║
 ║ Activity: Running m1-f2...                  │                              … ║
 ║ Progress: 2/4 (50%)                         │ Progress Log (mission events)… ║
-║ Branch: melos/mission/m1-f2                 │ 09:00:00 mission run started … ║
-║                                             │ 09:00:05 Planning mission... … ║
-║ Expected Behavior                           │ 09:00:10 worker #1 started   … ║
-║   Implement parser and CLI options          │                              … ║
+║ Branch: melos/mission/m1-f2                 │ Live Stream: worker details i… ║
+║                                             │ 09:00:00 mission run started … ║
+║ Expected Behavior                           │ 09:00:05 Planning mission... … ║
+║   Implement parser and CLI options          │ 09:00:10 worker #1 started   … ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 
@@ -106,11 +106,11 @@ exports[`ui/tui visual snapshots overview frame snapshot 1`] = `
 ║ Activity: Running m1-f2...                              │  ○ m2-f1 Run validations             … ║
 ║ Progress: 2/4 (50%)                                     │                                      … ║
 ║ Branch: melos/mission/m1-f2                             │ Progress Log (mission events)        … ║
-║                                                         │ 09:00:00 mission run started         … ║
-║ Expected Behavior                                       │ 09:00:05 Planning mission...         … ║
-║   Implement parser and CLI options                      │ 09:00:10 worker #1 started           … ║
+║                                                         │ Live Stream: worker details in Worker… ║
+║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
+║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
+║                                                         │ 09:00:10 worker #1 started           … ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
-
 
 
 

@@ -21,6 +21,7 @@ export const workersView: TUIView = {
     );
 
     const selected = state.workerRuns[state.workerRuns.length - 1];
+    const waitingForApproval = state.missionState === 'awaiting_approval';
     const activeWorkerLines = selected
       ? [
         `#${selected.id} ${selected.status} ${selected.durationLabel}`,
@@ -29,7 +30,12 @@ export const workersView: TUIView = {
         `Engine: ${selected.engine ?? '-'}`,
         `Model: ${selected.model ?? '-'}`,
       ]
-      : ['No active worker'];
+      : waitingForApproval
+        ? [
+          'No active worker (execution has not started)',
+          'Approve mission first: press y',
+        ]
+        : ['No active worker'];
 
     const maxLogLines = Math.max(8, viewport.height - 16);
     const logLines = selected
@@ -39,10 +45,16 @@ export const workersView: TUIView = {
           'No structured worker events yet.',
           `Current activity: ${state.activity}`,
         ])
-      : [
-        'No worker logs yet.',
-        `Current activity: ${state.activity}`,
-      ];
+      : waitingForApproval
+        ? [
+          'Worker log stream is idle while awaiting approval.',
+          'Approve mission first: press y',
+          `Current activity: ${state.activity}`,
+        ]
+        : [
+          'No worker logs yet.',
+          `Current activity: ${state.activity}`,
+        ];
 
     return [
       ...drawBox('Workers', table, viewport.width),
