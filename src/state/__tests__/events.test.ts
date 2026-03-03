@@ -110,4 +110,22 @@ describe('event sourcing', () => {
     expect(messages.some((message) => message.startsWith('validation_started:'))).toBe(true);
     expect(state.managerLog?.some((entry) => entry.message.includes('Planning mission...'))).toBe(true);
   });
+
+  it('returns null snapshot when state.json does not exist', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-events-no-snapshot-'));
+    const snapshot = await loadSnapshot(dir);
+    expect(snapshot).toBeNull();
+  });
+
+  it('creates snapshot directory on save when missing', async () => {
+    const dir = join(tmpdir(), `melos-events-save-${Date.now()}`);
+    const state = replayMissionEvents([]);
+    await saveSnapshot(dir, {
+      seq: 1,
+      savedAt: new Date().toISOString(),
+      state: { kernel: state },
+    });
+    const snapshot = await loadSnapshot<{ kernel: typeof state }>(dir);
+    expect(snapshot?.seq).toBe(1);
+  });
 });

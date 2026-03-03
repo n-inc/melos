@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -16,6 +16,7 @@ export async function saveSnapshot<TState>(
   melosDir: string,
   snapshot: MissionSnapshot<TState>
 ): Promise<void> {
+  mkdirSync(melosDir, { recursive: true });
   await writeFile(getSnapshotPath(melosDir), `${JSON.stringify(snapshot, null, 2)}\n`, 'utf-8');
 }
 
@@ -27,6 +28,16 @@ export async function loadSnapshot<TState>(
     return null;
   }
 
-  const raw = await readFile(path, 'utf-8');
-  return JSON.parse(raw) as MissionSnapshot<TState>;
+  try {
+    const raw = await readFile(path, 'utf-8');
+    return JSON.parse(raw) as MissionSnapshot<TState>;
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code)
+      : '';
+    if (code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
 }

@@ -133,6 +133,7 @@ export class Orchestrator {
   private pendingPrompt: string | null = null;
   private activityLabel = '';
   private statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private managerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -294,6 +295,7 @@ export class Orchestrator {
         clearTimeout(this.statusRefreshTimer);
         this.statusRefreshTimer = null;
       }
+      this.stopManagerHeartbeat();
       await this.persistRuntimeState();
       await this.emitStatusUpdate();
     }
@@ -490,25 +492,34 @@ export class Orchestrator {
       phase: 'planning',
       message: `Planning mission with manager model (${this.modelRouter.getModel('planner')})`,
     });
+    this.startManagerHeartbeat({
+      phase: 'planning',
+      message: 'Manager is planning mission',
+    });
     await this.emitStatusUpdate();
 
-    const generated = await this.manager.generateMissionPlan({
-      missionId: this.resolveMissionId(),
-      prd: this.state.prd,
-      interactiveGoal: this.config.interactivePlanning ? current.mission.goal : undefined,
-      approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
-      prdFile: this.config.prdFile,
-      onAppServerEvent: (method, params) => {
-        const detail = formatAgentEventDetail(method, params);
-        if (!detail) {
-          return;
-        }
-        this.emitEvent('manager_decision', 'manager', {
-          phase: 'planning',
-          message: `planning: ${detail}`,
-        });
-      },
-    });
+    let generated: MissionPlan;
+    try {
+      generated = await this.manager.generateMissionPlan({
+        missionId: this.resolveMissionId(),
+        prd: this.state.prd,
+        interactiveGoal: this.config.interactivePlanning ? current.mission.goal : undefined,
+        approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
+        prdFile: this.config.prdFile,
+        onAppServerEvent: (method, params) => {
+          const detail = formatAgentEventDetail(method, params);
+          if (!detail) {
+            return;
+          }
+          this.emitEvent('manager_decision', 'manager', {
+            phase: 'planning',
+            message: `planning: ${detail}`,
+          });
+        },
+      });
+    } finally {
+      this.stopManagerHeartbeat();
+    }
 
     const withPhase = transitionMissionState(generated, 'awaiting_approval');
     const activeMilestone = getNextPendingMilestone(withPhase);
@@ -616,20 +627,43 @@ export class Orchestrator {
       throw new Error(`Active feature context not found: ${pendingMilestone.id}/${nextFeature.id}`);
     }
 
-    const briefing = await this.manager.generateFeatureBriefing({
-      ...this.buildManagerInput(updatedMilestone, updatedFeature),
-      onAppServerEvent: (method, params) => {
-        const detail = formatAgentEventDetail(method, params);
-        if (!detail) {
-          return;
-        }
-        this.emitEvent('manager_decision', 'manager', {
-          action: 'briefing',
-          milestoneId: updatedMilestone.id,
-          featureId: updatedFeature.id,
-          message: detail,
-        });
-      },
+    this.emitEvent('manager_started', 'manager', {
+      phase: 'briefing',
+      milestoneId: updatedMilestone.id,
+      featureId: updatedFeature.id,
+      message: `Manager started feature briefing for ${updatedFeature.id}`,
+    });
+    this.startManagerHeartbeat({
+      phase: 'briefing',
+      milestoneId: updatedMilestone.id,
+      featureId: updatedFeature.id,
+      message: `Manager is preparing briefing for ${updatedFeature.id}`,
+    });
+    let briefing: string | undefined;
+    try {
+      briefing = await this.manager.generateFeatureBriefing({
+        ...this.buildManagerInput(updatedMilestone, updatedFeature),
+        onAppServerEvent: (method, params) => {
+          const detail = formatAgentEventDetail(method, params);
+          if (!detail) {
+            return;
+          }
+          this.emitEvent('manager_decision', 'manager', {
+            action: 'briefing',
+            milestoneId: updatedMilestone.id,
+            featureId: updatedFeature.id,
+            message: detail,
+          });
+        },
+      });
+    } finally {
+      this.stopManagerHeartbeat();
+    }
+    this.emitEvent('manager_decision', 'manager', {
+      action: 'briefing',
+      milestoneId: updatedMilestone.id,
+      featureId: updatedFeature.id,
+      message: `Manager finished feature briefing for ${updatedFeature.id}`,
     });
     this.emitEvent('manager_decision', 'manager', {
       action: 'dispatch_feature',
@@ -1271,6 +1305,34 @@ export class Orchestrator {
       void this.emitStatusUpdate();
     }, 60);
     this.statusRefreshTimer.unref();
+  }
+
+  private startManagerHeartbeat(input: {
+    phase: 'planning' | 'briefing' | 'followup';
+    message: string;
+    milestoneId?: string;
+    featureId?: string;
+  }): void {
+    this.stopManagerHeartbeat();
+    const startedAt = Date.now();
+    this.managerHeartbeatTimer = setInterval(() => {
+      const elapsedSec = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+      this.emitEvent('manager_decision', 'manager', {
+        phase: input.phase,
+        milestoneId: input.milestoneId,
+        featureId: input.featureId,
+        message: `${input.message} (${elapsedSec}s elapsed)`,
+      });
+    }, 5_000);
+    this.managerHeartbeatTimer.unref();
+  }
+
+  private stopManagerHeartbeat(): void {
+    if (!this.managerHeartbeatTimer) {
+      return;
+    }
+    clearInterval(this.managerHeartbeatTimer);
+    this.managerHeartbeatTimer = null;
   }
 
   private async emitStatusUpdate(): Promise<void> {
