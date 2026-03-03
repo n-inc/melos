@@ -7,6 +7,7 @@ import { WorkerAgent, type WorkerAgentConfig } from './agents/worker.js';
 import type { ManagerInput, WorkerFeatureReport, WorkerInput, WorkerResult } from './agents/types.js';
 import {
   type MissionPlan,
+  type MissionState,
   type Milestone,
   type Feature,
   missionFileExists,
@@ -434,6 +435,11 @@ export class Orchestrator {
 
     if (missionFileExists(this.config.missionFile)) {
       this.state.missionPlan = await loadMissionPlan(this.config.missionFile);
+      if (this.state.missionPlan && this.config.resume && isRecoverableResumeState(this.state.missionPlan.state)) {
+        this.state.missionPlan = recoverMissionPlanForResume(this.state.missionPlan);
+        this.activityLabel = 'Resuming interrupted mission from the next actionable feature...';
+        await saveMissionPlan(this.config.missionFile, this.state.missionPlan);
+      }
     }
 
     if (!this.state.missionPlan) {
@@ -2094,4 +2100,34 @@ function mapEscalationSingleKey(value: string): 'retry' | 'skip' | 'abort' | 'mo
     default:
       return null;
   }
+}
+
+function isRecoverableResumeState(state: MissionState): boolean {
+  return state === 'aborted' || state === 'paused';
+}
+
+function recoverMissionPlanForResume(plan: MissionPlan): MissionPlan {
+  const now = new Date().toISOString();
+  let recovered: MissionPlan = {
+    ...plan,
+    state: 'running',
+    lastTransitionAt: now,
+    milestones: plan.milestones.map((milestone) => ({
+      ...milestone,
+      status: milestone.status === 'done' || milestone.status === 'skipped'
+        ? milestone.status
+        : 'in_progress',
+      features: milestone.features.map((feature) => ({
+        ...feature,
+        status: feature.status === 'done' || feature.status === 'skipped'
+          ? feature.status
+          : 'pending',
+      })),
+    })),
+  };
+  const activeMilestone = getNextPendingMilestone(recovered);
+  recovered = setActiveMilestone(recovered, activeMilestone?.id ?? null);
+  const activeFeature = activeMilestone ? getNextPendingFeature(activeMilestone) : null;
+  recovered = setActiveFeature(recovered, activeFeature?.id ?? null);
+  return recovered;
 }

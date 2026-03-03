@@ -494,6 +494,79 @@ describe('Orchestrator v0.8', () => {
     expect(flattened.some((message) => message.includes('echo after snapshot'))).toBe(true);
   });
 
+  it('recovers aborted mission state on resume and continues from pending feature', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-resume-aborted-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Resume aborted mission\n', 'utf-8');
+
+    const abortedPlan = createMissionPlan({
+      missionId: 'resume-aborted',
+      goal: 'Resume from interrupted feature',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['Mission completes after resume'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'work', status: 'in_progress', attempts: 1, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'aborted',
+    });
+    writeFileSync(missionPath, `${JSON.stringify(abortedPlan, null, 2)}\n`, 'utf-8');
+
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 2,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'resumed',
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: true,
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe('completed');
+  });
+
   it('cycles model assignment for a role from Mission Control command', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-model-cycle-'));
     const melosDir = join(cwd, '.melos');

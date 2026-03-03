@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { Orchestrator, type OrchestratorConfig } from './orchestrator.js';
 import { loadConfig, type MelosConfig } from './config/index.js';
-import { loadMissionPlan, type MissionState } from './state/mission.js';
+import { loadMissionPlan, type MissionPlan, type MissionState } from './state/mission.js';
 import {
   clearRuntime,
   isProcessAlive,
@@ -39,6 +39,7 @@ export type KillCommandResult =
   | { status: 'stale'; pid: number };
 
 const ARCHIVE_ON_RUN_STATES = new Set<MissionState>(['completed', 'failed', 'aborted']);
+const AUTO_RESUME_ON_RUN_STATES = new Set<MissionState>(['paused', 'aborted']);
 
 interface SignalControllerHooks {
   abort: () => void;
@@ -198,13 +199,21 @@ export async function executeWithOptions(
   const missionFilePath = join(cwd, 'TASK.json');
   const prdFilePath = join(cwd, 'PRD.md');
 
+  const autoResumeState = runtimeOptions.resume
+    ? null
+    : await detectResumableMissionState(missionFilePath);
+  const effectiveResume = runtimeOptions.resume || autoResumeState !== null;
+
   const preflightMessages = await prepareRunPreflight({
     cwd,
     melosDir,
     missionFilePath,
     prdFilePath,
-    resume: runtimeOptions.resume,
+    resume: effectiveResume,
   });
+  if (autoResumeState) {
+    preflightMessages.unshift(`TASK.json の状態 ${autoResumeState} を検出したため、自動で再開モードに切り替えます。`);
+  }
   for (const message of preflightMessages) {
     process.stderr.write(`[melos] ${message}\n`);
   }
@@ -235,7 +244,7 @@ export async function executeWithOptions(
     interactivePlanning: options.interactive === true,
     autoApprove: options.autoApprove === true,
     dryRun: options.dryRun === true,
-    resume: runtimeOptions.resume,
+    resume: effectiveResume,
     missionId: options.missionId,
     runtimeUIMode: uiMode,
     gitStrategy: resolveGitStrategy(options, fileConfig),
@@ -341,21 +350,35 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
     return messages;
   }
 
+  let missionPlan: MissionPlan;
   try {
-    const missionPlan = await loadMissionPlan(input.missionFilePath);
-    if (!ARCHIVE_ON_RUN_STATES.has(missionPlan.state)) {
-      return messages;
-    }
-    throw new Error([
-      `TASK.json は終了状態 (${missionPlan.state}) のため、そのままでは新規ミッションを開始しません。`,
-      'TASK.json を手動で更新してから再実行してください。',
-    ].join('\n'));
+    missionPlan = await loadMissionPlan(input.missionFilePath);
   } catch (error) {
     const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
     throw new Error([
       `TASK.json の読み込みに失敗したため、実行を停止しました: ${reason}`,
       'TASK.json を修正してから再実行してください。',
     ].join('\n'));
+  }
+
+  if (!ARCHIVE_ON_RUN_STATES.has(missionPlan.state)) {
+    return messages;
+  }
+  throw new Error([
+    `TASK.json は終了状態 (${missionPlan.state}) のため、そのままでは新規ミッションを開始しません。`,
+    'TASK.json を手動で更新してから再実行してください。',
+  ].join('\n'));
+}
+
+export async function detectResumableMissionState(missionFilePath: string): Promise<MissionState | null> {
+  if (!existsSync(missionFilePath)) {
+    return null;
+  }
+  try {
+    const missionPlan = await loadMissionPlan(missionFilePath);
+    return AUTO_RESUME_ON_RUN_STATES.has(missionPlan.state) ? missionPlan.state : null;
+  } catch {
+    return null;
   }
 }
 
