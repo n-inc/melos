@@ -338,4 +338,94 @@ describe('ManagerAgent', () => {
     expect(plan.mission.goal).toBe('ペルソナLP実装');
     expect(plan.milestones[0]?.features[0]?.description).toBe('ルーティング実装');
   });
+
+  it('adds phase-based sizing guidance to planning prompt', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.3-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    const executeSpy = jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Auth system',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Tests pass'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Core',
+            description: 'Implement core',
+            validationContract: { staticChecks: [], testSuites: [] },
+            features: [{ id: 'm1-f1', description: 'Implement auth', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    await agent.generateMissionPlan({
+      missionId: 'size-guidance',
+      prd: '# Auth system',
+    });
+
+    const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
+    expect(prompt).toContain('Prefer 2-3 milestones (phases)');
+    expect(prompt).toContain('For large implementations, keep phase count compact but allow sufficient features');
+  });
+
+  it('coarsens overly fragmented milestone features without hard total cap', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.3-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    const oversizedMilestones = Array.from({ length: 3 }, (_, milestoneIdx) => ({
+      id: `m${milestoneIdx + 1}`,
+      title: `Milestone ${milestoneIdx + 1}`,
+      description: `Description ${milestoneIdx + 1}`,
+      validationContract: { staticChecks: [], testSuites: [] },
+      features: Array.from({ length: 6 }, (_, featureIdx) => ({
+        id: `m${milestoneIdx + 1}-f${featureIdx + 1}`,
+        description: `Feature ${milestoneIdx + 1}-${featureIdx + 1}`,
+        model: 'codex',
+      })),
+    }));
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Large mission',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['All validations pass'],
+        milestones: oversizedMilestones,
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'coarsen-plan',
+      prd: '# Large mission',
+    });
+
+    expect(plan.milestones).toHaveLength(3);
+    expect(plan.milestones.every((milestone) => milestone.features.length <= 5)).toBe(true);
+  });
 });

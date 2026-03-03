@@ -68,6 +68,9 @@ interface LocalizedFallbackTemplate {
   featureFallbackDescription: string;
 }
 
+const MAX_MILESTONES_PER_PLAN = 3;
+const MAX_FEATURES_PER_MILESTONE = 5;
+
 export class ManagerAgent implements Agent {
   readonly name = 'manager';
   readonly mode: AgentMode = 'manager';
@@ -423,7 +426,11 @@ export class ManagerAgent implements Agent {
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
-      '- Provide at least 3 milestones when possible',
+      '- Prefer 2-3 milestones (phases). Split larger scope into Phase 1/2/3 at most.',
+      '- Keep each milestone focused by avoiding too many tiny features in one milestone.',
+      '- For large implementations, keep phase count compact but allow sufficient features when necessary.',
+      '- One feature must represent a cohesive implementation slice that can be completed in one focused worker session.',
+      '- If scope is too large, fold details into phase descriptions and keep executable features compact.',
       '- Each milestone requires validationContract with executable commands where possible',
       '- Feature IDs must follow mX-fY',
       '',
@@ -717,7 +724,9 @@ function normalizePlanningOutput(value: unknown): MissionPlanningOutput | null {
   const successCriteria = toStringArray(root.successCriteria).length > 0
     ? toStringArray(root.successCriteria)
     : toStringArray(mission?.successCriteria);
-  const rawMilestones = Array.isArray(root.milestones) ? root.milestones : [];
+  const rawMilestones = Array.isArray(root.milestones)
+    ? root.milestones.slice(0, MAX_MILESTONES_PER_PLAN)
+    : [];
 
   if (!goal || rawMilestones.length === 0) {
     return null;
@@ -760,7 +769,8 @@ function normalizePlanningMilestone(
   const features = rawFeatures
     .map((rawFeature, featureIndex) => normalizePlanningFeature(rawFeature, milestoneIndex, featureIndex))
     .filter((feature): feature is MissionPlanningOutput['milestones'][number]['features'][number] => feature !== null);
-  if (features.length === 0) {
+  const coarsenedFeatures = coarsenPlanningFeatures(features, MAX_FEATURES_PER_MILESTONE);
+  if (coarsenedFeatures.length === 0) {
     return null;
   }
 
@@ -769,7 +779,7 @@ function normalizePlanningMilestone(
     title,
     description,
     validationContract: normalizeValidationContract(milestone.validationContract),
-    features,
+    features: coarsenedFeatures,
   };
 }
 
@@ -813,6 +823,35 @@ function normalizePlanningFeatureChecks(value: unknown): Array<{ text: string; t
     checks.push(type ? { text, type } : { text });
   }
   return checks.length > 0 ? checks : undefined;
+}
+
+function coarsenPlanningFeatures(
+  features: MissionPlanningOutput['milestones'][number]['features'],
+  maxFeatures: number
+): MissionPlanningOutput['milestones'][number]['features'] {
+  if (features.length <= maxFeatures) {
+    return features;
+  }
+  const chunkSize = Math.max(2, Math.ceil(features.length / maxFeatures));
+  return chunkArray(features, chunkSize).map((chunk) => mergePlanningFeatureChunk(chunk));
+}
+
+function mergePlanningFeatureChunk(
+  chunk: MissionPlanningOutput['milestones'][number]['features']
+): MissionPlanningOutput['milestones'][number]['features'][number] {
+  const description = truncateMessage(
+    chunk
+      .map((feature) => normalizeFeatureDescription(feature.description))
+      .filter((text) => text.length > 0)
+      .join(' / '),
+    280
+  );
+  const checks = chunk.flatMap((feature) => feature.checks ?? []);
+  return {
+    description,
+    model: chunk.some((feature) => feature.model === 'claude') ? 'claude' : 'codex',
+    checks: checks.length > 0 ? checks.slice(0, 10) : undefined,
+  };
 }
 
 function normalizeValidationContract(value: unknown): MissionPlanningOutput['milestones'][number]['validationContract'] | undefined {
@@ -948,12 +987,13 @@ function deriveFallbackPlanFromPrd(
     }))
     .filter((section) => section.bullets.length > 0 || section.descriptionLine.length > 0);
 
-  let milestones = sections.slice(0, 5).map((section, index) => {
-    const features = (section.bullets.length > 0
+  let milestones = sections.slice(0, MAX_MILESTONES_PER_PLAN).map((section, index) => {
+    const rawFeatures = (section.bullets.length > 0
       ? section.bullets
       : [truncateMessage(section.descriptionLine.trim(), 120)])
       .slice(0, 5)
       .filter((text) => text.length > 0);
+    const features = coarsenFallbackFeatureDescriptions(rawFeatures, MAX_FEATURES_PER_MILESTONE);
     return {
       title: section.title,
       description: section.descriptionLine.trim().length > 0
@@ -987,6 +1027,14 @@ function deriveFallbackPlanFromPrd(
     successCriteria,
     milestones,
   };
+}
+
+function coarsenFallbackFeatureDescriptions(features: string[], maxFeatures: number): string[] {
+  if (features.length <= maxFeatures) {
+    return features;
+  }
+  const chunkSize = Math.max(2, Math.ceil(features.length / maxFeatures));
+  return chunkArray(features, chunkSize).map((chunk) => truncateMessage(chunk.join(' / '), 260));
 }
 
 function parsePrdSections(lines: string[]): Array<{ title: string; lines: string[] }> {

@@ -102,6 +102,88 @@ describe('Orchestrator v0.8', () => {
     expect(result.reason).toBe('completed');
   });
 
+  it('keeps codex resume thread at mission scope across multiple features', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-mission-thread-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Mission thread reuse\n\nImplement multiple features.', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'mission-thread',
+      goal: 'Mission thread reuse',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['all done'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Two features',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            { id: 'm1-f1', description: 'Feature 1', status: 'pending', attempts: 0, model: 'codex' },
+            { id: 'm1-f2', description: 'Feature 2', status: 'pending', attempts: 0, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    const runSpy = jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
+        status: 'SUCCESS',
+        summary: `done ${input.feature.id}`,
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    }));
+    jest.spyOn(WorkerAgent.prototype, 'getActiveThreadId').mockReturnValue('thr_shared');
+    const resumeSpy = jest.spyOn(WorkerAgent.prototype, 'setResumeSession');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(runSpy).toHaveBeenCalledTimes(2);
+    expect(resumeSpy).toHaveBeenCalledWith('thr_shared', 'mission-thread');
+    expect(resumeSpy.mock.calls.filter(([threadId, missionId]) => threadId === 'thr_shared' && missionId === 'mission-thread')).toHaveLength(2);
+  });
+
   it('exposes full PRD/TASK content and streams manager logs during planning', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-doc-stream-'));
     const melosDir = join(cwd, '.melos');

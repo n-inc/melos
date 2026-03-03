@@ -994,6 +994,13 @@ export class Orchestrator {
 
     const result = await this.worker.run(workerInput);
     this.watchdog.touch();
+    if (selectedWorkerEngine === 'codex') {
+      const activeThreadId = this.worker.getActiveThreadId();
+      if (activeThreadId) {
+        const missionId = this.requireMissionPlan().mission.id ?? this.resolveMissionId();
+        this.worker.setResumeSession(activeThreadId, missionId);
+      }
+    }
 
     if (branchName && this.state.gitStrategy) {
       result.report.summary = await this.runGitPostProcess(branchName, baseBranch ?? this.state.gitStrategy.config.baseBranch, result.report);

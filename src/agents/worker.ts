@@ -26,7 +26,7 @@ export interface WorkerAgentConfig {
   claudeEffort?: 'low' | 'medium' | 'high' | 'max';
   suppressTerminalOutput?: boolean;
   resumeThreadId?: string;
-  resumeFeatureId?: string;
+  resumeMissionId?: string;
 }
 
 export class WorkerAgent implements Agent {
@@ -37,7 +37,7 @@ export class WorkerAgent implements Agent {
   private claudeEngine: ClaudeEngine;
   private config: WorkerAgentConfig;
   private resumeThreadId: string | null;
-  private resumeFeatureId: string | null;
+  private resumeMissionId: string | null;
   private activeEngine: 'codex' | 'claude' | null = null;
 
   constructor(config: WorkerAgentConfig) {
@@ -45,7 +45,7 @@ export class WorkerAgent implements Agent {
     this.engine = new AppServerEngine();
     this.claudeEngine = new ClaudeEngine();
     this.resumeThreadId = config.resumeThreadId ?? null;
-    this.resumeFeatureId = config.resumeFeatureId ?? null;
+    this.resumeMissionId = config.resumeMissionId ?? null;
   }
 
   async run(input: WorkerInput): Promise<WorkerResult> {
@@ -135,9 +135,9 @@ export class WorkerAgent implements Agent {
     return this.engine.getActiveThreadId();
   }
 
-  setResumeSession(threadId: string, featureId: string): void {
+  setResumeSession(threadId: string, missionId: string): void {
     this.resumeThreadId = threadId;
-    this.resumeFeatureId = featureId;
+    this.resumeMissionId = missionId;
   }
 
   async steer(instruction: string): Promise<SteerResult> {
@@ -321,15 +321,11 @@ export class WorkerAgent implements Agent {
     callbacks: Pick<WorkerInput, 'onAgentMessageDelta' | 'onCommandOutputDelta' | 'onAppServerEvent'> = {}
   ): AppServerEngineOptions {
     const shouldResume = this.resumeThreadId !== null
-      && this.resumeFeatureId !== null
-      && this.resumeFeatureId === input.feature.id;
+      && this.resumeMissionId !== null
+      && this.resumeMissionId === input.missionPlan.mission.id;
     const threadId = shouldResume && this.resumeThreadId
       ? this.resumeThreadId
       : undefined;
-    if (shouldResume) {
-      this.resumeThreadId = null;
-      this.resumeFeatureId = null;
-    }
 
     return {
       cwd: this.config.cwd,
