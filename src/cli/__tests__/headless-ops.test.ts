@@ -11,6 +11,7 @@ import {
 } from '../../cli.js';
 import { createMissionPlan, loadMissionPlan, saveMissionPlan } from '../../state/mission.js';
 import { saveRuntime } from '../../state/runtime.js';
+import { saveSnapshot } from '../../state/snapshot.js';
 
 describe('cli headless operations', () => {
   let rootDir: string;
@@ -67,14 +68,37 @@ describe('cli headless operations', () => {
       })}\n`,
       'utf-8'
     );
+    await saveSnapshot(join(rootDir, '.melos'), {
+      seq: 11,
+      savedAt: '2026-03-03T00:00:01.000Z',
+      state: {
+        kernel: {
+          missionPlan: mission,
+          iteration: 0,
+          workerRuns: [],
+          progressLog: [],
+          managerLog: [],
+          logEntries: [],
+          currentActor: 'manager',
+          activeWorkerRunId: null,
+          gitStrategy: null,
+          tokenUsage: {
+            total: { input: 0, output: 0, cached: 0, cost: 0 },
+            byRole: {},
+          },
+        },
+      },
+    });
 
     const status = await readMissionStatus(rootDir);
     expect(status.running).toBe(true);
     expect(status.pid).toBe(43210);
-    expect(status.missionState).toBe('running');
-    expect(status.progressLabel).toBe('1/2 (50%)');
-    expect(status.lastEventSeq).toBe(11);
-    expect(status.lastEventType).toBe('manager_decision');
+    expect(status.initialized).toBe(true);
+    expect(status.mission.state).toBe('running');
+    expect(status.mission.progress.label).toBe('1/2 (50%)');
+    expect(status.lastEvent?.seq).toBe(11);
+    expect(status.lastEvent?.type).toBe('manager_decision');
+    expect(status.cursor.nextSeq).toBe(12);
   });
 
   it('reads logs with after-seq/actor/tail filters', async () => {
@@ -114,15 +138,25 @@ describe('cli headless operations', () => {
       afterSeq: 1,
       actor: 'manager',
     });
-    expect(managerOnly).toHaveLength(1);
-    expect(managerOnly[0]?.seq).toBe(2);
+    expect(managerOnly.entries).toHaveLength(1);
+    expect(managerOnly.entries[0]?.seq).toBe(2);
+    expect(managerOnly.cursor.nextSeq).toBe(4);
 
     const tailOne = await readMissionLogs(rootDir, {
       afterSeq: 0,
       tail: 1,
     });
-    expect(tailOne).toHaveLength(1);
-    expect(tailOne[0]?.seq).toBe(3);
+    expect(tailOne.entries).toHaveLength(1);
+    expect(tailOne.entries[0]?.seq).toBe(3);
+  });
+
+  it('returns empty logs payload when events.jsonl is missing', async () => {
+    const logs = await readMissionLogs(rootDir, {
+      afterSeq: 0,
+      actor: 'all',
+    });
+    expect(logs.entries).toEqual([]);
+    expect(logs.cursor.nextSeq).toBe(0);
   });
 
   it('approve/reject update awaiting_approval mission state', async () => {
@@ -149,8 +183,7 @@ describe('cli headless operations', () => {
     expect(approveMessage).toContain('state=running');
     expect((await loadMissionPlan(missionPath)).state).toBe('running');
 
-    const noOpMessage = await applyApprovalDecision(rootDir, 'reject');
-    expect(noOpMessage).toContain('No-op');
+    await expect(applyApprovalDecision(rootDir, 'reject')).rejects.toThrow(/awaiting_approval/);
 
     await saveMissionPlan(missionPath, {
       ...(await loadMissionPlan(missionPath)),
@@ -164,8 +197,9 @@ describe('cli headless operations', () => {
   it('reports unknown mission status when TASK.json is invalid', async () => {
     writeFileSync(join(rootDir, 'TASK.json'), '{invalid', 'utf-8');
     const status = await readMissionStatus(rootDir);
-    expect(status.missionState).toBe('unknown');
-    expect(status.progressLabel).toBe('0/0 (0%)');
+    expect(status.mission.state).toBe('unknown');
+    expect(status.mission.progress.label).toBe('0/0 (0%)');
+    expect(status.warnings.some((line) => line.includes('TASK.json'))).toBe(true);
   });
 
   it('writes approval transition metadata to TASK.json', async () => {
@@ -192,5 +226,25 @@ describe('cli headless operations', () => {
     const raw = JSON.parse(readFileSync(missionPath, 'utf-8')) as { approvalMethod?: string; approvedAt?: string };
     expect(raw.approvalMethod).toBe('interactive');
     expect(typeof raw.approvedAt).toBe('string');
+  });
+
+  it('validates actor filters with explicit error', async () => {
+    writeFileSync(
+      join(rootDir, '.melos', 'events.jsonl'),
+      `${JSON.stringify({
+        seq: 1,
+        type: 'mission_started',
+        timestamp: '2026-03-03T00:00:00.000Z',
+        iteration: 0,
+        agent: 'orchestrator',
+        payload: {},
+      })}\n`,
+      'utf-8'
+    );
+
+    await expect(readMissionLogs(rootDir, {
+      afterSeq: 0,
+      actor: 'invalid-actor',
+    })).rejects.toThrow(/--actor/);
   });
 });

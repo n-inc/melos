@@ -37,6 +37,50 @@ npx melos resume
 npx melos kill
 ```
 
+## Headless Agent Runtime
+
+TUI を使わず、エージェント/スクリプトから監視・承認・停止する場合は `--headless` を使います。
+
+起動（バックグラウンド実行）:
+
+```bash
+npx melos run --headless --detach
+```
+
+再開（バックグラウンド実行）:
+
+```bash
+npx melos resume --headless --detach
+```
+
+状態取得（JSON標準 / `--plain` は補助表示）:
+
+```bash
+npx melos status
+npx melos status --plain
+```
+
+ログ取得（差分監視は `--after-seq` 推奨）:
+
+```bash
+npx melos logs --after-seq 120
+npx melos logs --tail 50 --actor worker
+npx melos logs --plain
+```
+
+承認待ち制御:
+
+```bash
+npx melos approve
+npx melos reject
+```
+
+停止:
+
+```bash
+npx melos cancel
+```
+
 ## 状態管理
 
 `.melos/` 配下に以下を保存します。

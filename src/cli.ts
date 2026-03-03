@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -20,6 +20,9 @@ import {
   saveRuntime,
   terminateProcess,
 } from './state/runtime.js';
+import { loadSnapshot } from './state/snapshot.js';
+import type { MissionEvent } from './state/events.js';
+import type { MissionKernelState } from './state/event-reducer.js';
 import { createRuntimeUI, resolveRuntimeUIMode, type SessionInfo, type TerminalCapabilities } from './ui/tui.js';
 
 export interface CLIOptions {
@@ -40,6 +43,7 @@ export interface CLIOptions {
   missionId?: string;
   headless?: boolean;
   detach?: boolean;
+  __detachedChild?: boolean;
 }
 
 export type KillCommandResult =
@@ -49,6 +53,9 @@ export type KillCommandResult =
 
 const ARCHIVE_ON_RUN_STATES = new Set<MissionState>(['completed', 'failed', 'aborted']);
 const AUTO_RESUME_ON_RUN_STATES = new Set<MissionState>(['paused', 'aborted']);
+const DETACHED_CHILD_FLAG = '--__detached-child';
+const LOG_ACTORS = ['planning', 'manager', 'worker', 'validator', 'system', 'all'] as const;
+type LogActorFilter = typeof LOG_ACTORS[number];
 
 interface SignalControllerHooks {
   abort: () => void;
@@ -136,17 +143,22 @@ export function createProgram(): Command {
     .option('--auto-approve', 'plan 承認を自動化')
     .option('--git-strategy', 'Git-as-Truth ハンドオフを有効化')
     .option('--base-branch <branch>', 'Git戦略のベースブランチ')
-    .option('--mission-id <id>', 'ミッションID');
+    .option('--mission-id <id>', 'ミッションID')
+    .addOption(new Option(DETACHED_CHILD_FLAG).hideHelp());
 
   applyCommonRunOptions(program
     .command('run')
     .description('ミッションを開始')
     .action(async (options: CLIOptions) => {
       await handleCommandAction(async () => {
-        if (options.detach) {
+        if (options.detach && !options.__detachedChild) {
+          const startedAt = new Date().toISOString();
           const pid = spawnDetachedSelf();
-          console.log(`Detached melos run started (pid: ${pid})`);
+          console.log(JSON.stringify(buildDetachedRunPayload('run', pid, startedAt), null, 2));
           return;
+        }
+        if (options.__detachedChild) {
+          options.detach = false;
         }
         await executeWithOptions(options, { resume: false });
       });
@@ -157,10 +169,14 @@ export function createProgram(): Command {
     .description('中断したミッションを再開')
     .action(async (options: CLIOptions) => {
       await handleCommandAction(async () => {
-        if (options.detach) {
+        if (options.detach && !options.__detachedChild) {
+          const startedAt = new Date().toISOString();
           const pid = spawnDetachedSelf();
-          console.log(`Detached melos resume started (pid: ${pid})`);
+          console.log(JSON.stringify(buildDetachedRunPayload('resume', pid, startedAt), null, 2));
           return;
+        }
+        if (options.__detachedChild) {
+          options.detach = false;
         }
         await executeWithOptions(options, { resume: true });
       });
@@ -186,7 +202,7 @@ export function createProgram(): Command {
     .description('イベントログを表示（デフォルトJSON）')
     .option('--after-seq <number>', 'このseqより後のイベントのみ', (value: string) => parseInt(value, 10), 0)
     .option('--tail <number>', '末尾N件のみ', (value: string) => parseInt(value, 10))
-    .option('--actor <actor>', 'actorで絞り込み (orchestrator|manager|worker|system)')
+    .option('--actor <actor>', 'actorで絞り込み (planning|manager|worker|validator|system|all)', 'all')
     .option('--plain', '人間向け表示')
     .action(async (options: { afterSeq?: number; tail?: number; actor?: string; plain?: boolean }) => {
       await handleCommandAction(async () => {
@@ -196,8 +212,12 @@ export function createProgram(): Command {
           actor: options.actor,
         });
         if (options.plain) {
-          for (const event of logs) {
-            console.log(`${event.seq} ${event.timestamp} ${event.type} ${event.agent ?? '-'} ${JSON.stringify(event.payload)}`);
+          if (logs.entries.length === 0) {
+            console.log('(no logs)');
+          } else {
+            for (const entry of logs.entries) {
+              console.log(`${entry.seq} ${entry.timestamp} [${entry.actor.toUpperCase()}][${entry.kind}] ${entry.message}`);
+            }
           }
           return;
         }
@@ -228,40 +248,48 @@ export function createProgram(): Command {
   program
     .command('cancel')
     .description('同一プロジェクトで実行中の Melos を停止（kill の同義）')
-    .action(async () => {
+    .option('--plain', '人間向け表示')
+    .action(async (options: { plain?: boolean }) => {
       await handleCommandAction(async () => {
         const result = await killMelosRun(process.cwd());
-        if (result.status === 'killed') {
-          console.log(`PID ${result.pid} に SIGTERM を送信しました。`);
-          return;
-        }
-        if (result.status === 'stale') {
-          console.error(`実行中の Melos が見つかりませんでした（stale PID: ${result.pid}）。`);
+        const payload = buildCancelPayload(result);
+        if (options.plain) {
+          if (payload.status === 'killed') {
+            console.log(payload.message);
+            return;
+          }
+          console.error(payload.message);
           process.exit(1);
           return;
         }
-        console.error('実行中の Melos が見つかりませんでした。');
-        process.exit(1);
+        console.log(JSON.stringify(payload, null, 2));
+        if (payload.status !== 'killed') {
+          process.exit(1);
+        }
       });
     });
 
   program
     .command('kill')
     .description('同一プロジェクトで実行中の Melos を停止')
-    .action(async () => {
+    .option('--plain', '人間向け表示')
+    .action(async (options: { plain?: boolean }) => {
       await handleCommandAction(async () => {
         const result = await killMelosRun(process.cwd());
-        if (result.status === 'killed') {
-          console.log(`PID ${result.pid} に SIGTERM を送信しました。`);
-          return;
-        }
-        if (result.status === 'stale') {
-          console.error(`実行中の Melos が見つかりませんでした（stale PID: ${result.pid}）。`);
+        const payload = buildCancelPayload(result);
+        if (options.plain) {
+          if (payload.status === 'killed') {
+            console.log(payload.message);
+            return;
+          }
+          console.error(payload.message);
           process.exit(1);
           return;
         }
-        console.error('実行中の Melos が見つかりませんでした。');
-        process.exit(1);
+        console.log(JSON.stringify(payload, null, 2));
+        if (payload.status !== 'killed') {
+          process.exit(1);
+        }
       });
     });
 
@@ -273,10 +301,14 @@ export async function run(argv?: string[]): Promise<void> {
 
   program.action(async (options: CLIOptions) => {
     await handleCommandAction(async () => {
-      if (options.detach) {
+      if (options.detach && !options.__detachedChild) {
+        const startedAt = new Date().toISOString();
         const pid = spawnDetachedSelf();
-        console.log(`Detached melos run started (pid: ${pid})`);
+        console.log(JSON.stringify(buildDetachedRunPayload('run', pid, startedAt), null, 2));
         return;
+      }
+      if (options.__detachedChild) {
+        options.detach = false;
       }
       await executeWithOptions(options, { resume: false });
     });
@@ -436,16 +468,38 @@ export async function executeWithOptions(
 }
 
 export interface MissionStatusPayload {
+  initialized: boolean;
+  warnings: string[];
   running: boolean;
   pid: number | null;
-  missionState: MissionState | 'unknown';
-  progressLabel: string;
-  activeMilestoneId: string | null;
-  activeFeatureId: string | null;
+  runtime: {
+    startedAt: string | null;
+    cwd: string;
+    missionFile: string;
+    melosDir: string;
+  };
+  mission: {
+    state: MissionState | 'unknown' | 'not_initialized';
+    progress: {
+      completed: number;
+      total: number;
+      percent: number;
+      label: string;
+    };
+    activeMilestoneId: string | null;
+    activeFeatureId: string | null;
+    totalIterations: number;
+  };
   pendingPrompt: string | null;
-  lastEventSeq: number;
-  lastEventType: string | null;
-  runtimeStartedAt: string | null;
+  lastEvent: {
+    seq: number;
+    type: string;
+    timestamp: string;
+    actor: Exclude<LogActorFilter, 'all'>;
+  } | null;
+  cursor: {
+    nextSeq: number;
+  };
 }
 
 export async function readMissionStatus(cwd: string): Promise<MissionStatusPayload> {
@@ -453,15 +507,20 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   const runtime = await loadRuntime(melosDir);
   const runAlive = runtime ? isProcessAlive(runtime.pid) : false;
   const missionFilePath = join(cwd, 'TASK.json');
-  let missionState: MissionState | 'unknown' = 'unknown';
-  let progressLabel = '0/0 (0%)';
+  const warnings: string[] = [];
+  let missionState: MissionState | 'unknown' | 'not_initialized' = 'not_initialized';
+  let progress = { completed: 0, total: 0, percent: 0, label: '0/0 (0%)' };
   let activeMilestoneId: string | null = null;
   let activeFeatureId: string | null = null;
+  let totalIterations = 0;
   let pendingPrompt: string | null = null;
+  let missionFromTask = false;
+  let initialized = false;
 
   if (existsSync(missionFilePath)) {
     try {
       const mission = await loadMissionPlan(missionFilePath);
+      missionFromTask = true;
       missionState = mission.state;
       const totalFeatures = mission.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
       const completedFeatures = mission.milestones.reduce(
@@ -469,92 +528,168 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
         0
       );
       const progressPercent = totalFeatures === 0 ? 0 : Math.floor((completedFeatures / totalFeatures) * 100);
-      progressLabel = `${completedFeatures}/${totalFeatures} (${progressPercent}%)`;
+      progress = {
+        completed: completedFeatures,
+        total: totalFeatures,
+        percent: progressPercent,
+        label: `${completedFeatures}/${totalFeatures} (${progressPercent}%)`,
+      };
       activeMilestoneId = mission.activeMilestoneId;
       activeFeatureId = mission.activeFeatureId;
+      totalIterations = mission.totalIterations;
+      initialized = true;
     } catch {
       missionState = 'unknown';
+      warnings.push('TASK.json の読み込みに失敗しました。');
     }
   }
 
-  const eventsPath = join(melosDir, 'events.jsonl');
-  let lastEventSeq = 0;
-  let lastEventType: string | null = null;
-  if (existsSync(eventsPath)) {
-    const lines = readFileSync(eventsPath, 'utf-8')
-      .split(/\r?\n/)
-      .filter((line) => line.trim().length > 0);
-    const last = lines[lines.length - 1];
-    if (last) {
-      try {
-        const parsed = JSON.parse(last) as { seq?: number; type?: string; payload?: { message?: string } };
-        lastEventSeq = typeof parsed.seq === 'number' ? parsed.seq : 0;
-        lastEventType = typeof parsed.type === 'string' ? parsed.type : null;
-        pendingPrompt = parsed.type === 'manager_decision'
-          && typeof parsed.payload?.message === 'string'
-          && parsed.payload.message.includes('pending input')
-          ? parsed.payload.message
-          : null;
-      } catch {
-        // noop
+  const snapshot = await loadSnapshot<{ kernel?: MissionKernelState }>(melosDir);
+  if (!snapshot) {
+    warnings.push('state.json が存在しません（未開始または初期化前）。');
+  } else {
+    const snapshotPlan = snapshot.state?.kernel?.missionPlan;
+    if (!missionFromTask && snapshotPlan) {
+      missionState = snapshotPlan.state;
+      const totalFeatures = snapshotPlan.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
+      const completedFeatures = snapshotPlan.milestones.reduce(
+        (sum, milestone) => sum + milestone.features.filter((feature) => feature.status === 'done' || feature.status === 'skipped').length,
+        0
+      );
+      const progressPercent = totalFeatures === 0 ? 0 : Math.floor((completedFeatures / totalFeatures) * 100);
+      progress = {
+        completed: completedFeatures,
+        total: totalFeatures,
+        percent: progressPercent,
+        label: `${completedFeatures}/${totalFeatures} (${progressPercent}%)`,
+      };
+      activeMilestoneId = snapshotPlan.activeMilestoneId;
+      activeFeatureId = snapshotPlan.activeFeatureId;
+      totalIterations = snapshotPlan.totalIterations;
+      initialized = true;
+    }
+  if (!pendingPrompt && snapshot.state?.kernel?.logEntries) {
+      const entries = snapshot.state.kernel.logEntries;
+      for (let idx = entries.length - 1; idx >= 0; idx -= 1) {
+        const line = entries[idx];
+        if (line?.kind === 'INPUT' || line?.kind === 'APPROVAL_WAIT') {
+          pendingPrompt = line.message;
+          break;
+        }
       }
     }
   }
 
+  const events = readEventFile(join(melosDir, 'events.jsonl'));
+  const last = events[events.length - 1] ?? null;
+  const maxSeq = last?.seq ?? 0;
+  pendingPrompt = resolvePendingPromptFromEvents(events) ?? pendingPrompt;
+  if (missionState !== 'awaiting_approval') {
+    pendingPrompt = null;
+  }
+
   return {
+    initialized,
+    warnings,
     running: runAlive,
     pid: runAlive && runtime ? runtime.pid : null,
-    missionState,
-    progressLabel,
-    activeMilestoneId,
-    activeFeatureId,
+    runtime: {
+      startedAt: runtime?.startedAt ?? null,
+      cwd,
+      missionFile: missionFilePath,
+      melosDir,
+    },
+    mission: {
+      state: missionState,
+      progress,
+      activeMilestoneId,
+      activeFeatureId,
+      totalIterations,
+    },
     pendingPrompt,
-    lastEventSeq,
-    lastEventType,
-    runtimeStartedAt: runtime?.startedAt ?? null,
+    lastEvent: last
+      ? {
+        seq: last.seq,
+        type: last.type,
+        timestamp: last.timestamp,
+        actor: deriveLogActor(last),
+      }
+      : null,
+    cursor: {
+      nextSeq: maxSeq === 0 ? 0 : maxSeq + 1,
+    },
   };
 }
 
 function formatStatusPlain(status: MissionStatusPayload): string {
-  return [
+  const lines = [
     `running=${status.running ? 'yes' : 'no'} pid=${status.pid ?? '-'}`,
-    `state=${status.missionState} progress=${status.progressLabel}`,
-    `active=${status.activeMilestoneId ?? '-'} / ${status.activeFeatureId ?? '-'}`,
-    `lastEvent=${status.lastEventSeq}:${status.lastEventType ?? '-'}`,
-  ].join('\n');
+    `state=${status.mission.state} progress=${status.mission.progress.label}`,
+    `active=${status.mission.activeMilestoneId ?? '-'} / ${status.mission.activeFeatureId ?? '-'}`,
+    `lastEvent=${status.lastEvent ? `${status.lastEvent.seq}:${status.lastEvent.type}` : '-'}`,
+    `nextSeq=${status.cursor.nextSeq}`,
+  ];
+  if (status.pendingPrompt) {
+    lines.push(`pending=${status.pendingPrompt}`);
+  }
+  for (const warning of status.warnings) {
+    lines.push(`warning=${warning}`);
+  }
+  return lines.join('\n');
+}
+
+export interface MissionLogRecord {
+  seq: number;
+  timestamp: string;
+  iteration: number;
+  actor: Exclude<LogActorFilter, 'all'>;
+  kind: string;
+  message: string;
+  eventType: string;
+}
+
+export interface MissionLogsPayload {
+  entries: MissionLogRecord[];
+  cursor: {
+    nextSeq: number;
+  };
 }
 
 export async function readMissionLogs(
   cwd: string,
   options: { afterSeq: number; tail?: number; actor?: string }
-): Promise<Array<{ seq: number; timestamp: string; type: string; agent: string | null; payload: Record<string, unknown> }>> {
+): Promise<MissionLogsPayload> {
   const eventsPath = join(cwd, '.melos', 'events.jsonl');
   if (!existsSync(eventsPath)) {
-    return [];
+    return {
+      entries: [],
+      cursor: {
+        nextSeq: 0,
+      },
+    };
   }
 
-  const lines = readFileSync(eventsPath, 'utf-8')
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0);
-  let events = lines
-    .map((line) => {
-      try {
-        return JSON.parse(line) as { seq: number; timestamp: string; type: string; agent: string | null; payload: Record<string, unknown> };
-      } catch {
-        return null;
-      }
-    })
-    .filter((event): event is { seq: number; timestamp: string; type: string; agent: string | null; payload: Record<string, unknown> } => event !== null);
+  const actorFilter = parseActorFilter(options.actor);
+  const events = readEventFile(eventsPath);
+  const maxSeq = events.length > 0 ? events[events.length - 1].seq : 0;
 
-  events = events.filter((event) => event.seq > options.afterSeq);
-  if (options.actor) {
-    events = events.filter((event) => (event.agent ?? '').toLowerCase() === options.actor?.toLowerCase());
+  let entries = events
+    .filter((event) => event.seq > options.afterSeq)
+    .map(normalizeMissionLogRecord);
+
+  if (actorFilter !== 'all') {
+    entries = entries.filter((entry) => entry.actor === actorFilter);
   }
-  if (options.tail && events.length > options.tail) {
-    events = events.slice(events.length - options.tail);
+  if (options.tail && entries.length > options.tail) {
+    entries = entries.slice(entries.length - options.tail);
   }
 
-  return events;
+  return {
+    entries,
+    cursor: {
+      nextSeq: maxSeq === 0 ? 0 : maxSeq + 1,
+    },
+  };
 }
 
 export async function applyApprovalDecision(cwd: string, decision: 'approve' | 'reject'): Promise<string> {
@@ -564,7 +699,7 @@ export async function applyApprovalDecision(cwd: string, decision: 'approve' | '
   }
   const mission = await loadMissionPlan(missionFilePath);
   if (mission.state !== 'awaiting_approval') {
-    return `No-op: mission state is ${mission.state}`;
+    throw new Error(`${decision} は awaiting_approval でのみ使用可能です (current=${mission.state})`);
   }
 
   const next = decision === 'approve'
@@ -576,8 +711,37 @@ export async function applyApprovalDecision(cwd: string, decision: 'approve' | '
     : 'Mission rejected. state=planning';
 }
 
+interface CancelPayload {
+  status: KillCommandResult['status'];
+  pid: number | null;
+  message: string;
+}
+
+function buildCancelPayload(result: KillCommandResult): CancelPayload {
+  if (result.status === 'killed') {
+    return {
+      status: 'killed',
+      pid: result.pid,
+      message: `PID ${result.pid} に SIGTERM を送信しました。`,
+    };
+  }
+  if (result.status === 'stale') {
+    return {
+      status: 'stale',
+      pid: result.pid,
+      message: `実行中の Melos が見つかりませんでした（stale PID: ${result.pid}）。`,
+    };
+  }
+  return {
+    status: 'not_running',
+    pid: null,
+    message: '実行中の Melos が見つかりませんでした。',
+  };
+}
 function spawnDetachedSelf(): number {
-  const argv = process.argv.slice(1).filter((arg) => arg !== '--detach');
+  const argv = process.argv.slice(1)
+    .filter((arg) => arg !== '--detach' && arg !== DETACHED_CHILD_FLAG);
+  argv.push(DETACHED_CHILD_FLAG);
   const child = spawn(process.execPath, argv, {
     cwd: process.cwd(),
     detached: true,
@@ -586,6 +750,161 @@ function spawnDetachedSelf(): number {
   });
   child.unref();
   return child.pid ?? -1;
+}
+
+function buildDetachedRunPayload(command: 'run' | 'resume', pid: number, startedAt: string): {
+  command: 'run' | 'resume';
+  pid: number;
+  startedAt: string;
+  cwd: string;
+  missionFile: string;
+  melosDir: string;
+} {
+  const cwd = process.cwd();
+  return {
+    command,
+    pid,
+    startedAt,
+    cwd,
+    missionFile: join(cwd, 'TASK.json'),
+    melosDir: join(cwd, '.melos'),
+  };
+}
+
+function readEventFile(path: string): MissionEvent[] {
+  if (!existsSync(path)) {
+    return [];
+  }
+  return readFileSync(path, 'utf-8')
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      try {
+        return JSON.parse(line) as MissionEvent;
+      } catch {
+        return null;
+      }
+    })
+    .filter((event): event is MissionEvent => event !== null && typeof event.seq === 'number')
+    .sort((a, b) => a.seq - b.seq);
+}
+
+function resolvePendingPromptFromEvents(events: MissionEvent[]): string | null {
+  for (let idx = events.length - 1; idx >= 0; idx -= 1) {
+    const event = events[idx];
+    if (event.type !== 'manager_decision') {
+      continue;
+    }
+    if (event.payload?.action !== 'pending_input') {
+      continue;
+    }
+    const message = typeof event.payload?.message === 'string' ? event.payload.message.trim() : '';
+    if (message.length === 0 || message === 'pending input cleared') {
+      return null;
+    }
+    return message;
+  }
+  return null;
+}
+
+function parseActorFilter(actor: string | undefined): LogActorFilter {
+  const normalized = (actor ?? 'all').toLowerCase();
+  if ((LOG_ACTORS as readonly string[]).includes(normalized)) {
+    return normalized as LogActorFilter;
+  }
+  throw new Error(`--actor は ${LOG_ACTORS.join('|')} のいずれかを指定してください`);
+}
+
+function deriveLogActor(event: MissionEvent): Exclude<LogActorFilter, 'all'> {
+  if (event.type.startsWith('validation_')) {
+    return 'validator';
+  }
+  if (event.type.startsWith('plan_')) {
+    return 'planning';
+  }
+  if (event.type.startsWith('manager_')) {
+    if (typeof event.payload?.phase === 'string' && event.payload.phase === 'planning') {
+      return 'planning';
+    }
+    return 'manager';
+  }
+  if (event.type.startsWith('worker_') || event.type === 'command_executed' || event.type === 'file_changed') {
+    return 'worker';
+  }
+  return 'system';
+}
+
+function normalizeMissionLogRecord(event: MissionEvent): MissionLogRecord {
+  const actor = deriveLogActor(event);
+  const { kind, message } = normalizeKindAndMessage(event);
+  return {
+    seq: event.seq,
+    timestamp: event.timestamp,
+    iteration: event.iteration,
+    actor,
+    kind,
+    message,
+    eventType: event.type,
+  };
+}
+
+function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: string } {
+  const payloadMessage = typeof event.payload?.message === 'string' ? event.payload.message.trim() : '';
+  if (payloadMessage.length > 0) {
+    const tagged = payloadMessage.match(/^\[([A-Z0-9_]+)\]\s*(.*)$/);
+    if (tagged) {
+      return {
+        kind: tagged[1],
+        message: tagged[2]?.trim() || tagged[1],
+      };
+    }
+  }
+
+  if (event.type === 'command_executed') {
+    const command = typeof event.payload?.command === 'string' ? event.payload.command : '';
+    return {
+      kind: 'BASH',
+      message: command.length > 0 ? command : 'command executed',
+    };
+  }
+  if (event.type === 'worker_started') {
+    return {
+      kind: 'STARTED',
+      message: typeof event.payload?.message === 'string'
+        ? event.payload.message
+        : `worker #${String(event.payload?.runId ?? '?')} started`,
+    };
+  }
+  if (event.type === 'worker_finished') {
+    return {
+      kind: 'DONE',
+      message: typeof event.payload?.message === 'string'
+        ? event.payload.message
+        : `worker #${String(event.payload?.runId ?? '?')} finished`,
+    };
+  }
+  if (event.type === 'worker_error' || event.type === 'manager_error' || event.type === 'error' || event.type === 'mission_failed') {
+    return {
+      kind: 'ERR',
+      message: payloadMessage || event.type,
+    };
+  }
+  if (event.type === 'validation_started') {
+    return { kind: 'VALIDATE', message: payloadMessage || 'validation started' };
+  }
+  if (event.type === 'validation_result') {
+    return { kind: 'VALIDATE', message: payloadMessage || 'validation result' };
+  }
+  if (event.type === 'plan_created' || event.type === 'plan_updated') {
+    return { kind: 'PLAN', message: payloadMessage || event.type };
+  }
+  if (event.type === 'manager_decision') {
+    return { kind: 'INFO', message: payloadMessage || 'manager decision' };
+  }
+  return {
+    kind: event.type.toUpperCase(),
+    message: payloadMessage || event.type,
+  };
 }
 
 interface RunPreflightInput {
