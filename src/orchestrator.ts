@@ -1592,10 +1592,16 @@ function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
     if (validationChecks.length > 0) {
       lines.push('  validation checks:');
       for (const check of validationChecks) {
+        const description = typeof check.description === 'string' && check.description.trim().length > 0
+          ? check.description.trim()
+          : '(no description)';
         const command = typeof check.command === 'string' && check.command.trim().length > 0
-          ? check.command
-          : '(manual or not specified)';
-        lines.push(`    - [${check.passed ? 'x' : ' '}] ${check.id} (${check.type}) :: ${command}`);
+          ? check.command.trim()
+          : null;
+        const actionLabel = command
+          ? command
+          : (check.type === 'manual' ? 'manual step (follow description)' : 'command not specified');
+        lines.push(`    - [${check.passed ? 'x' : ' '}] ${check.id} (${check.type}) ${description} :: ${actionLabel}`);
       }
     }
     lines.push('');
