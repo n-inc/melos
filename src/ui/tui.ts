@@ -1,5 +1,5 @@
 import { parseKey } from './tui-keymap.js';
-import { truncateDisplay, padDisplay, getDisplayWidth } from './tui-ansi.js';
+import { truncateDisplay, padDisplay, getDisplayWidth, colorize, canUseColor } from './tui-ansi.js';
 import type { MissionControlState, TUIView, ViewId } from './tui-views.js';
 import type { ModelRole } from '../models/router.js';
 import { overviewView } from './tui-overview.js';
@@ -11,6 +11,7 @@ import { taskView } from './tui-task.js';
 
 export interface TUIOptions {
   plain?: boolean;
+  headless?: boolean;
 }
 
 export interface TerminalCapabilities {
@@ -27,7 +28,7 @@ export interface SessionInfo {
   worker: string;
 }
 
-export type RuntimeUIMode = 'tui' | 'plain';
+export type RuntimeUIMode = 'tui' | 'plain' | 'headless';
 
 export interface RuntimeUIControls {
   onPause?: () => void;
@@ -78,6 +79,9 @@ export function shouldUseTUI(options: TUIOptions, terminal: TerminalCapabilities
 }
 
 export function resolveRuntimeUIMode(options: TUIOptions, terminal: TerminalCapabilities): RuntimeUIMode {
+  if (options.headless) {
+    return 'headless';
+  }
   return shouldUseTUI(options, terminal) ? 'tui' : 'plain';
 }
 
@@ -110,6 +114,7 @@ export function createRuntimeUI(
   let inputResumed = false;
   let steerMode = false;
   let steerBuffer = '';
+  const useColor = mode === 'tui' && canUseColor(output.isTTY === true);
 
   const getColumns = () => output.columns ?? process.stderr.columns ?? DEFAULT_TERMINAL_COLUMNS;
   const getRows = () => output.rows ?? process.stderr.rows ?? DEFAULT_TERMINAL_ROWS;
@@ -130,12 +135,14 @@ export function createRuntimeUI(
         logSourceLock,
         secondaryVisible,
         sourceSwitchNotice,
+        useColor,
       })
       : buildInitializingFrame(session, {
       width: getColumns(),
       height: getRows(),
       steerMode,
       steerBuffer,
+      useColor,
     });
     sourceSwitchNotice = null;
 
@@ -163,8 +170,8 @@ export function createRuntimeUI(
     output.write(`${lines.join('\n')}\n`);
   };
 
-  const applyDocScrollAction = (actionType: string): boolean => {
-    if (currentView !== 'prd' && currentView !== 'task') {
+  const applyViewScrollAction = (actionType: string): boolean => {
+    if (currentView !== 'prd' && currentView !== 'task' && currentView !== 'workers') {
       return false;
     }
     switch (actionType) {
@@ -265,7 +272,7 @@ export function createRuntimeUI(
         case 'scroll_top':
         case 'scroll_bottom':
         case 'select':
-          if (applyDocScrollAction(action.type)) {
+          if (applyViewScrollAction(action.type)) {
             render();
           }
           return;
@@ -331,7 +338,7 @@ export function createRuntimeUI(
         case 'scroll_top':
         case 'scroll_bottom':
         case 'select':
-          if (applyDocScrollAction(action.type)) {
+          if (applyViewScrollAction(action.type)) {
             render();
           }
           return;
@@ -429,8 +436,10 @@ export function createRuntimeUI(
       return;
     }
 
-    refreshTimer = setInterval(refreshPlain, 3000);
-    refreshTimer.unref();
+    if (mode === 'plain') {
+      refreshTimer = setInterval(refreshPlain, 3000);
+      refreshTimer.unref();
+    }
   };
 
   const updateState = (nextState: MissionControlState) => {
@@ -459,7 +468,9 @@ export function createRuntimeUI(
       render();
       return;
     }
-    refreshPlain();
+    if (mode === 'plain') {
+      refreshPlain();
+    }
   };
 
   const stop = () => {
@@ -515,6 +526,7 @@ export function renderTUIFrameForTest(input: {
       height: input.height,
       steerMode: input.steerMode === true,
       steerBuffer: input.steerBuffer ?? '',
+      useColor: false,
     });
   }
 
@@ -528,6 +540,7 @@ export function renderTUIFrameForTest(input: {
     logSourceLock: input.logSourceLock ?? 'auto',
     secondaryVisible: input.secondaryVisible ?? true,
     sourceSwitchNotice: input.sourceSwitchNotice ?? null,
+    useColor: false,
   });
 }
 
@@ -544,6 +557,7 @@ function buildFrame(
     logSourceLock: 'auto' | 'worker' | 'manager';
     secondaryVisible: boolean;
     sourceSwitchNotice: string | null;
+    useColor: boolean;
   }
 ): string[] {
   const width = Math.max(options.width, 60);
@@ -557,8 +571,9 @@ function buildFrame(
     width
   );
   const actorSummary = composeActorSummary(state);
+  const stateLabel = colorizeState(state.missionState.toUpperCase(), options.useColor);
   const status = truncateDisplay(
-    `● ${state.missionState.toUpperCase()} ${renderProgressBar(state.progressPercent, Math.max(10, Math.min(30, width - 36)))} ${state.progressLabel}${actorSummary ? ` | ${actorSummary}` : ''}`,
+    `● ${stateLabel} ${renderProgressBar(state.progressPercent, Math.max(10, Math.min(30, width - 36)))} ${state.progressLabel}${actorSummary ? ` | ${actorSummary}` : ''}`,
     width
   );
 
@@ -571,6 +586,7 @@ function buildFrame(
       logSourceLock: options.logSourceLock,
       secondaryVisible: options.secondaryVisible,
       sourceSwitchNotice: options.sourceSwitchNotice,
+      useColor: options.useColor,
     }
   );
   const clipped = contentLines.slice(0, contentHeight).map((line) => truncateDisplay(line, width));
@@ -586,7 +602,7 @@ function buildFrame(
         : options.view === 'prd' || options.view === 'task'
           ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  Enter=More`
           : options.view === 'workers'
-            ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  L Focus  O Secondary  P Pause  R Resume  Ctrl+G Steer`
+            ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  L Focus  P Pause  R Resume  Ctrl+G Steer`
             : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
@@ -632,6 +648,7 @@ function buildInitializingFrame(
     height: number;
     steerMode: boolean;
     steerBuffer: string;
+    useColor: boolean;
   }
 ): string[] {
   const width = Math.max(options.width, 60);
@@ -643,7 +660,7 @@ function buildInitializingFrame(
     'Time 0m 00s  Input 0  Cached 0  Output 0',
     width
   );
-  const status = truncateDisplay('● INITIALIZING [░░░░░░░░░░] 0/0 (0%)', width);
+  const status = truncateDisplay(`● ${colorizeState('INITIALIZING', options.useColor)} [░░░░░░░░░░] 0/0 (0%)`, width);
   const lines = [
     'Initializing mission runtime...',
     '',
@@ -671,6 +688,22 @@ function buildInitializingFrame(
     padDisplay(footer, width),
     padDisplay(prompt, width),
   ];
+}
+
+function colorizeState(state: string, useColor: boolean): string {
+  switch (state) {
+    case 'RUNNING':
+      return colorize(state, 'state_running', useColor);
+    case 'PAUSED':
+      return colorize(state, 'state_paused', useColor);
+    case 'FAILED':
+    case 'ABORTED':
+      return colorize(state, 'state_failed', useColor);
+    case 'AWAITING_APPROVAL':
+      return colorize(state, 'state_awaiting', useColor);
+    default:
+      return state;
+  }
 }
 
 function composeTwoSidedLine(left: string, right: string, width: number): string {

@@ -164,6 +164,20 @@ describe('ui/tui views', () => {
     expect(lines).toContain('[BASH] npm test -- auth');
   });
 
+  it('supports scroll offset in workers view', () => {
+    const state = createState();
+    state.logEntries = Array.from({ length: 20 }, (_, index) => ({
+      timestamp: `2026-02-28T12:00:${String(index).padStart(2, '0')}.000Z`,
+      actor: 'worker' as const,
+      kind: 'INFO',
+      message: `line-${index + 1}`,
+    }));
+    const top = workersView.render({ width: 80, height: 10 }, state, { scrollOffset: 0 }).join('\n');
+    const scrolled = workersView.render({ width: 80, height: 10 }, state, { scrollOffset: 8 }).join('\n');
+    expect(top).toContain('line-1');
+    expect(scrolled).toContain('line-9');
+  });
+
   it('renders waiting message when worker has no structured logs yet', () => {
     const state = createState();
     state.workerRuns = [

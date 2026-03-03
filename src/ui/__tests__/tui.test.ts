@@ -91,6 +91,12 @@ describe('ui/tui v0.8', () => {
   });
 
   it('resolves runtime mode', () => {
+    expect(resolveRuntimeUIMode({ headless: true }, {
+      stdinIsTTY: true,
+      stdoutIsTTY: true,
+      stderrIsTTY: true,
+    })).toBe('headless');
+
     expect(resolveRuntimeUIMode({ plain: false }, {
       stdinIsTTY: true,
       stdoutIsTTY: true,
@@ -129,6 +135,22 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('Overview');
     expect(rendered).not.toContain('SWITCH:');
     expect(rendered).toContain('melos> Running m1-f1...  (Ctrl+G steer)');
+  });
+
+  it('keeps silent output in headless runtime mode', () => {
+    const output = new PassThrough();
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    const ui = createRuntimeUI('headless', output as unknown as NodeJS.WriteStream, input as unknown as NodeJS.ReadStream);
+    ui.start(createSessionInfo());
+    ui.updateState(createState());
+    ui.stop();
+
+    expect(rendered).toBe('');
   });
 
   it('pauses stdin stream on stop to avoid hanging process', () => {

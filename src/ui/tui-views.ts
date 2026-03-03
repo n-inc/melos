@@ -77,6 +77,7 @@ export interface TUIView {
       logSourceLock?: 'auto' | 'worker' | 'manager';
       secondaryVisible?: boolean;
       sourceSwitchNotice?: string | null;
+      useColor?: boolean;
     }
   ): string[];
   handleKey?(key: KeyEvent, state: MissionControlState): boolean;

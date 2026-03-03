@@ -1,6 +1,6 @@
 import type { TUIView, MissionControlState, ViewPort } from './tui-views.js';
 import type { LogActor, UnifiedLogEntry } from '../state/log-entry.js';
-import { truncateDisplay } from './tui-ansi.js';
+import { truncateDisplay, wrapPlainDisplay, colorize } from './tui-ansi.js';
 
 const SWITCH_BAR = '─'.repeat(10);
 
@@ -9,7 +9,8 @@ export const workersView: TUIView = {
   render(viewport: ViewPort, state: MissionControlState, context): string[] {
     const width = Math.max(40, viewport.width);
     const lock = context?.logSourceLock ?? 'auto';
-    const secondaryVisible = context?.secondaryVisible !== false;
+    const useColor = context?.useColor === true;
+    const scrollOffset = Math.max(0, context?.scrollOffset ?? 0);
     const activeActor = resolveDisplayActor(state, lock);
     const nowRunning = buildNowRunningLine(state, activeActor);
     const separator = '─'.repeat(width);
@@ -18,17 +19,24 @@ export const workersView: TUIView = {
     const streamLines = formatLogStreamLines(entries, {
       lock,
       switchNotice: context?.sourceSwitchNotice ?? null,
-      secondaryVisible,
-      activeActor,
       pendingPrompt: state.pendingPrompt,
+      useColor,
     });
 
+    const wrapped = streamLines.flatMap((line) => wrapPlainDisplay(line, width));
     const reserved = 2;
     const availableLogLines = Math.max(1, viewport.height - reserved);
-    const visibleLogLines = streamLines.slice(-availableLogLines);
+    const maxOffset = Math.max(0, wrapped.length - availableLogLines);
+    const safeOffset = scrollOffset >= Number.MAX_SAFE_INTEGER
+      ? maxOffset
+      : Math.min(scrollOffset, maxOffset);
+    const visibleLogLines = wrapped.slice(safeOffset, safeOffset + availableLogLines);
+    const lineSummary = wrapped.length === 0
+      ? 'Lines 0/0'
+      : `Lines ${safeOffset + 1}-${Math.min(wrapped.length, safeOffset + availableLogLines)}/${wrapped.length}`;
 
     return [
-      truncateDisplay(nowRunning, width),
+      truncateDisplay(`${nowRunning}  ${lineSummary}`, width),
       separator,
       ...visibleLogLines.map((line) => truncateDisplay(line, width)),
     ];
@@ -97,25 +105,27 @@ function formatLogStreamLines(
   options: {
     lock: 'auto' | 'worker' | 'manager';
     switchNotice: string | null;
-    secondaryVisible: boolean;
-    activeActor: LogActor;
     pendingPrompt?: string | null;
+    useColor: boolean;
   }
 ): string[] {
   const lines: string[] = [];
 
   if (options.switchNotice) {
-    lines.push(formatSwitchLine(options.switchNotice));
+    lines.push(formatSwitchLine(options.switchNotice, options.useColor));
   }
 
   let previousActor: LogActor | null = null;
   for (const entry of entries) {
-    if (options.lock === 'auto' && previousActor && previousActor !== entry.actor) {
-      lines.push(formatSwitchLine(`SWITCH: ${actorName(previousActor)} -> ${actorName(entry.actor)}`));
+    if (!previousActor) {
+      lines.push(formatSwitchLine(`LOG START: ${actorName(entry.actor)}`, options.useColor));
+    } else if (options.lock === 'auto' && previousActor !== entry.actor) {
+      lines.push(formatSwitchLine(`SWITCH: ${actorName(previousActor)} -> ${actorName(entry.actor)}`, options.useColor));
     }
     previousActor = entry.actor;
 
-    lines.push(`${entry.timestamp.slice(11, 19)} [${entry.kind}] ${entry.message}`);
+    const kindTag = formatKindTag(entry.kind, options.useColor);
+    lines.push(`${entry.timestamp.slice(11, 19)} ${kindTag} ${entry.message}`);
     for (const detail of entry.detailLines ?? []) {
       lines.push(`         ${detail}`);
     }
@@ -128,16 +138,12 @@ function formatLogStreamLines(
     return ['No logs yet. Waiting for next event...'];
   }
 
-  if (options.secondaryVisible && options.lock !== 'auto') {
-    lines.push('');
-    lines.push(`Collapsed actor: ${actorName(options.activeActor)} (focused by lock=${options.lock})`);
-  }
-
   return lines;
 }
 
-function formatSwitchLine(message: string): string {
-  return `${SWITCH_BAR} ${message} ${SWITCH_BAR}`;
+function formatSwitchLine(message: string, useColor: boolean): string {
+  const body = `${SWITCH_BAR} ${message} ${SWITCH_BAR}`;
+  return colorize(body, 'kind_switch', useColor);
 }
 
 function actorName(actor: LogActor): string {
@@ -157,3 +163,23 @@ function actorName(actor: LogActor): string {
   }
 }
 
+function formatKindTag(kind: string, useColor: boolean): string {
+  const tag = `[${kind}]`;
+  const normalized = kind.trim().toUpperCase();
+  if (normalized === 'READ') {
+    return colorize(tag, 'kind_read', useColor);
+  }
+  if (normalized === 'WRITE') {
+    return colorize(tag, 'kind_write', useColor);
+  }
+  if (normalized === 'BASH' || normalized === 'EXEC') {
+    return colorize(tag, 'kind_bash', useColor);
+  }
+  if (normalized === 'DONE') {
+    return colorize(tag, 'kind_done', useColor);
+  }
+  if (normalized === 'ERR' || normalized === 'ERROR') {
+    return colorize(tag, 'kind_err', useColor);
+  }
+  return colorize(tag, 'kind_info', useColor);
+}
