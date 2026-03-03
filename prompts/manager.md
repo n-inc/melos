@@ -17,6 +17,8 @@
 - 各 milestone は `validationContract` を持つ
 - 各 feature は `mX-fY` 形式
 - ハードカットオーバー: 後方互換タスクを含めない
+- `currentBranch` / `baseBranch` がある feature では、worker への briefing に「`git-committer` を使って規約準拠の commit を作成する」ことを明記する
+- commit message は `type(scope): subject` を守り、`...` の省略表現を禁止する
 
 ## Follow-up 生成ルール
 

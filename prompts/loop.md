@@ -122,7 +122,7 @@
 
 5. **Record in {PROGRESS_FILE}**: 何をしたか、重要な判断
 
-6. **Commit**: `git-commit` スキルを使用
+6. **Commit**: `git-committer` スキルを使用
 
 7. **Output `<promise>TASK_DONE</promise>`**
 

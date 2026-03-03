@@ -161,6 +161,13 @@ describe('loader.ts', () => {
         loadPromptFromPath('/non/existent/path/to/prompt.md')
       ).rejects.toThrow('Prompt file not found');
     });
+
+    it('worker prompt enforces git-committer commit workflow', async () => {
+      const content = await loadPromptRaw('worker');
+      expect(content).toContain('git-committer');
+      expect(content).toContain('type(scope): subject');
+      expect(content).not.toMatch(/\bgit-commit\b/);
+    });
   });
 
   describe('loadPrompt', () => {

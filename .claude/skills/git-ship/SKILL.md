@@ -1,14 +1,14 @@
 ---
 name: git-ship
 description: Sync, commit, push, and create PR in one command
-skills: git-commit, git-sync, git-new-pull-request
+skills: git-committer, git-sync, git-new-pull-request
 ---
 
 変更内容を確認し、以下の順序で処理を実行する：
 
 ## 1. コミット作成
 
-**git-commit スキル**を起動してコミットを作成。
+**git-committer スキル**を起動してコミットを作成。
 
 ## 2. origin/main と同期
 
