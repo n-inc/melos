@@ -291,7 +291,7 @@ export function appendFeaturesToMilestone(
       const normalizedFeatures = features.map((feature, index) =>
         normalizeFeature({
           ...feature,
-          id: feature.id.trim() || `${milestoneId}-f${milestone.features.length + index + 1}`,
+          id: asTrimmedString(feature.id) || `${milestoneId}-f${milestone.features.length + index + 1}`,
         })
       );
 
@@ -325,11 +325,11 @@ function normalizeMissionPlan(plan: MissionPlan): MissionPlan {
     ...plan,
     mission: {
       ...plan.mission,
-      goal: plan.mission.goal.trim(),
-      constraints: plan.mission.constraints.map((item) => item.trim()).filter(Boolean),
-      successCriteria: plan.mission.successCriteria.map((item) => item.trim()).filter(Boolean),
-      prdFile: plan.mission.prdFile?.trim() || undefined,
-      id: plan.mission.id?.trim() || undefined,
+      goal: asTrimmedString(plan.mission.goal) || 'Untitled mission',
+      constraints: normalizeStringList(plan.mission.constraints),
+      successCriteria: normalizeStringList(plan.mission.successCriteria),
+      prdFile: asTrimmedString(plan.mission.prdFile) || undefined,
+      id: asTrimmedString(plan.mission.id) || undefined,
     },
     milestones,
     totalIterations: Math.max(0, Math.floor(plan.totalIterations)),
@@ -346,12 +346,13 @@ function normalizeMilestones(milestones: Milestone[]): Milestone[] {
 
 function normalizeMilestone(milestone: Milestone, index: number): Milestone {
   const order = Number.isFinite(milestone.order) ? Math.floor(milestone.order) : index + 1;
+  const normalizedId = asTrimmedString(milestone.id) || `m${index + 1}`;
   return {
-    id: milestone.id.trim() || `m${index + 1}`,
-    title: milestone.title.trim() || `Milestone ${index + 1}`,
-    description: milestone.description.trim() || 'No description provided',
+    id: normalizedId,
+    title: asTrimmedString(milestone.title) || `Milestone ${index + 1}`,
+    description: asTrimmedString(milestone.description) || 'No description provided',
     features: milestone.features.map((feature, featureIndex) =>
-      normalizeFeature(feature, `${milestone.id || `m${index + 1}`}-f${featureIndex + 1}`)
+      normalizeFeature(feature, `${normalizedId}-f${featureIndex + 1}`)
     ),
     validationContract: normalizeValidationContract(milestone.validationContract),
     status: milestone.status,
@@ -360,9 +361,10 @@ function normalizeMilestone(milestone: Milestone, index: number): Milestone {
 }
 
 function normalizeFeature(feature: Feature, fallbackId?: string): Feature {
+  const normalizedId = asTrimmedString(feature.id) || fallbackId || 'feature-1';
   return {
-    id: feature.id.trim() || fallbackId || 'feature-1',
-    description: feature.description.trim() || 'No description provided',
+    id: normalizedId,
+    description: asTrimmedString(feature.description) || 'No description provided',
     checks: feature.checks?.map((check) => ({
       text: check.text,
       type: check.type,
@@ -370,10 +372,23 @@ function normalizeFeature(feature: Feature, fallbackId?: string): Feature {
     })),
     status: feature.status,
     model: feature.model,
-    briefing: feature.briefing?.trim() || undefined,
+    briefing: asTrimmedString(feature.briefing) || undefined,
     attempts: Math.max(0, Math.floor(feature.attempts)),
-    lastReportSummary: feature.lastReportSummary?.trim() || undefined,
+    lastReportSummary: asTrimmedString(feature.lastReportSummary) || undefined,
   };
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeStringList(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return values
+    .map((value) => asTrimmedString(value))
+    .filter((value) => value.length > 0);
 }
 
 function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {

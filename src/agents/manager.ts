@@ -344,7 +344,7 @@ export class ManagerAgent implements Agent {
       },
       features: milestone.features.map((feature, featureIndex) => ({
         id: feature.id?.trim() || `m${milestoneIndex + 1}-f${featureIndex + 1}`,
-        description: feature.description,
+        description: normalizeFeatureDescription(feature.description),
         checks: feature.checks?.map((check) => ({ text: check.text, type: check.type, passed: false })),
         status: 'pending' as const,
         model: feature.model ?? inferFeatureModel(feature.description),
@@ -518,11 +518,19 @@ function normalizeCheckType(
 }
 
 function inferFeatureModel(description: string): 'claude' | 'codex' {
-  const normalized = description.toLowerCase();
+  const normalized = normalizeFeatureDescription(description).toLowerCase();
   if (normalized.includes('ui') || normalized.includes('design') || normalized.includes('layout') || normalized.includes('style')) {
     return 'claude';
   }
   return 'codex';
+}
+
+function normalizeFeatureDescription(description: unknown): string {
+  if (typeof description !== 'string') {
+    return 'No description provided';
+  }
+  const trimmed = description.trim();
+  return trimmed.length > 0 ? trimmed : 'No description provided';
 }
 
 function extractGoalFromPrd(prd: string | null): string | null {

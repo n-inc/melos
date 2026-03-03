@@ -12,6 +12,15 @@ describe('state/git-strategy', () => {
     expect(branch).toContain('m1-f1-user-model-migration');
   });
 
+  it('creates safe branch names even when feature description is missing', () => {
+    const branch = createFeatureBranchName(
+      'auth',
+      'm1-f1',
+      undefined as unknown as string
+    );
+    expect(branch).toBe('melos/auth/m1-f1-no-description');
+  });
+
   it('tracks branch lifecycle', () => {
     let state = createGitStrategyState({
       missionId: 'auth',

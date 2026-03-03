@@ -147,4 +147,46 @@ describe('state/mission', () => {
     await expect(loadMissionPlan(taskPath)).rejects.toThrow(/top-level "version" は 2/);
     await expect(loadMissionPlan(taskPath)).rejects.toThrow(/期待形式/);
   });
+
+  it('normalizes missing feature descriptions without crashing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-missing-feature-description-'));
+    const taskPath = join(dir, 'TASK.json');
+    writeFileSync(taskPath, JSON.stringify({
+      version: 2,
+      mission: {
+        goal: 'Normalization test',
+        constraints: ['c1'],
+        successCriteria: ['s1'],
+      },
+      state: 'planning',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+      createdAt: new Date().toISOString(),
+      lastTransitionAt: new Date().toISOString(),
+      activeMilestoneId: null,
+      activeFeatureId: null,
+      totalIterations: 0,
+    }, null, 2), 'utf-8');
+
+    const loaded = await loadMissionPlan(taskPath);
+    expect(loaded.milestones[0]?.features[0]?.description).toBe('No description provided');
+  });
 });

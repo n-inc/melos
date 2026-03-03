@@ -63,12 +63,22 @@ export function createFeatureBranchName(
   featureId: string,
   featureDescription: string
 ): string {
-  const slug = `${featureId}-${featureDescription}`
+  const safeMissionId = typeof missionId === 'string' && missionId.trim().length > 0
+    ? missionId.trim()
+    : 'mission';
+  const safeFeatureId = typeof featureId === 'string' && featureId.trim().length > 0
+    ? featureId.trim()
+    : 'feature';
+  const safeDescription = typeof featureDescription === 'string' && featureDescription.trim().length > 0
+    ? featureDescription.trim()
+    : 'no-description';
+
+  const slug = `${safeFeatureId}-${safeDescription}`
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 48);
-  return `melos/${missionId}/${slug}`;
+  return `melos/${safeMissionId}/${slug || safeFeatureId}`;
 }
 
 export function registerFeatureBranch(
