@@ -36,6 +36,8 @@ export const overviewView: TUIView = {
       ? `${activeFeature.id} ${activeFeature.description}`
       : '-';
 
+    const summaryLine = (label: string, value: string): string => `${label.padEnd(10, ' ')} ${value}`;
+
     const expectedBehaviorLines = activeFeature
       ? wrapByCharCount(activeFeature.description, 42)
       : ['-'];
@@ -43,11 +45,11 @@ export const overviewView: TUIView = {
       'MISSION SUMMARY',
       `${statusIcon(activeFeature?.status ?? 'pending')} ${activeFeatureLabel}`,
       '',
-      `Current Milestone  ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
-      `Current State      ${state.missionState}`,
-      `Current Activity   ${state.activity}`,
-      `Current Progress   ${state.progressLabel}`,
-      `Current Branch     ${state.activeBranch ?? '-'}`,
+      summaryLine('Milestone', activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'),
+      summaryLine('State', state.missionState),
+      summaryLine('Activity', state.activity),
+      summaryLine('Progress', state.progressLabel),
+      summaryLine('Branch', state.activeBranch ?? '-'),
       '',
       'Expected Behavior',
       ...expectedBehaviorLines.map((line) => `  ${line}`),

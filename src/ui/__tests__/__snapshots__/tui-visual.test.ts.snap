@@ -8,11 +8,11 @@ exports[`ui/tui visual snapshots awaiting approval frame snapshot (input require
 ║ MISSION SUMMARY                                         │ FEATURES                             … ║
 ║ ● m1-f2 Implement parser and CLI options                │ ● m1 Core                            … ║
 ║                                                         │  ✓ m1-f1 Read files                  … ║
-║ Current Milestone  m1 Core                              │ >● m1-f2 Implement parser and CLI opt… ║
-║ Current State      awaiting_approval                    │ ○ m2 Validation                      … ║
-║ Current Activity   Running m1-f2...                     │  ○ m2-f1 Run validations             … ║
-║ Current Progress   2/4 (50%)                            │                                      … ║
-║ Current Branch     melos/mission/m1-f2                  │ RECENT EVENTS                        … ║
+║ Milestone  m1 Core                                      │ >● m1-f2 Implement parser and CLI opt… ║
+║ State      awaiting_approval                            │ ○ m2 Validation                      … ║
+║ Activity   Running m1-f2...                             │  ○ m2-f1 Run validations             … ║
+║ Progress   2/4 (50%)                                    │                                      … ║
+║ Branch     melos/mission/m1-f2                          │ RECENT EVENTS                        … ║
 ║                                                         │ Approval pending (press y to start)  … ║
 ║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
 ║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
@@ -74,11 +74,11 @@ exports[`ui/tui visual snapshots narrow terminal snapshot (80x24) 1`] = `
 ║ MISSION SUMMARY                             │ FEATURES                     … ║
 ║ ● m1-f2 Implement parser and CLI options    │  ✓ m1-f1 Read files          … ║
 ║                                             │ >● m1-f2 Implement parser and… ║
-║ Current Milestone  m1 Core                  │ ○ m2 Validation              … ║
-║ Current State      running                  │  ○ m2-f1 Run validations     … ║
-║ Current Activity   Running m1-f2...         │                              … ║
-║ Current Progress   2/4 (50%)                │ RECENT EVENTS                … ║
-║ Current Branch     melos/mission/m1-f2      │ Detailed logs are available i… ║
+║ Milestone  m1 Core                          │ ○ m2 Validation              … ║
+║ State      running                          │  ○ m2-f1 Run validations     … ║
+║ Activity   Running m1-f2...                 │                              … ║
+║ Progress   2/4 (50%)                        │ RECENT EVENTS                … ║
+║ Branch     melos/mission/m1-f2              │ Detailed logs are available i… ║
 ║                                             │ 09:00:00 mission run started … ║
 ║ Expected Behavior                           │ 09:00:05 Planning mission... … ║
 ║   Implement parser and CLI options          │ 09:00:10 worker #1 started   … ║
@@ -101,11 +101,11 @@ exports[`ui/tui visual snapshots overview frame snapshot 1`] = `
 ║ MISSION SUMMARY                                         │ FEATURES                             … ║
 ║ ● m1-f2 Implement parser and CLI options                │ ● m1 Core                            … ║
 ║                                                         │  ✓ m1-f1 Read files                  … ║
-║ Current Milestone  m1 Core                              │ >● m1-f2 Implement parser and CLI opt… ║
-║ Current State      running                              │ ○ m2 Validation                      … ║
-║ Current Activity   Running m1-f2...                     │  ○ m2-f1 Run validations             … ║
-║ Current Progress   2/4 (50%)                            │                                      … ║
-║ Current Branch     melos/mission/m1-f2                  │ RECENT EVENTS                        … ║
+║ Milestone  m1 Core                                      │ >● m1-f2 Implement parser and CLI opt… ║
+║ State      running                                      │ ○ m2 Validation                      … ║
+║ Activity   Running m1-f2...                             │  ○ m2-f1 Run validations             … ║
+║ Progress   2/4 (50%)                                    │                                      … ║
+║ Branch     melos/mission/m1-f2                          │ RECENT EVENTS                        … ║
 ║                                                         │ Detailed logs are available in Logs v… ║
 ║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
 ║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
