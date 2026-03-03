@@ -298,7 +298,7 @@ describe('ui/tui v0.8', () => {
     ui.updateState({
       ...createState(),
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
     });
 
     input.write('M');
@@ -346,7 +346,7 @@ describe('ui/tui v0.8', () => {
     ui.updateState({
       ...createState(),
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
     });
     ui.stop();
 
@@ -383,7 +383,7 @@ describe('ui/tui v0.8', () => {
     ui.updateState({
       ...createState(),
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
     });
     ui.stop();
 

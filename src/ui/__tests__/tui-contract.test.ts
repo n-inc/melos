@@ -309,7 +309,7 @@ describe('ui/tui contract', () => {
 
     h.ui.updateState(createState({
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
     }));
     expect(h.getRendered()).toContain('Overview');
     expect(h.getRendered()).toContain('Input Required');
@@ -366,7 +366,7 @@ describe('ui/tui contract', () => {
 
     h.ui.updateState(createState({
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
     }));
 
     const rendered = h.getRendered();

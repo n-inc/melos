@@ -1,6 +1,5 @@
 import { Command } from 'commander';
 import { readFileSync, existsSync } from 'node:fs';
-import { mkdir, rename } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -347,38 +346,17 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
     if (!ARCHIVE_ON_RUN_STATES.has(missionPlan.state)) {
       return messages;
     }
-
-    const archivedPath = await archiveTaskFile(
-      input.melosDir,
-      input.missionFilePath,
-      `state-${missionPlan.state}`
-    );
-    messages.push(
-      `TASK.json が終了状態 (${missionPlan.state}) だったため退避し、新規ミッションを開始します: ${archivedPath}`
-    );
-    return messages;
+    throw new Error([
+      `TASK.json は終了状態 (${missionPlan.state}) のため、そのままでは新規ミッションを開始しません。`,
+      'TASK.json を手動で更新してから再実行してください。',
+    ].join('\n'));
   } catch (error) {
-    const archivedPath = await archiveTaskFile(input.melosDir, input.missionFilePath, 'invalid');
     const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
-    messages.push(
-      `TASK.json の読み込みに失敗したため退避し、新規ミッションを開始します: ${archivedPath}`
-    );
-    messages.push(`読み込みエラー: ${reason}`);
-    return messages;
+    throw new Error([
+      `TASK.json の読み込みに失敗したため、実行を停止しました: ${reason}`,
+      'TASK.json を修正してから再実行してください。',
+    ].join('\n'));
   }
-}
-
-async function archiveTaskFile(
-  melosDir: string,
-  missionFilePath: string,
-  reason: string
-): Promise<string> {
-  const archiveDir = join(melosDir, 'archive');
-  await mkdir(archiveDir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const archivePath = join(archiveDir, `TASK.${stamp}.${reason}.json`);
-  await rename(missionFilePath, archivePath);
-  return archivePath;
 }
 
 function resolveGitStrategy(

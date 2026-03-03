@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,7 +18,7 @@ describe('cli preflight', () => {
     expect(existsSync(join(cwd, 'PRD.md'))).toBe(false);
   });
 
-  it('archives terminal-state TASK.json and starts fresh run', async () => {
+  it('fails on terminal-state TASK.json', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-preflight-archive-state-'));
     const missionFilePath = join(cwd, 'TASK.json');
     writeFileSync(join(cwd, 'PRD.md'), '# Mission\n', 'utf-8');
@@ -39,21 +39,17 @@ describe('cli preflight', () => {
     });
     writeFileSync(missionFilePath, `${JSON.stringify(mission, null, 2)}\n`, 'utf-8');
 
-    const messages = await prepareRunPreflight({
+    await expect(prepareRunPreflight({
       cwd,
       melosDir: join(cwd, '.melos'),
       missionFilePath,
       prdFilePath: join(cwd, 'PRD.md'),
       resume: false,
-    });
-
-    expect(existsSync(missionFilePath)).toBe(false);
-    const archivedFiles = readdirSync(join(cwd, '.melos', 'archive')).filter((name) => name.includes('state-completed'));
-    expect(archivedFiles.length).toBe(1);
-    expect(messages.some((message) => message.includes('終了状態 (completed)'))).toBe(true);
+    })).rejects.toThrow(/終了状態 \(completed\)/);
+    expect(existsSync(missionFilePath)).toBe(true);
   });
 
-  it('archives invalid TASK.json with actionable message', async () => {
+  it('fails on invalid TASK.json', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-preflight-archive-invalid-'));
     const missionFilePath = join(cwd, 'TASK.json');
     writeFileSync(join(cwd, 'PRD.md'), '# Mission\n', 'utf-8');
@@ -61,18 +57,13 @@ describe('cli preflight', () => {
       { id: '1', description: 'legacy task', passes: false },
     ]), 'utf-8');
 
-    const messages = await prepareRunPreflight({
+    await expect(prepareRunPreflight({
       cwd,
       melosDir: join(cwd, '.melos'),
       missionFilePath,
       prdFilePath: join(cwd, 'PRD.md'),
       resume: false,
-    });
-
-    expect(existsSync(missionFilePath)).toBe(false);
-    const archivedFiles = readdirSync(join(cwd, '.melos', 'archive')).filter((name) => name.includes('.invalid.'));
-    expect(archivedFiles.length).toBe(1);
-    expect(messages.some((message) => message.includes('読み込みに失敗したため退避'))).toBe(true);
-    expect(messages.some((message) => message.includes('読み込みエラー'))).toBe(true);
+    })).rejects.toThrow(/TASK.json の読み込みに失敗したため、実行を停止しました/);
+    expect(existsSync(missionFilePath)).toBe(true);
   });
 });

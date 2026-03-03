@@ -531,10 +531,10 @@ export class Orchestrator {
       : await this.promptPlanApproval();
 
     if (!approved) {
-      this.activityLabel = 'Plan not approved. Regenerating plan...';
-      this.state.missionPlan = transitionMissionState(missionPlan, 'planning');
-      await this.persistMissionPlan();
-      await this.emitStatusUpdate();
+      if (!this.aborted) {
+        this.activityLabel = 'Approval required. Press y to continue or Ctrl+C to abort.';
+        await this.emitStatusUpdate();
+      }
       return;
     }
 
@@ -1213,28 +1213,22 @@ export class Orchestrator {
     }
 
     const promptMessage = this.isTuiInputMode()
-      ? 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort'
-      : 'Approve this mission plan? [y=approve, n=regenerate, edit + Enter]:';
+      ? 'Awaiting approval (single key): y=approve / Ctrl+C=abort'
+      : 'Approve this mission plan? [y + Enter to approve, Ctrl+C to abort]:';
     await this.setPendingPrompt(promptMessage);
     if (!this.isTuiInputMode()) {
       process.stderr.write(`\n${promptMessage} `);
     }
 
     const rawAnswer = this.isTuiInputMode()
-      ? await readSingleKey(process.stdin, ['y', 'n', 'e'])
+      ? await readSingleKey(process.stdin, ['y'])
       : await readLine(process.stdin);
     await this.setPendingPrompt(null);
     if (rawAnswer === '\u0003' || this.aborted) {
       return false;
     }
     const answer = rawAnswer.trim().toLowerCase();
-    if (answer === 'n' || answer === 'no') {
-      return false;
-    }
-    if (answer === 'edit' || answer === 'e') {
-      return false;
-    }
-    return true;
+    return answer === 'y' || answer === 'yes' || answer === 'approve';
   }
 
   private ensureMelosDir(): void {

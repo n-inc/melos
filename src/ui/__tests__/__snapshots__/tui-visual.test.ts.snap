@@ -29,8 +29,8 @@ exports[`ui/tui visual snapshots awaiting approval frame snapshot (input require
 
 
 
-Input Required  Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort    
-[INPUT] Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort            "
+Input Required  Awaiting approval (single key): y=approve / Ctrl+C=abort                            
+[INPUT] Awaiting approval (single key): y=approve / Ctrl+C=abort                                    "
 `;
 
 exports[`ui/tui visual snapshots initializing frame snapshot 1`] = `

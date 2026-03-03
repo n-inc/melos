@@ -121,7 +121,7 @@ describe('ui/tui visual snapshots', () => {
       state: {
         ...createState(),
         missionState: 'awaiting_approval',
-        pendingPrompt: 'Awaiting approval (single key): y=approve / n=regenerate / e=edit / Ctrl+C=abort',
+        pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
       },
       width: 100,
       height: 30,
