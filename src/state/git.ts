@@ -35,6 +35,11 @@ export function getCurrentBranch(cwd: string): string {
   return runGit(cwd, ['branch', '--show-current']).stdout;
 }
 
+export function isGitRepository(cwd: string): boolean {
+  const result = runGit(cwd, ['rev-parse', '--is-inside-work-tree']);
+  return result.ok && result.stdout === 'true';
+}
+
 export function getLastCommitHash(cwd: string): string {
   return runGit(cwd, ['rev-parse', '--short', 'HEAD']).stdout;
 }

@@ -1,6 +1,7 @@
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
 import { jest } from '@jest/globals';
 
 import { Orchestrator } from '../orchestrator.js';
@@ -701,4 +702,171 @@ describe('Orchestrator v0.8', () => {
       states.some((state) => state.workerRuns.some((run) => run.engine === 'claude' && run.model === 'opus'))
     ).toBe(true);
   });
+
+  it('creates checkpoint commit after successful feature when git-strategy is disabled', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-checkpoint-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Checkpoint commit mission\n', 'utf-8');
+    initGitRepository(cwd);
+
+    const planned = createMissionPlan({
+      missionId: 'checkpoint',
+      goal: 'Checkpoint commit test',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['commit after success'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'Implement', status: 'pending', attempts: 0, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async () => {
+      writeFileSync(join(cwd, 'checkpoint-success.txt'), 'ok', 'utf-8');
+      return {
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'SUCCESS',
+          summary: 'implemented',
+          filesChanged: [{ path: 'checkpoint-success.txt', additions: 1, deletions: 0 }],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+    const commitCount = Number(execSync('git rev-list --count HEAD', { cwd, encoding: 'utf-8' }).trim());
+    expect(commitCount).toBe(2);
+    const lastSubject = execSync('git log -1 --pretty=%s', { cwd, encoding: 'utf-8' }).trim();
+    expect(lastSubject).toContain('checkpoint m1-f1');
+  });
+
+  it('skips checkpoint commit for failed feature', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-checkpoint-failed-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Failed checkpoint mission\n', 'utf-8');
+    initGitRepository(cwd);
+
+    const planned = createMissionPlan({
+      missionId: 'checkpoint-failed',
+      goal: 'Checkpoint skip test',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['no commit on failure'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'Implement', status: 'pending', attempts: 0, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async () => {
+      writeFileSync(join(cwd, 'checkpoint-failed.txt'), 'ng', 'utf-8');
+      return {
+        type: 'failed',
+        report: {
+          iteration: 1,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'FAILED',
+          summary: 'failed',
+          filesChanged: [{ path: 'checkpoint-failed.txt', additions: 1, deletions: 0 }],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 1,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: true,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 1,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(false);
+    const commitCount = Number(execSync('git rev-list --count HEAD', { cwd, encoding: 'utf-8' }).trim());
+    expect(commitCount).toBe(1);
+  });
 });
+
+function initGitRepository(cwd: string): void {
+  execSync('git init', { cwd, stdio: 'ignore' });
+  execSync('git config user.email "melos-test@example.com"', { cwd, stdio: 'ignore' });
+  execSync('git config user.name "Melos Test"', { cwd, stdio: 'ignore' });
+  writeFileSync(join(cwd, '.gitkeep'), 'seed\n', 'utf-8');
+  execSync('git add -A', { cwd, stdio: 'ignore' });
+  execSync('git commit -m "test: initial"', { cwd, stdio: 'ignore' });
+}

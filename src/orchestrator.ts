@@ -48,6 +48,7 @@ import {
   getCurrentBranch,
   getHeadCommitHash,
   hasConflicts,
+  isGitRepository,
   isWorkingTreeClean,
   mergeBranch,
   runGitCommand,
@@ -1010,6 +1011,8 @@ export class Orchestrator {
 
     if (branchName && this.state.gitStrategy) {
       result.report.summary = await this.runGitPostProcess(branchName, baseBranch ?? this.state.gitStrategy.config.baseBranch, result.report);
+    } else {
+      this.maybeCreateCheckpointCommit(result);
     }
 
     this.emitEvent(
@@ -1109,6 +1112,35 @@ export class Orchestrator {
         message: `git post process failed: ${error instanceof Error ? error.message : String(error)}`,
       });
       return `${report.summary}\nGit post process failed`;
+    }
+  }
+
+  private maybeCreateCheckpointCommit(result: WorkerResult): void {
+    if (result.type !== 'success' && result.type !== 'partial') {
+      return;
+    }
+    if (!isGitRepository(this.config.cwd)) {
+      return;
+    }
+    if (isWorkingTreeClean(this.config.cwd)) {
+      return;
+    }
+
+    try {
+      const commitHash = commitAll(
+        this.config.cwd,
+        `chore(melos): checkpoint ${result.report.featureId} ${truncateMessage(result.report.summary, 60)}`
+      );
+      this.emitEvent('commit_created', 'system', {
+        branchName: getCurrentBranch(this.config.cwd) || '(detached)',
+        commitHash,
+        featureId: result.report.featureId,
+        mode: 'checkpoint',
+      });
+    } catch (error) {
+      this.emitEvent('error', 'system', {
+        message: `checkpoint commit skipped: ${error instanceof Error ? error.message : String(error)}`,
+      });
     }
   }
 
