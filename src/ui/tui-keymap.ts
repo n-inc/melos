@@ -14,6 +14,8 @@ export type KeyAction =
   | { type: 'scroll_top' }
   | { type: 'scroll_bottom' }
   | { type: 'select' }
+  | { type: 'toggle_log_source' }
+  | { type: 'toggle_secondary' }
   | { type: 'none' };
 
 export function parseKey(chunk: string): KeyAction {
@@ -38,6 +40,12 @@ export function parseKey(chunk: string): KeyAction {
     case 't':
     case 'T':
       return { type: 'goto_view', view: 'task' };
+    case 'l':
+    case 'L':
+      return { type: 'toggle_log_source' };
+    case 'o':
+    case 'O':
+      return { type: 'toggle_secondary' };
     case 'p':
     case 'P':
       return { type: 'pause' };

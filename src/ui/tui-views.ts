@@ -1,6 +1,7 @@
 import type { ModelAssignment, ModelRole } from '../models/router.js';
 import type { FeatureStatus, MilestoneStatus, MissionState } from '../state/mission.js';
 import type { TokenUsageSnapshot } from '../state/token-tracker.js';
+import type { LogActor, UnifiedLogEntry } from '../state/log-entry.js';
 
 export type ViewId = 'overview' | 'features' | 'workers' | 'models' | 'prd' | 'task';
 
@@ -14,7 +15,7 @@ export interface WorkerRunView {
   durationLabel: string;
   engine?: 'claude' | 'codex';
   model?: string;
-  log: string[];
+  log: UnifiedLogEntry[];
 }
 
 export interface MissionFeatureView {
@@ -45,6 +46,8 @@ export interface MissionControlState {
   activeMilestoneId: string | null;
   activeFeatureId: string | null;
   activeBranch: string | null;
+  currentActor: LogActor;
+  logEntries: UnifiedLogEntry[];
   milestones: MissionMilestoneView[];
   progressLog: Array<{ timestamp: string; message: string }>;
   managerLog?: Array<{ timestamp: string; message: string }>;
@@ -66,6 +69,15 @@ export interface KeyEvent {
 
 export interface TUIView {
   readonly id: ViewId;
-  render(viewport: ViewPort, state: MissionControlState, context?: { scrollOffset?: number }): string[];
+  render(
+    viewport: ViewPort,
+    state: MissionControlState,
+    context?: {
+      scrollOffset?: number;
+      logSourceLock?: 'auto' | 'worker' | 'manager';
+      secondaryVisible?: boolean;
+      sourceSwitchNotice?: string | null;
+    }
+  ): string[];
   handleKey?(key: KeyEvent, state: MissionControlState): boolean;
 }

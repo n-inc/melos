@@ -40,14 +40,14 @@ export const overviewView: TUIView = {
       ? wrapByCharCount(activeFeature.description, 42)
       : ['-'];
     const leftLines = [
-      'Active Feature',
+      'MISSION SUMMARY',
       `${statusIcon(activeFeature?.status ?? 'pending')} ${activeFeatureLabel}`,
       '',
-      `Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
-      `State: ${state.missionState}`,
-      `Activity: ${state.activity}`,
-      `Progress: ${state.progressLabel}`,
-      `Branch: ${state.activeBranch ?? '-'}`,
+      `Current Milestone  ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
+      `Current State      ${state.missionState}`,
+      `Current Activity   ${state.activity}`,
+      `Current Progress   ${state.progressLabel}`,
+      `Current Branch     ${state.activeBranch ?? '-'}`,
       '',
       'Expected Behavior',
       ...expectedBehaviorLines.map((line) => `  ${line}`),
@@ -73,16 +73,16 @@ export const overviewView: TUIView = {
     }
 
     const logModeLine = state.missionState === 'awaiting_approval'
-      ? 'Live Stream: paused (awaiting approval: press y)'
+      ? 'Approval pending (press y to start)'
       : state.missionState === 'running'
-        ? 'Live Stream: worker details in Workers view (W)'
-        : 'Live Stream: mission event history';
+        ? 'Detailed logs are available in Logs view (W)'
+        : 'Recent mission events';
 
     const rightLines = [
-      'Features',
+      'FEATURES',
       ...(featureLines.length > 0 ? featureLines : ['-']),
       '',
-      'Progress Log (mission events)',
+      'RECENT EVENTS',
       logModeLine,
       ...progressLines,
     ];

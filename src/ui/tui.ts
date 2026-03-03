@@ -94,6 +94,9 @@ export function createRuntimeUI(
   let state: MissionControlState | null = null;
   let previousFrame: string[] = [];
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  let logSourceLock: 'auto' | 'worker' | 'manager' = 'auto';
+  let secondaryVisible = true;
+  let sourceSwitchNotice: string | null = null;
   const viewScroll: Record<ViewId, number> = {
     overview: 0,
     features: 0,
@@ -124,6 +127,9 @@ export function createRuntimeUI(
         scrollOffset: viewScroll[currentView],
         steerMode,
         steerBuffer,
+        logSourceLock,
+        secondaryVisible,
+        sourceSwitchNotice,
       })
       : buildInitializingFrame(session, {
       width: getColumns(),
@@ -131,6 +137,7 @@ export function createRuntimeUI(
       steerMode,
       steerBuffer,
     });
+    sourceSwitchNotice = null;
 
     // Diff rendering: write only changed lines.
     output.write('\x1b7');
@@ -219,6 +226,17 @@ export function createRuntimeUI(
 
       const action = parseKey(raw);
       switch (action.type) {
+        case 'toggle_log_source': {
+          const previous = logSourceLock;
+          logSourceLock = previous === 'auto' ? 'worker' : previous === 'worker' ? 'manager' : 'auto';
+          sourceSwitchNotice = `SWITCH: ${previous.toUpperCase()} -> ${logSourceLock.toUpperCase()} (manual lock)`;
+          render();
+          return;
+        }
+        case 'toggle_secondary':
+          secondaryVisible = !secondaryVisible;
+          render();
+          return;
         case 'next_view': {
           const index = VIEW_ORDER.indexOf(currentView);
           currentView = VIEW_ORDER[(index + 1) % VIEW_ORDER.length];
@@ -273,6 +291,17 @@ export function createRuntimeUI(
 
       const action = parseKey(raw);
       switch (action.type) {
+        case 'toggle_log_source': {
+          const previous = logSourceLock;
+          logSourceLock = previous === 'auto' ? 'worker' : previous === 'worker' ? 'manager' : 'auto';
+          sourceSwitchNotice = `SWITCH: ${previous.toUpperCase()} -> ${logSourceLock.toUpperCase()} (manual lock)`;
+          render();
+          return;
+        }
+        case 'toggle_secondary':
+          secondaryVisible = !secondaryVisible;
+          render();
+          return;
         case 'next_view': {
           const index = VIEW_ORDER.indexOf(currentView);
           currentView = VIEW_ORDER[(index + 1) % VIEW_ORDER.length];
@@ -383,6 +412,9 @@ export function createRuntimeUI(
     if (mode === 'tui') {
       output.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l');
       previousFrame = [];
+      logSourceLock = 'auto';
+      secondaryVisible = true;
+      sourceSwitchNotice = null;
       refreshTimer = setInterval(render, 1000);
       refreshTimer.unref();
 
@@ -405,8 +437,11 @@ export function createRuntimeUI(
     const firstStateUpdate = state === null;
     state = nextState;
     if (firstStateUpdate) {
-      currentView = 'overview';
-      userChangedView = false;
+    currentView = 'overview';
+    userChangedView = false;
+    logSourceLock = 'auto';
+    secondaryVisible = true;
+    sourceSwitchNotice = null;
       viewScroll.overview = 0;
       viewScroll.features = 0;
       viewScroll.workers = 0;
@@ -470,6 +505,9 @@ export function renderTUIFrameForTest(input: {
   scrollOffset?: number;
   steerMode?: boolean;
   steerBuffer?: string;
+  logSourceLock?: 'auto' | 'worker' | 'manager';
+  secondaryVisible?: boolean;
+  sourceSwitchNotice?: string | null;
 }): string[] {
   if (!input.state) {
     return buildInitializingFrame(input.session, {
@@ -487,6 +525,9 @@ export function renderTUIFrameForTest(input: {
     scrollOffset: input.scrollOffset ?? 0,
     steerMode: input.steerMode === true,
     steerBuffer: input.steerBuffer ?? '',
+    logSourceLock: input.logSourceLock ?? 'auto',
+    secondaryVisible: input.secondaryVisible ?? true,
+    sourceSwitchNotice: input.sourceSwitchNotice ?? null,
   });
 }
 
@@ -500,6 +541,9 @@ function buildFrame(
     scrollOffset: number;
     steerMode: boolean;
     steerBuffer: string;
+    logSourceLock: 'auto' | 'worker' | 'manager';
+    secondaryVisible: boolean;
+    sourceSwitchNotice: string | null;
   }
 ): string[] {
   const width = Math.max(options.width, 60);
@@ -512,13 +556,23 @@ function buildFrame(
     `Time ${state.elapsedLabel}  Input ${usage.input}  Cached ${usage.cached}  Output ${usage.output}`,
     width
   );
+  const actorSummary = composeActorSummary(state);
   const status = truncateDisplay(
-    `● ${state.missionState.toUpperCase()} ${renderProgressBar(state.progressPercent, Math.max(10, Math.min(30, width - 36)))} ${state.progressLabel}`,
+    `● ${state.missionState.toUpperCase()} ${renderProgressBar(state.progressPercent, Math.max(10, Math.min(30, width - 36)))} ${state.progressLabel}${actorSummary ? ` | ${actorSummary}` : ''}`,
     width
   );
 
   const view = VIEW_MAP[options.view];
-  const contentLines = view.render({ width, height: contentHeight }, state, { scrollOffset: options.scrollOffset });
+  const contentLines = view.render(
+    { width, height: contentHeight },
+    state,
+    {
+      scrollOffset: options.scrollOffset,
+      logSourceLock: options.logSourceLock,
+      secondaryVisible: options.secondaryVisible,
+      sourceSwitchNotice: options.sourceSwitchNotice,
+    }
+  );
   const clipped = contentLines.slice(0, contentHeight).map((line) => truncateDisplay(line, width));
   while (clipped.length < contentHeight) {
     clipped.push('');
@@ -526,12 +580,14 @@ function buildFrame(
 
   const footer = truncateDisplay(
     state.pendingPrompt
-      ? `Input Required  ${state.pendingPrompt}`
+      ? `入力待ち  ${state.pendingPrompt}`
       : options.view === 'models'
         ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker 3 Validator 4 Research`
         : options.view === 'prd' || options.view === 'task'
           ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  Enter=More`
-          : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
+          : options.view === 'workers'
+            ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  L Focus  O Secondary  P Pause  R Resume  Ctrl+G Steer`
+            : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
 
@@ -551,6 +607,22 @@ function buildFrame(
     padDisplay(footer, width),
     padDisplay(prompt, width),
   ];
+}
+
+function composeActorSummary(state: MissionControlState): string {
+  if (state.currentActor === 'worker' && state.activeFeatureId) {
+    return `WORKER ${state.activeFeatureId}`;
+  }
+  if (state.currentActor === 'manager' && state.activeFeatureId) {
+    return `MANAGER briefing ${state.activeFeatureId}`;
+  }
+  if (state.currentActor === 'planning') {
+    return 'PLANNING';
+  }
+  if (state.currentActor === 'validator' && state.activeMilestoneId) {
+    return `VALIDATION ${state.activeMilestoneId}`;
+  }
+  return '';
 }
 
 function buildInitializingFrame(
