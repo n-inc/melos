@@ -53,4 +53,11 @@ describe('orchestrator streaming event formatting', () => {
     expect(formatAgentEventDetail('item/commandExecution/outputDelta', { delta: 'ok' })).toBeNull();
     expect(formatAgentEventDetail('item/commandExecution/outputDelta', { delta: 'tests passed successfully' })).toBeNull();
   });
+
+  it('formats manager fallback events for visibility', () => {
+    expect(formatAgentEventDetail('manager/fallback', {
+      reason: 'planner output parse failed',
+      detail: 'unexpected token at position 12',
+    })).toContain('Manager fallback: planner output parse failed');
+  });
 });

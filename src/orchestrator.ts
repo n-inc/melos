@@ -1533,13 +1533,24 @@ function extractGoalFromPrd(prd: string | null): string | null {
     return null;
   }
 
-  const heading = prd.split(/\r?\n/).find((line) => line.startsWith('# '));
-  if (!heading) {
-    return null;
+  const lines = prd.split(/\r?\n/);
+  const heading = lines.find((line) => /^\s{0,3}#{1,6}\s+\S/.test(line));
+  if (heading) {
+    const goal = heading.replace(/^\s{0,3}#{1,6}\s+/, '').trim();
+    if (goal.length > 0) {
+      return truncateMessage(goal, 160);
+    }
   }
 
-  const goal = heading.replace(/^#\s+/, '').trim();
-  return goal.length > 0 ? goal : null;
+  const firstText = lines.find((line) => line.trim().length > 0);
+  if (!firstText) {
+    return null;
+  }
+  const normalized = firstText
+    .replace(/^\s*[-*+]\s+/, '')
+    .replace(/^\s*\d+\.\s+/, '')
+    .trim();
+  return normalized.length > 0 ? truncateMessage(normalized, 160) : null;
 }
 
 function buildPrdPreviewLines(prd: string | null): string[] {
@@ -1744,6 +1755,18 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     return null;
   }
   const safeMethodLower = safeMethod.toLowerCase();
+
+  if (safeMethodLower === 'manager/fallback') {
+    const reason = extractString(params, 'reason');
+    const detail = extractString(params, 'detail');
+    if (reason && detail) {
+      return `Manager fallback: ${reason} (${truncateMessage(detail, 120)})`;
+    }
+    if (reason) {
+      return `Manager fallback: ${reason}`;
+    }
+    return 'Manager fallback triggered';
+  }
 
   if (
     safeMethodLower.includes('token_count')
