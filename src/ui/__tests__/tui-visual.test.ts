@@ -23,6 +23,12 @@ function createState(): MissionControlState {
     activeMilestoneId: 'm1',
     activeFeatureId: 'm1-f2',
     activeBranch: 'melos/mission/m1-f2',
+    currentActor: 'worker',
+    logEntries: [
+      { timestamp: '2026-02-28T09:00:00.000Z', actor: 'planning', kind: 'PLAN_CREATED', message: 'milestones=2 features=4' },
+      { timestamp: '2026-02-28T09:00:10.000Z', actor: 'worker', kind: 'READ', message: 'src/parser.ts' },
+      { timestamp: '2026-02-28T09:00:11.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- parser' },
+    ],
     milestones: [
       {
         id: 'm1',
@@ -60,8 +66,8 @@ function createState(): MissionControlState {
         engine: 'codex',
         model: 'gpt-5.3-codex',
         log: [
-          'Read src/parser.ts',
-          'Execute npm test -- parser',
+          { timestamp: '2026-02-28T09:00:10.000Z', actor: 'worker', kind: 'READ', message: 'src/parser.ts' },
+          { timestamp: '2026-02-28T09:00:11.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- parser' },
         ],
       },
     ],
@@ -121,7 +127,7 @@ describe('ui/tui visual snapshots', () => {
       state: {
         ...createState(),
         missionState: 'awaiting_approval',
-        pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+        pendingPrompt: '承認待ち: y=承認 / Ctrl+C=中止',
       },
       width: 100,
       height: 30,

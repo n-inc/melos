@@ -2,18 +2,18 @@
 
 exports[`ui/tui visual snapshots awaiting approval frame snapshot (input required) 1`] = `
 "● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
-● AWAITING_APPROVAL [███████████████░░░░░░░░░░░░░░░] 2/4 (50%)                                      
+● AWAITING_APPROVAL [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2                       
 ╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
 ║ Overview                                                                                         ║
-║ Active Feature                                          │ Features                             … ║
+║ MISSION SUMMARY                                         │ FEATURES                             … ║
 ║ ● m1-f2 Implement parser and CLI options                │ ● m1 Core                            … ║
 ║                                                         │  ✓ m1-f1 Read files                  … ║
-║ Milestone: m1 Core                                      │ >● m1-f2 Implement parser and CLI opt… ║
-║ State: awaiting_approval                                │ ○ m2 Validation                      … ║
-║ Activity: Running m1-f2...                              │  ○ m2-f1 Run validations             … ║
-║ Progress: 2/4 (50%)                                     │                                      … ║
-║ Branch: melos/mission/m1-f2                             │ Progress Log (mission events)        … ║
-║                                                         │ Live Stream: paused (awaiting approva… ║
+║ Current Milestone  m1 Core                              │ >● m1-f2 Implement parser and CLI opt… ║
+║ Current State      awaiting_approval                    │ ○ m2 Validation                      … ║
+║ Current Activity   Running m1-f2...                     │  ○ m2-f1 Run validations             … ║
+║ Current Progress   2/4 (50%)                            │                                      … ║
+║ Current Branch     melos/mission/m1-f2                  │ RECENT EVENTS                        … ║
+║                                                         │ Approval pending (press y to start)  … ║
 ║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
 ║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
 ║                                                         │ 09:00:10 worker #1 started           … ║
@@ -29,8 +29,8 @@ exports[`ui/tui visual snapshots awaiting approval frame snapshot (input require
 
 
 
-Input Required  Awaiting approval (single key): y=approve / Ctrl+C=abort                            
-[INPUT] Awaiting approval (single key): y=approve / Ctrl+C=abort                                    "
+入力待ち  承認待ち: y=承認 / Ctrl+C=中止                                                            
+[INPUT] 承認待ち: y=承認 / Ctrl+C=中止                                                              "
 `;
 
 exports[`ui/tui visual snapshots initializing frame snapshot 1`] = `
@@ -68,17 +68,17 @@ melos> initializing...                                                          
 
 exports[`ui/tui visual snapshots narrow terminal snapshot (80x24) 1`] = `
 "● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  …
-● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%)                            
+● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2             
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║ Overview                                                                     ║
-║ Active Feature                              │ Features                     … ║
+║ MISSION SUMMARY                             │ FEATURES                     … ║
 ║ ● m1-f2 Implement parser and CLI options    │  ✓ m1-f1 Read files          … ║
 ║                                             │ >● m1-f2 Implement parser and… ║
-║ Milestone: m1 Core                          │ ○ m2 Validation              … ║
-║ State: running                              │  ○ m2-f1 Run validations     … ║
-║ Activity: Running m1-f2...                  │                              … ║
-║ Progress: 2/4 (50%)                         │ Progress Log (mission events)… ║
-║ Branch: melos/mission/m1-f2                 │ Live Stream: worker details i… ║
+║ Current Milestone  m1 Core                  │ ○ m2 Validation              … ║
+║ Current State      running                  │  ○ m2-f1 Run validations     … ║
+║ Current Activity   Running m1-f2...         │                              … ║
+║ Current Progress   2/4 (50%)                │ RECENT EVENTS                … ║
+║ Current Branch     melos/mission/m1-f2      │ Detailed logs are available i… ║
 ║                                             │ 09:00:00 mission run started … ║
 ║ Expected Behavior                           │ 09:00:05 Planning mission... … ║
 ║   Implement parser and CLI options          │ 09:00:10 worker #1 started   … ║
@@ -95,18 +95,18 @@ melos> Running m1-f2...  (Ctrl+G steer)                                         
 
 exports[`ui/tui visual snapshots overview frame snapshot 1`] = `
 "● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
-● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%)                                                
+● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2                                 
 ╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
 ║ Overview                                                                                         ║
-║ Active Feature                                          │ Features                             … ║
+║ MISSION SUMMARY                                         │ FEATURES                             … ║
 ║ ● m1-f2 Implement parser and CLI options                │ ● m1 Core                            … ║
 ║                                                         │  ✓ m1-f1 Read files                  … ║
-║ Milestone: m1 Core                                      │ >● m1-f2 Implement parser and CLI opt… ║
-║ State: running                                          │ ○ m2 Validation                      … ║
-║ Activity: Running m1-f2...                              │  ○ m2-f1 Run validations             … ║
-║ Progress: 2/4 (50%)                                     │                                      … ║
-║ Branch: melos/mission/m1-f2                             │ Progress Log (mission events)        … ║
-║                                                         │ Live Stream: worker details in Worker… ║
+║ Current Milestone  m1 Core                              │ >● m1-f2 Implement parser and CLI opt… ║
+║ Current State      running                              │ ○ m2 Validation                      … ║
+║ Current Activity   Running m1-f2...                     │  ○ m2-f1 Run validations             … ║
+║ Current Progress   2/4 (50%)                            │                                      … ║
+║ Current Branch     melos/mission/m1-f2                  │ RECENT EVENTS                        … ║
+║                                                         │ Detailed logs are available in Logs v… ║
 ║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
 ║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
 ║                                                         │ 09:00:10 worker #1 started           … ║
@@ -128,33 +128,33 @@ melos> Running m1-f2...  (Ctrl+G steer)                                         
 
 exports[`ui/tui visual snapshots workers frame snapshot 1`] = `
 "● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
-● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%)                                                
-╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
-║ Workers                                                                                          ║
-║ #     Type        Target                  Status      Duration    Engine/Model                   ║
-║ ────  ──────────  ──────────────────────  ──────────  ──────────  ────────────────────────────   ║
-║ 1     implement   m1-f2                   running     1m 12s      codex/gpt-5.3-codex            ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
+● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2                                 
+NOW RUNNING  WORKER #1  m1-f2  model=gpt-5.3-codex  elapsed=1m 12s
+────────────────────────────────────────────────────────────────────────────────────────────────────
+09:00:00 [PLAN_CREATED] milestones=2 features=4
+────────── SWITCH: PLANNING -> WORKER ──────────
+09:00:10 [READ] src/parser.ts
+09:00:11 [BASH] npm test -- parser
 
-╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
-║ Active Worker                                                                                    ║
-║ #1 running 1m 12s                                                                                ║
-║ Type: implement                                                                                  ║
-║ Target: m1-f2                                                                                    ║
-║ Engine: codex                                                                                    ║
-║ Model: gpt-5.3-codex                                                                             ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
 
-╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
-║ Manager Log Stream                                                                               ║
-║ No manager stream events yet.                                                                    ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
 
-╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
-║ Worker Log Stream                                                                                ║
-║ Read src/parser.ts                                                                               ║
-║ Execute npm test -- parser                                                                       ║
-╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
-Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview             
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Tab Next  Shift+Tab Prev  F/W/M/D/T View  L Focus  O Secondary  P Pause  R Resume  Ctrl+G Steer     
 melos> Running m1-f2...  (Ctrl+G steer)                                                             "
 `;
