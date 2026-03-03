@@ -3,6 +3,7 @@ import { formatAgentEventDetail } from '../orchestrator.js';
 describe('orchestrator streaming event formatting', () => {
   it('filters noisy codex internal events', () => {
     expect(formatAgentEventDetail('codex/event/agent_message_content_delta', { delta: '{' })).toBeNull();
+    expect(formatAgentEventDetail('item/agentMessage/delta', { delta: 'a' })).toBeNull();
     expect(formatAgentEventDetail('codex/event/token_count', { total: 10 })).toBeNull();
     expect(formatAgentEventDetail('thread/tokenUsage/updated', { input: 1 })).toBeNull();
     expect(formatAgentEventDetail('codex/event/turn/completed', {})).toBeNull();
@@ -20,6 +21,25 @@ describe('orchestrator streaming event formatting', () => {
     expect(formatAgentEventDetail('item/completed', {
       item: { type: 'commandExecution', exitCode: 0, durationMs: 3210 },
     })).toBe('Command finished (exit 0, 3210ms)');
+
+    expect(formatAgentEventDetail('codex/event/item_started', {
+      msg: {
+        item: {
+          type: 'fileChange',
+          changes: [{ path: '/tmp/src/auth.ts' }],
+        },
+      },
+    })).toBe('Write /tmp/src/auth.ts');
+
+    expect(formatAgentEventDetail('codex/event/item_completed', {
+      msg: {
+        item: {
+          type: 'mcpToolCall',
+          tool: 'codebase-retrieval',
+          status: 'completed',
+        },
+      },
+    })).toBe('Tool completed codebase-retrieval');
   });
 
   it('formats tool use events and ignores punctuation-only deltas', () => {
@@ -30,5 +50,7 @@ describe('orchestrator streaming event formatting', () => {
 
     expect(formatAgentEventDetail('codex/event/delta', { delta: '}' })).toBeNull();
     expect(formatAgentEventDetail('codex/event/delta', { delta: 'running tests now' })).toBe('Message running tests now');
+    expect(formatAgentEventDetail('item/commandExecution/outputDelta', { delta: 'ok' })).toBeNull();
+    expect(formatAgentEventDetail('item/commandExecution/outputDelta', { delta: 'tests passed successfully' })).toBeNull();
   });
 });

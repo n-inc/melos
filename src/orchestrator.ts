@@ -131,6 +131,7 @@ export class Orchestrator {
   private resumePause: (() => void) | null = null;
   private workerRunCounter = 0;
   private pendingPrompt: string | null = null;
+  private activityLabel = '';
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -298,6 +299,7 @@ export class Orchestrator {
       return;
     }
 
+    this.activityLabel = 'Mission paused. Press R to resume.';
     this.state.missionPlan = transitionMissionState(this.state.missionPlan, 'paused');
     void this.persistMissionPlan();
     this.emitEvent('mission_interrupted', 'orchestrator', { reason: 'paused by user' });
@@ -309,6 +311,7 @@ export class Orchestrator {
       return;
     }
 
+    this.activityLabel = 'Resuming mission execution...';
     this.state.missionPlan = transitionMissionState(this.state.missionPlan, 'running');
     void this.persistMissionPlan();
     this.emitEvent('mission_resumed', 'orchestrator', { reason: 'resumed by user' });
@@ -322,6 +325,7 @@ export class Orchestrator {
 
   abort(): void {
     this.aborted = true;
+    this.activityLabel = 'Abort requested. Stopping active work...';
     this.manager.abort();
     this.worker.abort();
 
@@ -470,6 +474,7 @@ export class Orchestrator {
       return;
     }
 
+    this.activityLabel = `Planning mission with ${this.modelRouter.getModel('planner')}...`;
     this.emitEvent('manager_started', 'manager', {
       phase: 'planning',
       message: `Planning mission with manager model (${this.modelRouter.getModel('planner')})`,
@@ -504,6 +509,7 @@ export class Orchestrator {
 
     this.state.missionPlan = next;
     this.kernelState.missionPlan = next;
+    this.activityLabel = 'Plan generated. Waiting for approval.';
 
     this.emitEvent('plan_created', 'manager', { plan: next });
     await this.persistMissionPlan();
@@ -512,12 +518,14 @@ export class Orchestrator {
 
   private async runApprovalPhase(): Promise<void> {
     const missionPlan = this.requireMissionPlan();
+    this.activityLabel = 'Waiting for mission approval input...';
 
     const approved = this.config.autoApprove
       ? true
       : await this.promptPlanApproval();
 
     if (!approved) {
+      this.activityLabel = 'Plan not approved. Regenerating plan...';
       this.state.missionPlan = transitionMissionState(missionPlan, 'planning');
       await this.persistMissionPlan();
       await this.emitStatusUpdate();
@@ -527,12 +535,14 @@ export class Orchestrator {
     this.state.missionPlan = transitionMissionState(missionPlan, 'running', {
       approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
     });
+    this.activityLabel = 'Mission approved. Starting execution...';
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
   }
 
   private async runExecutionIteration(): Promise<void> {
     let missionPlan = this.requireMissionPlan();
+    this.activityLabel = 'Preparing next mission iteration...';
     this.emitEvent('iteration_started', 'orchestrator', {
       state: missionPlan.state,
       iteration: missionPlan.totalIterations + 1,
@@ -541,6 +551,7 @@ export class Orchestrator {
     const pendingMilestone = getNextPendingMilestone(missionPlan);
     if (!pendingMilestone) {
       if (areAllMilestonesDone(missionPlan)) {
+        this.activityLabel = 'All milestones are done. Completing mission...';
         missionPlan = transitionMissionState(missionPlan, 'completed');
         this.state.missionPlan = missionPlan;
         this.emitEvent('mission_completed', 'orchestrator', {
@@ -563,6 +574,7 @@ export class Orchestrator {
 
     missionPlan = setActiveMilestone(missionPlan, pendingMilestone.id);
     missionPlan = updateMilestoneStatus(missionPlan, pendingMilestone.id, 'in_progress');
+    this.activityLabel = `Milestone ${pendingMilestone.id} in progress.`;
 
     if (areMilestoneFeaturesDone(pendingMilestone)) {
       this.state.missionPlan = missionPlan;
@@ -583,6 +595,7 @@ export class Orchestrator {
     });
 
     this.state.missionPlan = missionPlan;
+    this.activityLabel = `Preparing briefing for ${nextFeature.id}...`;
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
 
@@ -614,6 +627,7 @@ export class Orchestrator {
       model: updatedFeature.model ?? 'codex',
     });
 
+    this.activityLabel = `Worker executing ${updatedFeature.id}...`;
     const result = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
     this.state.latestWorkerReport = result.report;
 
@@ -677,6 +691,7 @@ export class Orchestrator {
       featureId: updatedFeature.id,
       status,
     });
+    this.activityLabel = `Completed ${updatedFeature.id}.`;
 
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
@@ -691,6 +706,7 @@ export class Orchestrator {
 
     missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'validating');
     this.state.missionPlan = missionPlan;
+    this.activityLabel = `Validating milestone ${milestoneId}...`;
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
 
@@ -763,6 +779,7 @@ export class Orchestrator {
     });
 
     if (passed) {
+      this.activityLabel = `Validation passed for ${milestoneId}.`;
       missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'done');
       missionPlan = setActiveFeature(missionPlan, null);
       missionPlan = setActiveMilestone(missionPlan, null);
@@ -787,6 +804,7 @@ export class Orchestrator {
     }
 
     if (hasValidationLoop(updatedMilestone.validationContract, 3)) {
+      this.activityLabel = `Validation loop detected on ${milestoneId}. Awaiting decision.`;
       const choice = await this.resolveValidationEscalation(updatedMilestone);
       missionPlan = this.requireMissionPlan();
       if (choice === 'abort') {
@@ -847,6 +865,7 @@ export class Orchestrator {
     missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
     this.state.missionPlan = missionPlan;
     this.kernelState.missionPlan = missionPlan;
+    this.activityLabel = `Validation failed for ${milestoneId}. Generated follow-up features.`;
 
     this.emitEvent('task_added', 'manager', {
       milestoneId,
@@ -941,16 +960,6 @@ export class Orchestrator {
       briefing,
       currentBranch: branchName,
       baseBranch,
-      onCommandOutputDelta: (chunk) => {
-        const message = normalizeStreamingText(chunk);
-        if (!message) {
-          return;
-        }
-        this.emitEvent('worker_checkpoint', 'worker', {
-          runId,
-          message,
-        });
-      },
       onAppServerEvent: (method, params) => {
         const detail = formatAgentEventDetail(method, params);
         if (!detail) {
@@ -1122,6 +1131,7 @@ export class Orchestrator {
     if (!this.state.missionPlan || this.state.missionPlan.state !== 'paused') {
       return;
     }
+    this.activityLabel = 'Mission paused. Waiting for resume command...';
 
     if (!this.pausePromise) {
       this.pausePromise = new Promise<void>((resolve) => {
@@ -1269,8 +1279,7 @@ export class Orchestrator {
 
     const progressLabel = `${completedFeatures}/${totalFeatures} (${progressPercent}%)`;
     const elapsedLabel = formatElapsed(this.state.startedAt);
-    const lastProgress = this.kernelState.progressLog[this.kernelState.progressLog.length - 1];
-    const activity = this.resolveActivityLabel(missionPlan, lastProgress?.message);
+    const activity = this.resolveActivityLabel(missionPlan);
     const activeBranch = this.state.gitStrategy?.activeBranch
       ?? (getCurrentBranch(this.config.cwd) || null);
 
@@ -1306,12 +1315,12 @@ export class Orchestrator {
     };
   }
 
-  private resolveActivityLabel(missionPlan: MissionPlan, lastMessage?: string): string {
+  private resolveActivityLabel(missionPlan: MissionPlan): string {
     if (this.pendingPrompt) {
       return `Waiting for input: ${this.pendingPrompt}`;
     }
-    if (lastMessage && lastMessage.trim().length > 0) {
-      return lastMessage.trim();
+    if (this.activityLabel.trim().length > 0) {
+      return this.activityLabel.trim();
     }
     switch (missionPlan.state) {
       case 'planning':
@@ -1557,15 +1566,19 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   if (!safeMethod) {
     return null;
   }
+  const safeMethodLower = safeMethod.toLowerCase();
 
   if (
-    safeMethod.includes('token_count')
-    || safeMethod.includes('rateLimits')
-    || safeMethod.includes('thread/tokenUsage')
-    || safeMethod.includes('/agent_message_delta')
-    || safeMethod.includes('/agent_message_content_delta')
-    || safeMethod.includes('/task_complete')
-    || safeMethod.includes('/turn/completed')
+    safeMethodLower.includes('token_count')
+    || safeMethodLower.includes('ratelimits')
+    || safeMethodLower.includes('thread/tokenusage')
+    || safeMethodLower.includes('agent_message_delta')
+    || safeMethodLower.includes('agent_message_content_delta')
+    || safeMethodLower.includes('agentmessage/delta')
+    || safeMethodLower.includes('reasoning')
+    || safeMethodLower.includes('/task_complete')
+    || safeMethodLower.includes('/turn/completed')
+    || safeMethodLower.includes('/mcp_startup')
   ) {
     return null;
   }
@@ -1575,7 +1588,7 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     || safeMethod.endsWith('/item_started')
     || safeMethod.endsWith('/item/started')
   ) {
-    const item = extractRecord(params, 'item');
+    const item = extractEventItem(params);
     const type = normalizeItemType(extractString(item, 'type') ?? '');
     if (type === 'commandexecution') {
       const command = extractString(item, 'command');
@@ -1593,6 +1606,18 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
       const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
       return filePath ? `Write ${filePath}` : 'Write file';
     }
+    if (type === 'filechange') {
+      const filePath = extractFirstFileChangePath(item);
+      return filePath ? `Write ${filePath}` : 'Write file';
+    }
+    if (type === 'mcptoolcall') {
+      const server = extractString(item, 'server');
+      const tool = extractString(item, 'tool');
+      if (server && tool) {
+        return `Tool ${server}/${tool}`;
+      }
+      return tool ? `Tool ${tool}` : null;
+    }
     return null;
   }
 
@@ -1601,7 +1626,7 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     || safeMethod.endsWith('/item_completed')
     || safeMethod.endsWith('/item/completed')
   ) {
-    const item = extractRecord(params, 'item');
+    const item = extractEventItem(params);
     const type = normalizeItemType(extractString(item, 'type') ?? '');
     if (type === 'commandexecution') {
       const exitCode = extractNumber(item, 'exitCode');
@@ -1612,13 +1637,26 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
       ].filter((v): v is string => v !== null);
       return parts.length > 0 ? `Command finished (${parts.join(', ')})` : 'Command finished';
     }
+    if (type === 'filechange') {
+      const filePath = extractFirstFileChangePath(item);
+      if (filePath) {
+        return `Write completed ${filePath}`;
+      }
+      return 'Write completed';
+    }
+    if (type === 'mcptoolcall') {
+      const tool = extractString(item, 'tool');
+      const error = extractString(item, 'error');
+      if (error) {
+        return tool ? `Tool failed ${tool}` : 'Tool call failed';
+      }
+      return tool ? `Tool completed ${tool}` : 'Tool call completed';
+    }
     return null;
   }
 
   if (safeMethod.endsWith('/outputDelta')) {
-    const delta = extractString(params, 'delta');
-    const normalized = delta ? normalizeStreamingText(delta) : null;
-    return normalized && isMeaningfulLogFragment(normalized) ? normalized : null;
+    return null;
   }
 
   if (safeMethod.endsWith('/delta')) {
@@ -1662,7 +1700,7 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   }
 
   if (safeMethod.endsWith('/result')) {
-    return 'Agent result received';
+    return null;
   }
 
   return null;
@@ -1689,6 +1727,18 @@ function extractRecord(value: unknown, key: string): Record<string, unknown> | n
   return candidate as Record<string, unknown>;
 }
 
+function extractEventItem(value: unknown): Record<string, unknown> | null {
+  const direct = extractRecord(value, 'item');
+  if (direct) {
+    return direct;
+  }
+  const msg = extractRecord(value, 'msg');
+  if (!msg) {
+    return null;
+  }
+  return extractRecord(msg, 'item');
+}
+
 function extractNumber(value: unknown, key: string): number | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -1696,6 +1746,22 @@ function extractNumber(value: unknown, key: string): number | null {
   const record = value as Record<string, unknown>;
   const candidate = record[key];
   return typeof candidate === 'number' ? candidate : null;
+}
+
+function extractFirstFileChangePath(item: Record<string, unknown> | null): string | null {
+  if (!item) {
+    return null;
+  }
+  const changes = item.changes;
+  if (!Array.isArray(changes) || changes.length === 0) {
+    return null;
+  }
+  const first = changes[0];
+  if (!first || typeof first !== 'object' || Array.isArray(first)) {
+    return null;
+  }
+  const path = (first as Record<string, unknown>).path;
+  return typeof path === 'string' ? path : null;
 }
 
 function normalizeItemType(value: string): string {

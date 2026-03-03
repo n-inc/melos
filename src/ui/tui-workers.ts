@@ -33,8 +33,16 @@ export const workersView: TUIView = {
 
     const maxLogLines = Math.max(8, viewport.height - 16);
     const logLines = selected
-      ? selected.log.slice(-maxLogLines)
-      : ['No worker logs. Press W while mission is running.'];
+      ? (selected.log.length > 0
+        ? selected.log.slice(-maxLogLines)
+        : [
+          'No structured worker events yet.',
+          `Current activity: ${state.activity}`,
+        ])
+      : [
+        'No worker logs yet.',
+        `Current activity: ${state.activity}`,
+      ];
 
     return [
       ...drawBox('Workers', table, viewport.width),

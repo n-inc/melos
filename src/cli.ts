@@ -41,6 +41,66 @@ export type KillCommandResult =
 
 const ARCHIVE_ON_RUN_STATES = new Set<MissionState>(['completed', 'failed', 'aborted']);
 
+interface SignalControllerHooks {
+  abort: () => void;
+  stopUI: () => void;
+  setExitCode: (code: number) => void;
+  exitNow: (code: number) => void;
+  write: (message: string) => void;
+  forceExitAfterMs?: number;
+}
+
+export interface SignalController {
+  handle: (signal: NodeJS.Signals) => void;
+  getExitCode: () => number | null;
+  clear: () => void;
+}
+
+export function createSignalController(hooks: SignalControllerHooks): SignalController {
+  const forceExitAfterMs = hooks.forceExitAfterMs ?? 4000;
+  let signalExitCode: number | null = null;
+  let forceExitTimer: NodeJS.Timeout | null = null;
+
+  const clear = () => {
+    if (forceExitTimer) {
+      clearTimeout(forceExitTimer);
+      forceExitTimer = null;
+    }
+  };
+
+  const forceExit = (code: number) => {
+    hooks.write('\n[melos] 中断処理がタイムアウトしたため、強制終了します。\n');
+    hooks.stopUI();
+    hooks.exitNow(code);
+  };
+
+  const handle = (signal: NodeJS.Signals) => {
+    const nextCode = signal === 'SIGTERM' ? 143 : 130;
+    if (signalExitCode !== null) {
+      hooks.write('\n[melos] 強制終了します。\n');
+      hooks.stopUI();
+      hooks.exitNow(nextCode);
+      return;
+    }
+
+    signalExitCode = nextCode;
+    hooks.setExitCode(signalExitCode);
+    hooks.write('\n[melos] 中断しています...（もう一度 Ctrl+C で強制終了）\n');
+    hooks.abort();
+
+    forceExitTimer = setTimeout(() => {
+      forceExit(signalExitCode ?? nextCode);
+    }, forceExitAfterMs);
+    forceExitTimer.unref?.();
+  };
+
+  return {
+    handle,
+    getExitCode: () => signalExitCode,
+    clear,
+  };
+}
+
 export function createProgram(): Command {
   const program = new Command();
 
@@ -187,15 +247,22 @@ export async function executeWithOptions(
 
   const orchestrator = new Orchestrator(orchestratorConfig);
 
-  let signalExitCode: number | null = null;
   let runFailureMessage: string | null = null;
+  const signalController = createSignalController({
+    abort: () => orchestrator.abort(),
+    stopUI: () => runtimeUI.stop(),
+    setExitCode: (code) => {
+      process.exitCode = code;
+    },
+    exitNow: (code) => {
+      process.exit(code);
+    },
+    write: (message) => {
+      process.stderr.write(message);
+    },
+  });
   const handleSignal = (signal: NodeJS.Signals) => {
-    if (signalExitCode !== null) {
-      return;
-    }
-    signalExitCode = signal === 'SIGTERM' ? 143 : 130;
-    process.exitCode = signalExitCode;
-    orchestrator.abort();
+    signalController.handle(signal);
   };
 
   process.on('SIGINT', handleSignal);
@@ -226,7 +293,7 @@ export async function executeWithOptions(
     });
 
     const result = await orchestrator.run();
-    if (signalExitCode !== null) {
+    if (signalController.getExitCode() !== null) {
       return;
     }
 
@@ -236,6 +303,7 @@ export async function executeWithOptions(
       return;
     }
   } finally {
+    signalController.clear();
     runtimeUI.stop();
     await clearRuntime(melosDir);
     process.removeListener('SIGINT', handleSignal);

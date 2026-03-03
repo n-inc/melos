@@ -111,6 +111,27 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Execute npm test -- auth');
   });
 
+  it('renders waiting message when worker has no structured logs yet', () => {
+    const state = createState();
+    state.workerRuns = [
+      {
+        id: 8,
+        type: 'implement',
+        featureId: 'm2-f4',
+        milestoneId: 'm2',
+        status: 'running',
+        durationLabel: '0m 09s',
+        engine: 'codex',
+        model: 'gpt-5.3-codex',
+        log: [],
+      },
+    ];
+    state.activity = 'Worker executing m2-f4...';
+    const lines = workersView.render({ width: 100, height: 24 }, state).join('\n');
+    expect(lines).toContain('No structured worker events yet.');
+    expect(lines).toContain('Current activity: Worker executing m2-f4...');
+  });
+
   it('renders models view assignments', () => {
     const lines = modelsView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Models');
