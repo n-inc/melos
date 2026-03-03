@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -797,7 +797,7 @@ describe('Orchestrator v0.8', () => {
     ).toBe(true);
   });
 
-  it('creates checkpoint commit after successful feature when git-strategy is disabled', async () => {
+  it('does not create checkpoint commit after successful feature when git-strategy is disabled', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-checkpoint-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
@@ -872,26 +872,25 @@ describe('Orchestrator v0.8', () => {
     const result = await orchestrator.run();
     expect(result.success).toBe(true);
     const commitCount = Number(execSync('git rev-list --count HEAD', { cwd, encoding: 'utf-8' }).trim());
-    expect(commitCount).toBe(2);
-    const lastSubject = execSync('git log -1 --pretty=%s', { cwd, encoding: 'utf-8' }).trim();
-    expect(lastSubject).toContain('checkpoint m1-f1');
+    expect(commitCount).toBe(1);
   });
 
-  it('skips checkpoint commit for failed feature', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-checkpoint-failed-'));
+  it('fails feature with clear guidance when git-strategy branch is dirty', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-dirty-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
 
     const prdPath = join(cwd, 'PRD.md');
     const missionPath = join(cwd, 'TASK.json');
-    writeFileSync(prdPath, '# Failed checkpoint mission\n', 'utf-8');
+    writeFileSync(prdPath, '# Dirty branch mission\n', 'utf-8');
     initGitRepository(cwd);
+    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
 
     const planned = createMissionPlan({
-      missionId: 'checkpoint-failed',
-      goal: 'Checkpoint skip test',
+      missionId: 'dirty-branch',
+      goal: 'Dirty branch guard',
       constraints: ['No backward compatibility'],
-      successCriteria: ['no commit on failure'],
+      successCriteria: ['must fail if uncommitted'],
       milestones: [
         {
           id: 'm1',
@@ -911,27 +910,27 @@ describe('Orchestrator v0.8', () => {
     jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
     jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
     jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async () => {
-      writeFileSync(join(cwd, 'checkpoint-failed.txt'), 'ng', 'utf-8');
+      writeFileSync(join(cwd, 'dirty-change.txt'), 'dirty', 'utf-8');
       return {
-        type: 'failed',
+        type: 'success',
         report: {
           iteration: 1,
           milestoneId: 'm1',
           featureId: 'm1-f1',
-          status: 'FAILED',
-          summary: 'failed',
-          filesChanged: [{ path: 'checkpoint-failed.txt', additions: 1, deletions: 0 }],
+          status: 'SUCCESS',
+          summary: 'implemented without commit',
+          filesChanged: [{ path: 'dirty-change.txt', additions: 1, deletions: 0 }],
           validation: {
-            testsRun: false,
-            testsPassed: 0,
-            testsFailed: 1,
-            lintPassed: false,
-            typecheckPassed: false,
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
           },
           checks: [],
           discoveredFeatures: [],
           learnings: [],
-          requestsHelp: true,
+          requestsHelp: false,
           createdAt: new Date().toISOString(),
         },
       };
@@ -947,12 +946,113 @@ describe('Orchestrator v0.8', () => {
       interactivePlanning: false,
       dryRun: false,
       resume: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'dirty-branch',
+        baseBranch,
+        autoPush: false,
+        preMergeValidation: false,
+        validationCommands: [],
+      },
     });
 
     const result = await orchestrator.run();
     expect(result.success).toBe(false);
-    const commitCount = Number(execSync('git rev-list --count HEAD', { cwd, encoding: 'utf-8' }).trim());
-    expect(commitCount).toBe(1);
+    expect(result.reason).toBe('max_iterations');
+
+    const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
+      milestones: Array<{ features: Array<{ status: string; lastReportSummary?: string }> }>;
+    };
+    expect(mission.milestones[0]?.features[0]?.status).toBe('failed');
+    expect(mission.milestones[0]?.features[0]?.lastReportSummary).toContain('git-committer');
+  });
+
+  it('continues git-strategy flow when worker commits feature changes', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-committed-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Committed branch mission\n', 'utf-8');
+    initGitRepository(cwd);
+    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
+
+    const planned = createMissionPlan({
+      missionId: 'committed-branch',
+      goal: 'Committed branch flow',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['must merge when committed'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'Implement', status: 'pending', attempts: 0, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async () => {
+      writeFileSync(join(cwd, 'committed-change.txt'), 'ok', 'utf-8');
+      execSync('git add -A', { cwd, stdio: 'ignore' });
+      execSync('git commit -m "feat(checkpoint): complete m1-f1"', { cwd, stdio: 'ignore' });
+      return {
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'SUCCESS',
+          summary: 'implemented with commit',
+          filesChanged: [{ path: 'committed-change.txt', additions: 1, deletions: 0 }],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'committed-branch',
+        baseBranch,
+        autoPush: false,
+        preMergeValidation: false,
+        validationCommands: [],
+      },
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+    expect(execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim()).toBe(baseBranch);
   });
 });
 

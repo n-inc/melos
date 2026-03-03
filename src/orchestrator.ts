@@ -44,11 +44,9 @@ import {
 import {
   createBranch,
   checkoutBranch,
-  commitAll,
   getCurrentBranch,
   getHeadCommitHash,
   hasConflicts,
-  isGitRepository,
   isWorkingTreeClean,
   mergeBranch,
   runGitCommand,
@@ -999,7 +997,7 @@ export class Orchestrator {
       },
     };
 
-    const result = await this.worker.run(workerInput);
+    let result = await this.worker.run(workerInput);
     this.watchdog.touch();
     if (selectedWorkerEngine === 'codex') {
       const activeThreadId = this.worker.getActiveThreadId();
@@ -1010,9 +1008,23 @@ export class Orchestrator {
     }
 
     if (branchName && this.state.gitStrategy) {
-      result.report.summary = await this.runGitPostProcess(branchName, baseBranch ?? this.state.gitStrategy.config.baseBranch, result.report);
-    } else {
-      this.maybeCreateCheckpointCommit(result);
+      const postProcess = await this.runGitPostProcess(
+        branchName,
+        baseBranch ?? this.state.gitStrategy.config.baseBranch,
+        result.report
+      );
+      result.report.summary = postProcess.summary;
+      if (!postProcess.ok && (result.type === 'success' || result.type === 'partial')) {
+        result = {
+          type: 'failed',
+          report: {
+            ...result.report,
+            status: 'FAILED',
+            summary: postProcess.summary,
+            requestsHelp: true,
+          },
+        };
+      }
     }
 
     this.emitEvent(
@@ -1033,21 +1045,28 @@ export class Orchestrator {
     branchName: string,
     baseBranch: string,
     report: WorkerFeatureReport
-  ): Promise<string> {
+  ): Promise<{ ok: boolean; summary: string }> {
     try {
       if (!isWorkingTreeClean(this.config.cwd)) {
-        const commitHash = commitAll(
-          this.config.cwd,
-          `feat(mission): ${report.featureId} ${truncateMessage(report.summary, 60)}`
-        );
-        this.emitEvent('commit_created', 'system', {
+        const message = [
+          report.summary,
+          `Commit required before merge on ${branchName}.`,
+          'Please commit the feature changes using the git-committer skill and retry.',
+        ].join('\n');
+        this.emitEvent('error', 'system', {
           branchName,
-          commitHash,
           featureId: report.featureId,
+          message: 'git strategy requires committed changes before merge',
         });
         this.state.gitStrategy = this.state.gitStrategy
-          ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'ready', { commitHash })
+          ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned')
           : this.state.gitStrategy;
+        await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
+        checkoutBranch(this.config.cwd, baseBranch);
+        return {
+          ok: false,
+          summary: message,
+        };
       }
 
       if (this.state.gitStrategy?.config.preMergeValidation) {
@@ -1063,7 +1082,10 @@ export class Orchestrator {
               : this.state.gitStrategy;
             await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
             checkoutBranch(this.config.cwd, baseBranch);
-            return `${report.summary}\nPre-merge validation failed: ${command}`;
+            return {
+              ok: false,
+              summary: `${report.summary}\nPre-merge validation failed: ${command}`,
+            };
           }
         }
       }
@@ -1087,7 +1109,10 @@ export class Orchestrator {
           : this.state.gitStrategy;
         await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
         checkoutBranch(this.config.cwd, baseBranch);
-        return `${report.summary}\nMerge conflict detected for ${branchName}`;
+        return {
+          ok: false,
+          summary: `${report.summary}\nMerge conflict detected for ${branchName}`,
+        };
       }
 
       mergeBranch(this.config.cwd, branchName, baseBranch);
@@ -1101,7 +1126,10 @@ export class Orchestrator {
       await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
       checkoutBranch(this.config.cwd, baseBranch);
 
-      return report.summary;
+      return {
+        ok: true,
+        summary: report.summary,
+      };
     } catch (error) {
       try {
         checkoutBranch(this.config.cwd, baseBranch);
@@ -1111,36 +1139,10 @@ export class Orchestrator {
       this.emitEvent('error', 'system', {
         message: `git post process failed: ${error instanceof Error ? error.message : String(error)}`,
       });
-      return `${report.summary}\nGit post process failed`;
-    }
-  }
-
-  private maybeCreateCheckpointCommit(result: WorkerResult): void {
-    if (result.type !== 'success' && result.type !== 'partial') {
-      return;
-    }
-    if (!isGitRepository(this.config.cwd)) {
-      return;
-    }
-    if (isWorkingTreeClean(this.config.cwd)) {
-      return;
-    }
-
-    try {
-      const commitHash = commitAll(
-        this.config.cwd,
-        `chore(melos): checkpoint ${result.report.featureId} ${truncateMessage(result.report.summary, 60)}`
-      );
-      this.emitEvent('commit_created', 'system', {
-        branchName: getCurrentBranch(this.config.cwd) || '(detached)',
-        commitHash,
-        featureId: result.report.featureId,
-        mode: 'checkpoint',
-      });
-    } catch (error) {
-      this.emitEvent('error', 'system', {
-        message: `checkpoint commit skipped: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      return {
+        ok: false,
+        summary: `${report.summary}\nGit post process failed`,
+      };
     }
   }
 
