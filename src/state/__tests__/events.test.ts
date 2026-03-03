@@ -47,7 +47,7 @@ describe('event sourcing', () => {
     const state = replayMissionEvents(events);
     expect(state.workerRuns).toHaveLength(1);
     expect(state.workerRuns[0]?.status).toBe('done');
-    expect(state.workerRuns[0]?.log).toContain('read file');
+    expect(state.workerRuns[0]?.log.some((entry) => entry.message.includes('read file'))).toBe(true);
 
     await saveSnapshot(dir, {
       seq: 4,
@@ -109,6 +109,7 @@ describe('event sourcing', () => {
     expect(messages).toContain('Planning mission...');
     expect(messages.some((message) => message.startsWith('validation_started:'))).toBe(true);
     expect(state.managerLog?.some((entry) => entry.message.includes('Planning mission...'))).toBe(true);
+    expect(state.logEntries.some((entry) => entry.actor === 'planning' || entry.actor === 'manager')).toBe(true);
   });
 
   it('returns null snapshot when state.json does not exist', async () => {

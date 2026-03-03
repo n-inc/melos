@@ -61,6 +61,7 @@ import {
 import { loadSnapshot, saveSnapshot } from './state/snapshot.js';
 import { Watchdog } from './state/watchdog.js';
 import { TokenTracker } from './state/token-tracker.js';
+import type { LogActor } from './state/log-entry.js';
 import { ModelRouter, type ModelRole } from './models/router.js';
 import type { MissionControlState, MissionMilestoneView, WorkerRunView } from './ui/tui-views.js';
 
@@ -1106,7 +1107,7 @@ export class Orchestrator {
     }
 
     const promptMessage = this.isTuiInputMode()
-      ? 'Validation loop detected (single key): r=retry / s=skip / a=abort / m=modify'
+      ? '検証ループ: r=再試行 / s=スキップ / a=中止 / m=手動修正'
       : 'Validation loop detected. Choose action [retry/skip/abort/modify]:';
     await this.setPendingPrompt(promptMessage);
 
@@ -1218,7 +1219,7 @@ export class Orchestrator {
     }
 
     const promptMessage = this.isTuiInputMode()
-      ? 'Awaiting approval (single key): y=approve / Ctrl+C=abort'
+      ? '承認待ち: y=承認 / Ctrl+C=中止'
       : 'Approve this mission plan? [y + Enter to approve, Ctrl+C to abort]:';
     await this.setPendingPrompt(promptMessage);
     if (!this.isTuiInputMode()) {
@@ -1326,6 +1327,8 @@ export class Orchestrator {
       model: run.model,
       log: run.log,
     }));
+    const currentActor = this.resolveCurrentActor(missionPlan);
+    const logEntries = this.kernelState.logEntries.slice(-500);
 
     if (!missionPlan) {
       const fallbackTitle = extractGoalFromPrd(this.state.prd) ?? 'Mission planning';
@@ -1347,6 +1350,8 @@ export class Orchestrator {
         activeMilestoneId: null,
         activeFeatureId: null,
         activeBranch,
+        currentActor,
+        logEntries,
         milestones: [],
         progressLog: this.kernelState.progressLog.slice(-80),
         managerLog: (this.kernelState.managerLog ?? []).slice(-120),
@@ -1393,6 +1398,8 @@ export class Orchestrator {
       activeMilestoneId: missionPlan.activeMilestoneId,
       activeFeatureId: missionPlan.activeFeatureId,
       activeBranch,
+      currentActor,
+      logEntries,
       milestones,
       progressLog: this.kernelState.progressLog.slice(-80),
       managerLog: (this.kernelState.managerLog ?? []).slice(-120),
@@ -1430,6 +1437,29 @@ export class Orchestrator {
       default:
         return 'Preparing mission runtime...';
     }
+  }
+
+  private resolveCurrentActor(missionPlan: MissionPlan | null): LogActor {
+    if (!missionPlan) {
+      return this.kernelState.currentActor === 'idle' ? 'planning' : this.kernelState.currentActor;
+    }
+
+    if (missionPlan.state === 'planning') {
+      return this.kernelState.currentActor === 'idle' ? 'planning' : this.kernelState.currentActor;
+    }
+    if (missionPlan.state === 'awaiting_approval') {
+      return 'manager';
+    }
+    if (missionPlan.state === 'running') {
+      if (this.kernelState.activeWorkerRunId !== null) {
+        return 'worker';
+      }
+      return this.kernelState.currentActor === 'idle' ? 'manager' : this.kernelState.currentActor;
+    }
+    if (missionPlan.state === 'paused') {
+      return this.kernelState.currentActor === 'idle' ? 'manager' : this.kernelState.currentActor;
+    }
+    return 'idle';
   }
 
   private async persistMissionPlan(): Promise<void> {
@@ -1772,12 +1802,12 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     const reason = extractString(params, 'reason');
     const detail = extractString(params, 'detail');
     if (reason && detail) {
-      return `Manager fallback: ${reason} (${truncateMessage(detail, 120)})`;
+      return `[FALLBACK] ${reason} (${truncateMessage(detail, 120)})`;
     }
     if (reason) {
-      return `Manager fallback: ${reason}`;
+      return `[FALLBACK] ${reason}`;
     }
-    return 'Manager fallback triggered';
+    return '[FALLBACK] manager fallback triggered';
   }
 
   if (
@@ -1804,31 +1834,35 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     const type = normalizeItemType(extractString(item, 'type') ?? '');
     if (type === 'commandexecution') {
       const command = extractString(item, 'command');
-      return command ? `Execute ${truncateMessage(command, 120)}` : 'Execute command';
+      return command ? `[BASH] ${truncateMessage(command, 120)}` : '[BASH] (command)';
     }
     if (type === 'fileread') {
       const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
       if (!filePath) {
-        return 'Read file';
+        return '[READ] (file)';
       }
       const limit = extractNumber(item, 'limit');
-      return limit !== null ? `Read ${filePath} (${limit} lines)` : `Read ${filePath}`;
+      return limit !== null ? `[READ] ${filePath} (${limit} lines)` : `[READ] ${filePath}`;
     }
     if (type === 'filewrite' || type === 'fileedit') {
       const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
-      return filePath ? `Write ${filePath}` : 'Write file';
+      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
     }
     if (type === 'filechange') {
       const filePath = extractFirstFileChangePath(item);
-      return filePath ? `Write ${filePath}` : 'Write file';
+      const summary = extractFileChangeSummary(item);
+      if (summary) {
+        return `[WRITE] ${summary.path} (+${summary.added} -${summary.removed})`;
+      }
+      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
     }
     if (type === 'mcptoolcall') {
       const server = extractString(item, 'server');
       const tool = extractString(item, 'tool');
       if (server && tool) {
-        return `Tool ${server}/${tool}`;
+        return `[TOOL] ${server}/${tool}`;
       }
-      return tool ? `Tool ${tool}` : null;
+      return tool ? `[TOOL] ${tool}` : null;
     }
     return null;
   }
@@ -1844,25 +1878,26 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
       const exitCode = extractNumber(item, 'exitCode');
       const durationMs = extractNumber(item, 'durationMs');
       const parts = [
-        exitCode !== null ? `exit ${exitCode}` : null,
+        exitCode !== null ? `exit=${exitCode}` : null,
         durationMs !== null ? `${durationMs}ms` : null,
       ].filter((v): v is string => v !== null);
-      return parts.length > 0 ? `Command finished (${parts.join(', ')})` : 'Command finished';
+      return parts.length > 0 ? `[DONE] ${parts.join(' ')}` : '[DONE] command finished';
     }
     if (type === 'filechange') {
-      const filePath = extractFirstFileChangePath(item);
-      if (filePath) {
-        return `Write completed ${filePath}`;
+      const summary = extractFileChangeSummary(item);
+      if (summary) {
+        return `[DONE] write ${summary.path} (+${summary.added} -${summary.removed})`;
       }
-      return 'Write completed';
+      const filePath = extractFirstFileChangePath(item);
+      return filePath ? `[DONE] write ${filePath}` : '[DONE] write completed';
     }
     if (type === 'mcptoolcall') {
       const tool = extractString(item, 'tool');
       const error = extractString(item, 'error');
       if (error) {
-        return tool ? `Tool failed ${tool}` : 'Tool call failed';
+        return tool ? `[ERR] tool failed ${tool}` : '[ERR] tool failed';
       }
-      return tool ? `Tool completed ${tool}` : 'Tool call completed';
+      return tool ? `[DONE] tool completed ${tool}` : '[DONE] tool completed';
     }
     return null;
   }
@@ -1874,7 +1909,7 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   if (safeMethod.endsWith('/delta')) {
     const delta = extractString(params, 'delta');
     const normalized = delta ? normalizeStreamingText(delta) : null;
-    return normalized && isMeaningfulLogFragment(normalized) ? `Message ${normalized}` : null;
+    return normalized && isMeaningfulLogFragment(normalized) ? `[INFO] ${normalized}` : null;
   }
 
   if (safeMethod.endsWith('/tool_use')) {
@@ -1885,21 +1920,21 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     }
     if (name === 'Bash') {
       const command = extractString(input, 'command');
-      return command ? `Execute ${truncateMessage(command, 120)}` : 'Execute command';
+      return command ? `[BASH] ${truncateMessage(command, 120)}` : '[BASH] (command)';
     }
     if (name === 'Read') {
       const filePath = extractString(input, 'file_path');
       const limit = extractNumber(input, 'limit');
       if (!filePath) {
-        return 'Read file';
+        return '[READ] (file)';
       }
-      return limit !== null ? `Read ${filePath} (${limit} lines)` : `Read ${filePath}`;
+      return limit !== null ? `[READ] ${filePath} (${limit} lines)` : `[READ] ${filePath}`;
     }
     if (name === 'Write' || name === 'Edit') {
       const filePath = extractString(input, 'file_path');
-      return filePath ? `Write ${filePath}` : 'Write file';
+      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
     }
-    return `Tool ${name}`;
+    return `[TOOL] ${name}`;
   }
 
   if (safeMethod.endsWith('/tool_result')) {
@@ -1908,7 +1943,7 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     if (!normalized || !isMeaningfulLogFragment(normalized)) {
       return null;
     }
-    return `Result ${normalized}`;
+    return `[INFO] ${normalized}`;
   }
 
   if (safeMethod.endsWith('/result')) {
@@ -1916,6 +1951,51 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   }
 
   return null;
+}
+
+function extractFileChangeSummary(item: Record<string, unknown> | null): { path: string; added: number; removed: number } | null {
+  if (!item) {
+    return null;
+  }
+  const changes = item.changes;
+  if (!Array.isArray(changes) || changes.length === 0) {
+    return null;
+  }
+  const first = changes[0];
+  if (!first || typeof first !== 'object' || Array.isArray(first)) {
+    return null;
+  }
+  const firstRecord = first as Record<string, unknown>;
+  const path = typeof firstRecord.path === 'string' ? firstRecord.path : null;
+  if (!path) {
+    return null;
+  }
+  const diff = typeof firstRecord.diff === 'string' ? firstRecord.diff : '';
+  const parsed = parseUnifiedDiffSummary(diff);
+  return {
+    path,
+    added: parsed.added,
+    removed: parsed.removed,
+  };
+}
+
+function parseUnifiedDiffSummary(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const rawLine of diff.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
+      continue;
+    }
+    if (line.startsWith('+')) {
+      added += 1;
+      continue;
+    }
+    if (line.startsWith('-')) {
+      removed += 1;
+    }
+  }
+  return { added, removed };
 }
 
 function extractString(value: unknown, key: string): string | null {

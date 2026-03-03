@@ -2,6 +2,7 @@ import type { MissionPlan } from './mission.js';
 import type { MissionEvent } from './events.js';
 import type { GitStrategyState } from './git-strategy.js';
 import type { TokenUsageSnapshot } from './token-tracker.js';
+import type { LogActor, UnifiedLogEntry } from './log-entry.js';
 
 export interface WorkerRunState {
   id: number;
@@ -13,7 +14,7 @@ export interface WorkerRunState {
   model?: string;
   startedAt: string;
   endedAt?: string;
-  log: string[];
+  log: UnifiedLogEntry[];
 }
 
 export interface MissionKernelState {
@@ -22,6 +23,8 @@ export interface MissionKernelState {
   workerRuns: WorkerRunState[];
   progressLog: Array<{ timestamp: string; message: string }>;
   managerLog?: Array<{ timestamp: string; message: string }>;
+  logEntries: UnifiedLogEntry[];
+  currentActor: LogActor;
   activeWorkerRunId: number | null;
   gitStrategy: GitStrategyState | null;
   tokenUsage: TokenUsageSnapshot;
@@ -34,6 +37,8 @@ export function createInitialKernelState(): MissionKernelState {
     workerRuns: [],
     progressLog: [],
     managerLog: [],
+    logEntries: [],
+    currentActor: 'idle',
     activeWorkerRunId: null,
     gitStrategy: null,
     tokenUsage: {
@@ -49,34 +54,58 @@ export function reduceMissionEvent(
 ): MissionKernelState {
   switch (event.type) {
     case 'mission_started':
-    case 'mission_resumed':
-      return appendProgress(state, event.timestamp, String(event.payload.message ?? event.type));
+    case 'mission_resumed': {
+      const message = String(event.payload.message ?? event.type);
+      return appendUnifiedProgress(
+        state,
+        event.timestamp,
+        message,
+        'planning',
+        'INFO'
+      );
+    }
 
     case 'manager_started':
     case 'manager_decision':
-    case 'manager_error':
-      return appendManagerProgress(
+    case 'manager_error': {
+      const message = String(event.payload.message ?? `${event.type}: ${stringifyPayload(event.payload)}`);
+      const phase = asString(event.payload.phase);
+      const actor: LogActor = phase === 'planning' ? 'planning' : 'manager';
+      const kind = event.type === 'manager_error' ? 'ERR' : (event.type === 'manager_started' ? 'STARTED' : 'INFO');
+      return appendManagerUnifiedProgress(
         state,
         event.timestamp,
-        String(event.payload.message ?? `${event.type}: ${stringifyPayload(event.payload)}`)
+        message,
+        actor,
+        kind
       );
+    }
 
     case 'plan_created':
     case 'plan_updated': {
       const missionPlan = (event.payload.plan as MissionPlan | undefined) ?? state.missionPlan;
+      const message = `${event.type}`;
       return {
-        ...appendProgress(state, event.timestamp, event.type),
+        ...appendUnifiedProgress(state, event.timestamp, message, 'planning', event.type.toUpperCase()),
         missionPlan,
         iteration: event.iteration,
       };
     }
 
     case 'iteration_started':
-    case 'iteration_completed':
+    case 'iteration_completed': {
+      const next = appendUnifiedProgress(
+        state,
+        event.timestamp,
+        `${event.type} #${event.iteration}`,
+        'system',
+        event.type.toUpperCase()
+      );
       return {
-        ...appendProgress(state, event.timestamp, `${event.type} #${event.iteration}`),
+        ...next,
         iteration: event.iteration,
       };
+    }
 
     case 'worker_started': {
       const id = Number(event.payload.runId ?? state.workerRuns.length + 1);
@@ -92,29 +121,54 @@ export function reduceMissionEvent(
         log: [],
       };
 
+      const startSummary = `worker #${id} started`;
+      const startEntry = createLogEntry(
+        event.timestamp,
+        'worker',
+        `[STARTED] ${startSummary}`,
+        'STARTED'
+      );
       return {
-        ...state,
+        ...appendUnifiedEntry(
+          {
+            ...state,
+            progressLog: appendLog(state.progressLog, event.timestamp, startSummary),
+          },
+          startEntry
+        ),
         activeWorkerRunId: id,
         workerRuns: [...state.workerRuns, run],
-        progressLog: appendLog(state.progressLog, event.timestamp, `worker #${id} started`),
       };
     }
 
     case 'worker_checkpoint':
     case 'command_executed': {
       const message = asString(event.payload.message) ?? asString(event.payload.command) ?? event.type;
+      const actor = event.type === 'worker_checkpoint'
+        ? 'worker'
+        : (state.activeWorkerRunId ? 'worker' : 'system');
+      const defaultKind = event.type === 'command_executed' ? 'BASH' : 'INFO';
+      const entry = createLogEntry(event.timestamp, actor, message, defaultKind);
+
+      const nextWorkerRuns = state.workerRuns.map((run) => {
+        if (run.id !== state.activeWorkerRunId) {
+          return run;
+        }
+        return {
+          ...run,
+          log: [...run.log, entry],
+        };
+      });
+
       return {
-        ...state,
-        workerRuns: state.workerRuns.map((run) => {
-          if (run.id !== state.activeWorkerRunId) {
-            return run;
-          }
-          return {
-            ...run,
-            log: [...run.log, message],
-          };
-        }),
-        progressLog: appendLog(state.progressLog, event.timestamp, message),
+        ...appendUnifiedEntry(
+          {
+            ...state,
+            workerRuns: nextWorkerRuns,
+            progressLog: appendLog(state.progressLog, event.timestamp, message),
+          },
+          entry
+        ),
       };
     }
 
@@ -122,8 +176,22 @@ export function reduceMissionEvent(
     case 'worker_error': {
       const success = event.type === 'worker_finished';
       const activeRunId = Number(event.payload.runId ?? state.activeWorkerRunId);
+      const completionMessage = success ? `worker #${activeRunId} finished` : `worker #${activeRunId} failed`;
+      const summary = asString(event.payload.message);
+      const completionEntry = createLogEntry(
+        event.timestamp,
+        'worker',
+        summary ? `[${success ? 'DONE' : 'ERR'}] ${summary}` : `[${success ? 'DONE' : 'ERR'}] ${completionMessage}`,
+        success ? 'DONE' : 'ERR'
+      );
       return {
-        ...state,
+        ...appendUnifiedEntry(
+          {
+            ...state,
+            progressLog: appendLog(state.progressLog, event.timestamp, completionMessage),
+          },
+          completionEntry
+        ),
         activeWorkerRunId: null,
         workerRuns: state.workerRuns.map((run) => {
           if (run.id !== activeRunId) {
@@ -133,16 +201,11 @@ export function reduceMissionEvent(
             ...run,
             status: success ? 'done' : 'failed',
             endedAt: event.timestamp,
-            log: event.payload.message
-              ? [...run.log, String(event.payload.message)]
+            log: summary
+              ? [...run.log, createLogEntry(event.timestamp, 'worker', `[${success ? 'DONE' : 'ERR'}] ${summary}`, success ? 'DONE' : 'ERR')]
               : run.log,
           };
         }),
-        progressLog: appendLog(
-          state.progressLog,
-          event.timestamp,
-          success ? `worker #${activeRunId} finished` : `worker #${activeRunId} failed`
-        ),
       };
     }
 
@@ -159,8 +222,12 @@ export function reduceMissionEvent(
     case 'user_answer':
     case 'escalation_created':
     case 'escalation_answered':
-    case 'error':
-      return appendProgress(state, event.timestamp, `${event.type}: ${stringifyPayload(event.payload)}`);
+    case 'error': {
+      const message = `${event.type}: ${stringifyPayload(event.payload)}`;
+      const actor = resolveActorFromEvent(event);
+      const kind = event.type.toUpperCase();
+      return appendUnifiedProgress(state, event.timestamp, message, actor, kind);
+    }
 
     default:
       return state;
@@ -198,6 +265,28 @@ function appendManagerProgress(
   };
 }
 
+function appendUnifiedProgress(
+  state: MissionKernelState,
+  timestamp: string,
+  message: string,
+  actor: LogActor,
+  defaultKind: string
+): MissionKernelState {
+  const next = appendProgress(state, timestamp, message);
+  return appendUnifiedEntry(next, createLogEntry(timestamp, actor, message, defaultKind));
+}
+
+function appendManagerUnifiedProgress(
+  state: MissionKernelState,
+  timestamp: string,
+  message: string,
+  actor: LogActor,
+  defaultKind: string
+): MissionKernelState {
+  const next = appendManagerProgress(state, timestamp, message);
+  return appendUnifiedEntry(next, createLogEntry(timestamp, actor, message, defaultKind));
+}
+
 function appendLog(
   logs: Array<{ timestamp: string; message: string }>,
   timestamp: string,
@@ -210,6 +299,55 @@ function appendLog(
   return next;
 }
 
+function appendUnifiedEntry(
+  state: MissionKernelState,
+  entry: UnifiedLogEntry
+): MissionKernelState {
+  const existingEntries = Array.isArray(state.logEntries) ? state.logEntries : [];
+  const nextEntries = [...existingEntries, entry];
+  const logEntries = nextEntries.length > 1200 ? nextEntries.slice(nextEntries.length - 1200) : nextEntries;
+  return {
+    ...state,
+    logEntries,
+    currentActor: entry.actor === 'system' ? (state.currentActor ?? 'idle') : entry.actor,
+  };
+}
+
+function createLogEntry(
+  timestamp: string,
+  actor: LogActor,
+  rawMessage: string,
+  defaultKind: string
+): UnifiedLogEntry {
+  const lines = rawMessage
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const first = lines[0] ?? '';
+  const parsed = parseKindAndMessage(first, defaultKind);
+  return {
+    timestamp,
+    actor,
+    kind: parsed.kind,
+    message: parsed.message,
+    detailLines: lines.length > 1 ? lines.slice(1) : undefined,
+  };
+}
+
+function parseKindAndMessage(firstLine: string, defaultKind: string): { kind: string; message: string } {
+  const tagged = firstLine.match(/^\[([A-Z0-9_]+)\]\s*(.*)$/);
+  if (tagged) {
+    const kind = tagged[1];
+    const message = tagged[2] && tagged[2].trim().length > 0 ? tagged[2].trim() : kind;
+    return { kind, message };
+  }
+  const cleanMessage = firstLine.trim();
+  return {
+    kind: defaultKind,
+    message: cleanMessage.length > 0 ? cleanMessage : defaultKind,
+  };
+}
+
 function stringifyPayload(payload: Record<string, unknown>): string {
   try {
     return JSON.stringify(payload);
@@ -220,4 +358,26 @@ function stringifyPayload(payload: Record<string, unknown>): string {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function resolveActorFromEvent(event: MissionEvent): LogActor {
+  if (event.type.startsWith('validation_')) {
+    return 'validator';
+  }
+  if (event.type.startsWith('manager_')) {
+    return 'manager';
+  }
+  if (event.type.startsWith('worker_')) {
+    return 'worker';
+  }
+  if (event.type.startsWith('plan_')) {
+    return 'planning';
+  }
+  if (event.agent === 'manager') {
+    return 'manager';
+  }
+  if (event.agent === 'worker') {
+    return 'worker';
+  }
+  return 'system';
 }

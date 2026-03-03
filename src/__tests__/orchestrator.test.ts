@@ -187,7 +187,7 @@ describe('Orchestrator v0.8', () => {
     expect(plannedSnapshot?.taskPreviewLines).toEqual(expect.arrayContaining(['Tip: Open TASK.json directly for raw JSON if needed.']));
 
     const progressMessages = snapshots.flatMap((state) => state.progressLog.map((entry) => entry.message));
-    expect(progressMessages.some((message) => message.includes('planning: Read PRD.md'))).toBe(true);
+    expect(progressMessages.some((message) => message.includes('[READ] PRD.md'))).toBe(true);
   });
 
   it('creates follow-up feature on validation failure and recovers', async () => {
