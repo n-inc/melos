@@ -281,7 +281,7 @@ describe('ui/tui runtime screen contract', () => {
     h.ui.stop();
   });
 
-  it('locks navigation/control while pending input is active, but allows model changes', () => {
+  it('pending input allows docs/models navigation and tab, but blocks run controls', () => {
     const h = createHarness();
     h.ui.start(createSession(), {
       onPause: h.onPause,
@@ -305,12 +305,14 @@ describe('ui/tui runtime screen contract', () => {
     expect(h.screen()).toContain('Models');
 
     h.input.write('2');
+    h.input.write('T');
+    expect(h.screen()).toContain('Docs');
     h.input.write('\t');
     h.input.write('W');
     h.input.write('C');
     h.input.write('p');
     h.input.write('r');
-    expect(h.screen()).toContain('Models');
+    expect(h.screen()).toContain('Overview');
     expect(h.screen()).not.toContain('Workers');
     expect(h.onPause).not.toHaveBeenCalled();
     expect(h.onResume).not.toHaveBeenCalled();

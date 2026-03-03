@@ -7,6 +7,7 @@ import { featuresView } from './tui-features.js';
 import { workersView } from './tui-workers.js';
 import { modelsView } from './tui-models.js';
 import { costsView } from './tui-costs.js';
+import { docsView } from './tui-docs.js';
 
 export interface TUIOptions {
   plain?: boolean;
@@ -44,13 +45,14 @@ export interface RuntimeUI {
 
 const DEFAULT_TERMINAL_COLUMNS = 100;
 const DEFAULT_TERMINAL_ROWS = 32;
-const VIEW_ORDER: ViewId[] = ['overview', 'features', 'workers', 'models', 'costs'];
+const VIEW_ORDER: ViewId[] = ['overview', 'features', 'workers', 'models', 'costs', 'docs'];
 const VIEW_MAP: Record<ViewId, TUIView> = {
   overview: overviewView,
   features: featuresView,
   workers: workersView,
   models: modelsView,
   costs: costsView,
+  docs: docsView,
 };
 
 function resolveModelHotkey(raw: string): ModelRole | null {
@@ -178,16 +180,35 @@ export function createRuntimeUI(
       }
 
       const action = parseKey(raw);
-      if (action.type === 'goto_view' && action.view === 'models') {
-        currentView = 'models';
-        userChangedView = true;
-        render();
-        return;
-      }
-      if (action.type === 'overview') {
-        currentView = 'overview';
-        userChangedView = true;
-        render();
+      switch (action.type) {
+        case 'next_view': {
+          const index = VIEW_ORDER.indexOf(currentView);
+          currentView = VIEW_ORDER[(index + 1) % VIEW_ORDER.length];
+          userChangedView = true;
+          render();
+          return;
+        }
+        case 'prev_view': {
+          const index = VIEW_ORDER.indexOf(currentView);
+          currentView = VIEW_ORDER[(index - 1 + VIEW_ORDER.length) % VIEW_ORDER.length];
+          userChangedView = true;
+          render();
+          return;
+        }
+        case 'goto_view':
+          if (action.view === 'models' || action.view === 'docs') {
+            currentView = action.view;
+            userChangedView = true;
+            render();
+          }
+          return;
+        case 'overview':
+          currentView = 'overview';
+          userChangedView = true;
+          render();
+          return;
+        default:
+          return;
       }
       return;
     }
@@ -432,8 +453,8 @@ function buildFrame(
     state.pendingPrompt
       ? `Input Required  ${state.pendingPrompt}`
       : options.view === 'models'
-        ? `Tab Next  Shift+Tab Prev  F/W/M/C View  1 Planner 2 Worker 3 Validator 4 Research`
-        : `Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
+        ? `Tab Next  Shift+Tab Prev  F/W/M/C/T View  1 Planner 2 Worker 3 Validator 4 Research`
+        : `Tab Next  Shift+Tab Prev  F/W/M/C/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
 

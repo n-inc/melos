@@ -3,6 +3,7 @@ import { featuresView } from '../tui-features.js';
 import { workersView } from '../tui-workers.js';
 import { modelsView } from '../tui-models.js';
 import { costsView } from '../tui-costs.js';
+import { docsView } from '../tui-docs.js';
 import type { MissionControlState } from '../tui-views.js';
 
 function createState(): MissionControlState {
@@ -92,6 +93,18 @@ describe('ui/tui views', () => {
     const lines = overviewView.render({ width: 100, height: 24 }, state).join('\n');
     expect(lines).toContain('Progress Log (mission events)');
     expect(lines).toContain('Planning mission from PRD.md...');
+  });
+
+  it('renders docs view with PRD/TASK previews', () => {
+    const state = createState();
+    state.prdPreviewLines = ['# PRD Heading', 'Implement persona LP pages'];
+    state.taskPreviewLines = ['state=awaiting_approval', 'activeFeature=m1-f1'];
+    const lines = docsView.render({ width: 100, height: 24 }, state).join('\n');
+    expect(lines).toContain('Docs');
+    expect(lines).toContain('PRD.md Preview');
+    expect(lines).toContain('TASK.json Preview');
+    expect(lines).toContain('# PRD Heading');
+    expect(lines).toContain('state=awaiting_approval');
   });
 
   it('renders features view with active feature details', () => {

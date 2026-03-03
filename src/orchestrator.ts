@@ -1313,6 +1313,8 @@ export class Orchestrator {
       missionId: missionPlan.mission.id ?? this.resolveMissionId(),
       missionTitle: missionPlan.mission.goal,
       missionState: missionPlan.state,
+      prdPreviewLines: buildPrdPreviewLines(this.state.prd, 6),
+      taskPreviewLines: buildTaskPreviewLines(missionPlan, 6),
       activity,
       elapsedLabel,
       progressLabel,
@@ -1461,6 +1463,37 @@ function extractGoalFromPrd(prd: string | null): string | null {
 
   const goal = heading.replace(/^#\s+/, '').trim();
   return goal.length > 0 ? goal : null;
+}
+
+function buildPrdPreviewLines(prd: string | null, maxLines: number): string[] {
+  if (!prd) {
+    return ['(PRD not found)'];
+  }
+  const lines = prd
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return ['(PRD is empty)'];
+  }
+  return truncateLines(lines, Math.max(1, maxLines));
+}
+
+function buildTaskPreviewLines(missionPlan: MissionPlan, maxLines: number): string[] {
+  const lines: string[] = [
+    `state=${missionPlan.state} iterations=${missionPlan.totalIterations}`,
+    `activeMilestone=${missionPlan.activeMilestoneId ?? '-'} activeFeature=${missionPlan.activeFeatureId ?? '-'}`,
+  ];
+  for (const milestone of missionPlan.milestones) {
+    lines.push(`${milestone.id} ${milestone.title} (${milestone.features.length} features)`);
+    for (const feature of milestone.features.slice(0, 2)) {
+      lines.push(`  - ${feature.id} ${feature.status} ${feature.description}`);
+    }
+    if (milestone.features.length > 2) {
+      lines.push(`  - ... +${milestone.features.length - 2} features`);
+    }
+  }
+  return truncateLines(lines, Math.max(2, maxLines));
 }
 
 function formatElapsed(startedAt: Date): string {

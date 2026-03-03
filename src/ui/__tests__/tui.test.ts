@@ -121,7 +121,7 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('\x1b[?1049h');
     expect(rendered).toContain('\x1b[?1049l');
     expect(rendered).toContain('Mission Control');
-    expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/C View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
+    expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/C/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
     expect(rendered).toContain('Overview');
     expect(rendered).not.toContain('Worker Log Stream');
     expect(rendered).toContain('melos> Running m1-f1...  (Ctrl+G steer)');
@@ -271,7 +271,7 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('Worker Log Stream');
   });
 
-  it('locks hotkeys while pending input is active', () => {
+  it('pending input allows docs/models navigation, but blocks run controls', () => {
     const output = new PassThrough();
     (output as unknown as { columns?: number }).columns = 100;
     (output as unknown as { rows?: number }).rows = 30;
@@ -303,6 +303,8 @@ describe('ui/tui v0.8', () => {
 
     input.write('M');
     input.write('2');
+    input.write('T');
+    input.write('\t');
     input.write('W');
     input.write('r');
     ui.stop();
@@ -312,7 +314,7 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('Input Required');
     expect(rendered).toContain('[INPUT] Awaiting approval (single key)');
     expect(rendered).not.toContain('Worker Log Stream');
-    expect(rendered).toContain('Models');
+    expect(rendered).toContain('Docs');
   });
 
   it('forces overview when pending input becomes active', () => {

@@ -39,7 +39,6 @@ export const overviewView: TUIView = {
     const expectedBehaviorLines = activeFeature
       ? wrapByCharCount(activeFeature.description, 42)
       : ['-'];
-
     const leftLines = [
       'Active Feature',
       `${statusIcon(activeFeature?.status ?? 'pending')} ${activeFeatureLabel}`,

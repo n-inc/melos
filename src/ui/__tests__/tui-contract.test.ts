@@ -7,6 +7,7 @@ import { featuresView } from '../tui-features.js';
 import { workersView } from '../tui-workers.js';
 import { modelsView } from '../tui-models.js';
 import { costsView } from '../tui-costs.js';
+import { docsView } from '../tui-docs.js';
 import { getDisplayWidth } from '../tui-ansi.js';
 import type { MissionControlState, TUIView } from '../tui-views.js';
 
@@ -152,7 +153,7 @@ describe('ui/tui contract', () => {
     expect(rendered).not.toContain('Worker Log Stream');
   });
 
-  it('supports full view navigation contract (Tab/Shift+Tab/F/W/M/C/Esc)', () => {
+  it('supports full view navigation contract (Tab/Shift+Tab/F/W/M/C/T/Esc)', () => {
     const h = createHarness();
     h.ui.start(createSessionInfo(), {
       onPause: h.onPause,
@@ -179,6 +180,9 @@ describe('ui/tui contract', () => {
 
     h.input.write('C');
     expect(h.getRendered()).toContain('Costs');
+
+    h.input.write('T');
+    expect(h.getRendered()).toContain('Docs');
 
     h.input.write('\u001b');
     h.ui.stop();
@@ -290,7 +294,7 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).toContain('worker-log-v2');
   });
 
-  it('locks most hotkeys while input prompt is pending, but allows model switching', () => {
+  it('pending input allows view navigation/docs/model switching, but blocks run controls', () => {
     const h = createHarness();
     h.ui.start(createSessionInfo(), {
       onPause: h.onPause,
@@ -315,6 +319,9 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).toContain('Models');
 
     h.input.write('2');
+    h.input.write('T');
+    expect(h.getRendered()).toContain('Docs');
+    h.input.write('\t');
     h.input.write('W');
     h.input.write('p');
     h.input.write('r');
@@ -398,7 +405,7 @@ describe('ui/tui contract', () => {
 });
 
 describe('ui/view layout contract', () => {
-  const views: TUIView[] = [overviewView, featuresView, workersView, modelsView, costsView];
+  const views: TUIView[] = [overviewView, featuresView, workersView, modelsView, costsView, docsView];
   it('keeps every rendered line within viewport width (80x24)', () => {
     const state = createState();
     for (const view of views) {

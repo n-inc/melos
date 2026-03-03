@@ -9,6 +9,7 @@ describe('ui/tui-keymap', () => {
     expect(parseKey('W')).toEqual({ type: 'goto_view', view: 'workers' });
     expect(parseKey('m')).toEqual({ type: 'goto_view', view: 'models' });
     expect(parseKey('C')).toEqual({ type: 'goto_view', view: 'costs' });
+    expect(parseKey('T')).toEqual({ type: 'goto_view', view: 'docs' });
     expect(parseKey('p')).toEqual({ type: 'pause' });
     expect(parseKey('\u0003')).toEqual({ type: 'abort' });
     expect(parseKey('R')).toEqual({ type: 'resume' });

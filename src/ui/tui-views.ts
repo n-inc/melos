@@ -2,7 +2,7 @@ import type { ModelAssignment, ModelRole } from '../models/router.js';
 import type { FeatureStatus, MilestoneStatus, MissionState } from '../state/mission.js';
 import type { TokenUsageSnapshot } from '../state/token-tracker.js';
 
-export type ViewId = 'overview' | 'features' | 'workers' | 'models' | 'costs';
+export type ViewId = 'overview' | 'features' | 'workers' | 'models' | 'costs' | 'docs';
 
 export interface WorkerRunView {
   id: number;
@@ -36,6 +36,8 @@ export interface MissionControlState {
   missionId: string;
   missionTitle: string;
   missionState: MissionState;
+  prdPreviewLines?: string[];
+  taskPreviewLines?: string[];
   activity: string;
   elapsedLabel: string;
   progressLabel: string;

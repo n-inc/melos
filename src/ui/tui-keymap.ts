@@ -1,7 +1,7 @@
 export type KeyAction =
   | { type: 'next_view' }
   | { type: 'prev_view' }
-  | { type: 'goto_view'; view: 'overview' | 'features' | 'workers' | 'models' | 'costs' }
+  | { type: 'goto_view'; view: 'overview' | 'features' | 'workers' | 'models' | 'costs' | 'docs' }
   | { type: 'abort' }
   | { type: 'pause' }
   | { type: 'resume' }
@@ -31,6 +31,9 @@ export function parseKey(chunk: string): KeyAction {
     case 'c':
     case 'C':
       return { type: 'goto_view', view: 'costs' };
+    case 't':
+    case 'T':
+      return { type: 'goto_view', view: 'docs' };
     case 'p':
     case 'P':
       return { type: 'pause' };
