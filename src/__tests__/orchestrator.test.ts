@@ -7,6 +7,7 @@ import { Orchestrator } from '../orchestrator.js';
 import { ManagerAgent } from '../agents/manager.js';
 import { WorkerAgent } from '../agents/worker.js';
 import { createMissionPlan } from '../state/mission.js';
+import type { MissionControlState } from '../ui/tui-views.js';
 
 describe('Orchestrator v0.8', () => {
   afterEach(() => {
@@ -99,6 +100,89 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.success).toBe(true);
     expect(result.reason).toBe('completed');
+  });
+
+  it('exposes full PRD/TASK content and streams manager logs during planning', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-doc-stream-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(
+      prdPath,
+      ['# Full PRD', 'line-1', 'line-2', 'line-3', '- checklist 1', '- checklist 2'].join('\n'),
+      'utf-8'
+    );
+
+    const planned = createMissionPlan({
+      missionId: 'doc-stream',
+      goal: 'Verify full preview and manager stream',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['status updates include full content'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'single dry-run feature',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Do work',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockImplementation(async (input) => {
+      input.onAppServerEvent?.('item/started', {
+        item: {
+          type: 'FileRead',
+          filePath: 'PRD.md',
+          limit: 3,
+        },
+      });
+      return planned;
+    });
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+
+    const snapshots: MissionControlState[] = [];
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 2,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: true,
+      resume: false,
+      onStatusUpdate: async (state) => {
+        snapshots.push(state);
+      },
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+
+    const anySnapshot = snapshots.find((state) => state.prdPreviewLines && state.taskPreviewLines);
+    expect(anySnapshot?.prdPreviewLines).toEqual(expect.arrayContaining(['line-1', 'line-2', 'line-3']));
+    expect(anySnapshot?.taskPreviewLines).toEqual(expect.arrayContaining(['Raw TASK.json']));
+    expect(anySnapshot?.taskPreviewLines?.some((line) => line.includes('"milestones"'))).toBe(true);
+
+    const progressMessages = snapshots.flatMap((state) => state.progressLog.map((entry) => entry.message));
+    expect(progressMessages.some((message) => message.includes('planning: Read PRD.md'))).toBe(true);
   });
 
   it('creates follow-up feature on validation failure and recovers', async () => {

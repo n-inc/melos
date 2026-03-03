@@ -45,6 +45,10 @@ function createState(): MissionControlState {
       { timestamp: '2026-02-28T12:00:00.000Z', message: 'worker #5 started' },
       { timestamp: '2026-02-28T12:00:10.000Z', message: 'npm test -- auth' },
     ],
+    managerLog: [
+      { timestamp: '2026-02-28T11:59:50.000Z', message: 'planning: Read PRD.md' },
+      { timestamp: '2026-02-28T11:59:51.000Z', message: 'planning: Generated milestones' },
+    ],
     workerRuns: [
       {
         id: 5,
@@ -106,10 +110,12 @@ describe('ui/tui views', () => {
 
   it('renders TASK view', () => {
     const state = createState();
-    state.taskPreviewLines = ['state=awaiting_approval', 'activeFeature=m1-f1'];
+    state.taskPreviewLines = ['# Structured TASK View', '[x] m1 Core [done]', '```json', '{', '  "state": "running"', '}'];
     const lines = taskView.render({ width: 100, height: 24 }, state).join('\n');
     expect(lines).toContain('TASK');
-    expect(lines).toContain('state=awaiting_approval');
+    expect(lines).toContain('# Structured TASK View');
+    expect(lines).toContain('[x] m1 Core [done]');
+    expect(lines).toContain('"state": "running"');
   });
 
   it('wraps long preview lines in PRD view', () => {
@@ -143,7 +149,9 @@ describe('ui/tui views', () => {
     const lines = workersView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Workers');
     expect(lines).toContain('Active Worker');
+    expect(lines).toContain('Manager Log Stream');
     expect(lines).toContain('Worker Log Stream');
+    expect(lines).toContain('planning: Generated milestones');
     expect(lines).toContain('m2-f3');
     expect(lines).toContain('Execute npm test -- auth');
   });

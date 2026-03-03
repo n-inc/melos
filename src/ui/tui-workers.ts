@@ -37,7 +37,14 @@ export const workersView: TUIView = {
         ]
         : ['No active worker'];
 
-    const maxLogLines = Math.max(8, viewport.height - 16);
+    const maxLogLines = Math.max(8, viewport.height - 22);
+    const managerLog = (state.managerLog ?? []).slice(-maxLogLines).map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
+    const managerLogLines = managerLog.length > 0
+      ? managerLog
+      : state.missionState === 'awaiting_approval'
+        ? ['Manager stream idle (waiting for approval input).']
+        : ['No manager stream events yet.'];
+
     const logLines = selected
       ? (selected.log.length > 0
         ? selected.log.slice(-maxLogLines)
@@ -60,6 +67,8 @@ export const workersView: TUIView = {
       ...drawBox('Workers', table, viewport.width),
       '',
       ...drawBox('Active Worker', activeWorkerLines, viewport.width),
+      '',
+      ...drawBox('Manager Log Stream', managerLogLines, viewport.width),
       '',
       ...drawBox('Worker Log Stream', logLines, viewport.width),
     ];

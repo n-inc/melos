@@ -156,6 +156,35 @@ export function createRuntimeUI(
     output.write(`${lines.join('\n')}\n`);
   };
 
+  const applyDocScrollAction = (actionType: string): boolean => {
+    if (currentView !== 'prd' && currentView !== 'task') {
+      return false;
+    }
+    switch (actionType) {
+      case 'cursor_up':
+        viewScroll[currentView] = Math.max(0, viewScroll[currentView] - 1);
+        return true;
+      case 'cursor_down':
+        viewScroll[currentView] = viewScroll[currentView] + 1;
+        return true;
+      case 'page_up':
+        viewScroll[currentView] = Math.max(0, viewScroll[currentView] - 12);
+        return true;
+      case 'page_down':
+      case 'select':
+        viewScroll[currentView] = viewScroll[currentView] + 12;
+        return true;
+      case 'scroll_top':
+        viewScroll[currentView] = 0;
+        return true;
+      case 'scroll_bottom':
+        viewScroll[currentView] = Number.MAX_SAFE_INTEGER;
+        return true;
+      default:
+        return false;
+    }
+  };
+
   const handleKeyChunk = (chunk: Buffer | string) => {
     const raw = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
     if (raw.length === 0) {
@@ -212,14 +241,13 @@ export function createRuntimeUI(
           }
           return;
         case 'cursor_up':
-          if (currentView === 'prd' || currentView === 'task') {
-            viewScroll[currentView] = Math.max(0, viewScroll[currentView] - 1);
-            render();
-          }
-          return;
         case 'cursor_down':
-          if (currentView === 'prd' || currentView === 'task') {
-            viewScroll[currentView] = viewScroll[currentView] + 1;
+        case 'page_up':
+        case 'page_down':
+        case 'scroll_top':
+        case 'scroll_bottom':
+        case 'select':
+          if (applyDocScrollAction(action.type)) {
             render();
           }
           return;
@@ -268,14 +296,13 @@ export function createRuntimeUI(
           render();
           return;
         case 'cursor_up':
-          if (currentView === 'prd' || currentView === 'task') {
-            viewScroll[currentView] = Math.max(0, viewScroll[currentView] - 1);
-            render();
-          }
-          return;
         case 'cursor_down':
-          if (currentView === 'prd' || currentView === 'task') {
-            viewScroll[currentView] = viewScroll[currentView] + 1;
+        case 'page_up':
+        case 'page_down':
+        case 'scroll_top':
+        case 'scroll_bottom':
+        case 'select':
+          if (applyDocScrollAction(action.type)) {
             render();
           }
           return;
@@ -503,7 +530,7 @@ function buildFrame(
       : options.view === 'models'
         ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker 3 Validator 4 Research`
         : options.view === 'prd' || options.view === 'task'
-          ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓ Scroll  P Pause  R Resume  Esc Overview`
+          ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  Enter=More`
           : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );

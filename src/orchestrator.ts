@@ -132,6 +132,7 @@ export class Orchestrator {
   private workerRunCounter = 0;
   private pendingPrompt: string | null = null;
   private activityLabel = '';
+  private statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -289,6 +290,10 @@ export class Orchestrator {
       };
     } finally {
       this.watchdog.stop();
+      if (this.statusRefreshTimer) {
+        clearTimeout(this.statusRefreshTimer);
+        this.statusRefreshTimer = null;
+      }
       await this.persistRuntimeState();
       await this.emitStatusUpdate();
     }
@@ -1251,6 +1256,21 @@ export class Orchestrator {
     this.kernelState = reduceMissionEvent(this.kernelState, event);
     this.kernelState.missionPlan = this.state.missionPlan;
     this.watchdog.touch();
+    this.scheduleStatusRefresh();
+  }
+
+  private scheduleStatusRefresh(): void {
+    if (!this.config.onStatusUpdate || !this.state.missionPlan) {
+      return;
+    }
+    if (this.statusRefreshTimer) {
+      return;
+    }
+    this.statusRefreshTimer = setTimeout(() => {
+      this.statusRefreshTimer = null;
+      void this.emitStatusUpdate();
+    }, 60);
+    this.statusRefreshTimer.unref();
   }
 
   private async emitStatusUpdate(): Promise<void> {
@@ -1318,6 +1338,7 @@ export class Orchestrator {
       activeBranch,
       milestones,
       progressLog: this.kernelState.progressLog.slice(-80),
+      managerLog: (this.kernelState.managerLog ?? []).slice(-120),
       workerRuns,
       modelAssignments: assignments,
       tokenUsage: this.tokenTracker.getSnapshot(),
@@ -1463,88 +1484,84 @@ function buildPrdPreviewLines(prd: string | null): string[] {
   if (!prd) {
     return ['(PRD not found)'];
   }
-  const rawLines = prd.split(/\r?\n/).map((line) => line.trimEnd());
-  const nonEmpty = rawLines.map((line) => line.trim()).filter((line) => line.length > 0);
-  if (nonEmpty.length === 0) {
+  const rawLines = prd.split(/\r?\n/);
+  if (rawLines.every((line) => line.trim().length === 0)) {
     return ['(PRD is empty)'];
   }
-
-  const headingLines = nonEmpty.filter((line) => /^#{1,6}\s+/.test(line));
-  const bulletLines = nonEmpty.filter((line) => /^[-*]\s+/.test(line));
-  const introLines = collectIntroLines(nonEmpty, 8);
-  const sections = headingLines.slice(0, 14);
-
-  const lines: string[] = [
-    `lineCount=${rawLines.length} sections=${headingLines.length} bullets=${bulletLines.length}`,
-    'Sections:',
-    ...sections.map((line, index) => `  ${index + 1}. ${line}`),
-  ];
-  if (headingLines.length > sections.length) {
-    lines.push(`  ... +${headingLines.length - sections.length} sections`);
-  }
-  lines.push('');
-  lines.push('Intro:');
-  lines.push(...introLines.map((line) => `  ${line}`));
-  if (bulletLines.length > 0) {
-    lines.push('');
-    lines.push('Checklist/requirements excerpt:');
-    lines.push(...bulletLines.slice(0, 12).map((line) => `  ${line}`));
-    if (bulletLines.length > 12) {
-      lines.push(`  ... +${bulletLines.length - 12} bullet items`);
-    }
-  }
-
-  return lines;
+  return rawLines.map((line) => line.replace(/\t/g, '  '));
 }
 
 function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
-  const lines: string[] = [
-    `state=${missionPlan.state} iterations=${missionPlan.totalIterations} milestones=${missionPlan.milestones.length}`,
-    `activeMilestone=${missionPlan.activeMilestoneId ?? '-'} activeFeature=${missionPlan.activeFeatureId ?? '-'}`,
-    `goal=${missionPlan.mission.goal}`,
-  ];
+  const lines: string[] = [];
+  lines.push('# Structured TASK View');
+  lines.push(`state=${missionPlan.state}`);
+  lines.push(`totalIterations=${missionPlan.totalIterations}`);
+  lines.push(`activeMilestone=${missionPlan.activeMilestoneId ?? '-'}`);
+  lines.push(`activeFeature=${missionPlan.activeFeatureId ?? '-'}`);
+  lines.push(`goal=${missionPlan.mission.goal}`);
+  lines.push('');
+  lines.push('Milestones / Features');
+
   for (const milestone of missionPlan.milestones) {
-    const doneCount = milestone.features.filter((feature) => feature.status === 'done' || feature.status === 'skipped').length;
-    lines.push(`${milestone.id} ${milestone.title} status=${milestone.status} ${doneCount}/${milestone.features.length}`);
+    lines.push(`${asMilestoneCheckbox(milestone.status)} ${milestone.id} ${milestone.title} [${milestone.status}]`);
     for (const feature of milestone.features) {
-      lines.push(`  - ${feature.id} status=${feature.status} attempts=${feature.attempts} ${feature.description}`);
+      const activeMark = missionPlan.activeFeatureId === feature.id ? '>' : ' ';
+      lines.push(
+        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] attempts=${feature.attempts} ${feature.description}`
+      );
     }
-    const validationCommands = [
+    const validationChecks = [
       ...milestone.validationContract.staticChecks,
       ...milestone.validationContract.testSuites,
       ...(milestone.validationContract.e2eChecks ?? []),
-    ]
-      .map((check) => check.command)
-      .filter((command): command is string => typeof command === 'string' && command.trim().length > 0);
-    if (validationCommands.length > 0) {
-      lines.push('  validation commands:');
-      for (const command of validationCommands.slice(0, 4)) {
-        lines.push(`    • ${command}`);
-      }
-      if (validationCommands.length > 4) {
-        lines.push(`    • ... +${validationCommands.length - 4} commands`);
+      ...(milestone.validationContract.manualSteps ?? []),
+    ];
+    if (validationChecks.length > 0) {
+      lines.push('  validation checks:');
+      for (const check of validationChecks) {
+        const command = typeof check.command === 'string' && check.command.trim().length > 0
+          ? check.command
+          : '(manual or not specified)';
+        lines.push(`    - [${check.passed ? 'x' : ' '}] ${check.id} (${check.type}) :: ${command}`);
       }
     }
     lines.push('');
   }
+
+  lines.push('Raw TASK.json');
+  lines.push('```json');
+  lines.push(...JSON.stringify(missionPlan, null, 2).split(/\r?\n/));
+  lines.push('```');
   return lines;
 }
 
-function collectIntroLines(lines: string[], maxLines: number): string[] {
-  const collected: string[] = [];
-  for (const line of lines) {
-    if (/^#{1,6}\s+/.test(line)) {
-      continue;
-    }
-    collected.push(line);
-    if (collected.length >= maxLines) {
-      break;
-    }
+function asFeatureCheckbox(status: Feature['status']): string {
+  switch (status) {
+    case 'done':
+    case 'skipped':
+      return '[x]';
+    case 'in_progress':
+      return '[~]';
+    case 'failed':
+      return '[!]';
+    default:
+      return '[ ]';
   }
-  if (collected.length === 0) {
-    return ['(no intro text found)'];
+}
+
+function asMilestoneCheckbox(status: Milestone['status']): string {
+  switch (status) {
+    case 'done':
+    case 'skipped':
+      return '[x]';
+    case 'in_progress':
+    case 'validating':
+      return '[~]';
+    case 'failed':
+      return '[!]';
+    default:
+      return '[ ]';
   }
-  return collected;
 }
 
 function formatElapsed(startedAt: Date): string {

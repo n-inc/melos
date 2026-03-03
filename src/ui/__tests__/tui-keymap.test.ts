@@ -15,6 +15,14 @@ describe('ui/tui-keymap', () => {
     expect(parseKey('R')).toEqual({ type: 'resume' });
     expect(parseKey('\u0007')).toEqual({ type: 'steer_mode' });
     expect(parseKey('\u001b')).toEqual({ type: 'overview' });
+    expect(parseKey('\u001bOA')).toEqual({ type: 'cursor_up' });
+    expect(parseKey('\u001bOB')).toEqual({ type: 'cursor_down' });
+    expect(parseKey('k')).toEqual({ type: 'cursor_up' });
+    expect(parseKey('j')).toEqual({ type: 'cursor_down' });
+    expect(parseKey('\u001b[5~')).toEqual({ type: 'page_up' });
+    expect(parseKey('\u001b[6~')).toEqual({ type: 'page_down' });
+    expect(parseKey('\u001b[H')).toEqual({ type: 'scroll_top' });
+    expect(parseKey('\u001b[F')).toEqual({ type: 'scroll_bottom' });
   });
 
   it('returns none for unknown keys', () => {

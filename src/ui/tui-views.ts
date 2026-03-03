@@ -47,6 +47,7 @@ export interface MissionControlState {
   activeBranch: string | null;
   milestones: MissionMilestoneView[];
   progressLog: Array<{ timestamp: string; message: string }>;
+  managerLog?: Array<{ timestamp: string; message: string }>;
   workerRuns: WorkerRunView[];
   modelAssignments: Record<ModelRole, ModelAssignment>;
   tokenUsage: TokenUsageSnapshot;

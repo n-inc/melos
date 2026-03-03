@@ -21,6 +21,7 @@ export interface MissionKernelState {
   iteration: number;
   workerRuns: WorkerRunState[];
   progressLog: Array<{ timestamp: string; message: string }>;
+  managerLog?: Array<{ timestamp: string; message: string }>;
   activeWorkerRunId: number | null;
   gitStrategy: GitStrategyState | null;
   tokenUsage: TokenUsageSnapshot;
@@ -32,6 +33,7 @@ export function createInitialKernelState(): MissionKernelState {
     iteration: 0,
     workerRuns: [],
     progressLog: [],
+    managerLog: [],
     activeWorkerRunId: null,
     gitStrategy: null,
     tokenUsage: {
@@ -53,7 +55,7 @@ export function reduceMissionEvent(
     case 'manager_started':
     case 'manager_decision':
     case 'manager_error':
-      return appendProgress(
+      return appendManagerProgress(
         state,
         event.timestamp,
         String(event.payload.message ?? `${event.type}: ${stringifyPayload(event.payload)}`)
@@ -181,6 +183,18 @@ function appendProgress(
   return {
     ...state,
     progressLog: appendLog(state.progressLog, timestamp, message),
+  };
+}
+
+function appendManagerProgress(
+  state: MissionKernelState,
+  timestamp: string,
+  message: string
+): MissionKernelState {
+  const next = appendProgress(state, timestamp, message);
+  return {
+    ...next,
+    managerLog: appendLog(next.managerLog ?? [], timestamp, message),
   };
 }
 

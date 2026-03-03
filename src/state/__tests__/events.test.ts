@@ -108,5 +108,6 @@ describe('event sourcing', () => {
     const messages = state.progressLog.map((entry) => entry.message);
     expect(messages).toContain('Planning mission...');
     expect(messages.some((message) => message.startsWith('validation_started:'))).toBe(true);
+    expect(state.managerLog?.some((entry) => entry.message.includes('Planning mission...'))).toBe(true);
   });
 });

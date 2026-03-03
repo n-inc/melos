@@ -9,6 +9,10 @@ export type KeyAction =
   | { type: 'overview' }
   | { type: 'cursor_up' }
   | { type: 'cursor_down' }
+  | { type: 'page_up' }
+  | { type: 'page_down' }
+  | { type: 'scroll_top' }
+  | { type: 'scroll_bottom' }
   | { type: 'select' }
   | { type: 'none' };
 
@@ -47,9 +51,27 @@ export function parseKey(chunk: string): KeyAction {
     case '\u001b':
       return { type: 'overview' };
     case '\u001b[A':
+    case '\u001bOA':
+    case 'k':
+    case 'K':
       return { type: 'cursor_up' };
     case '\u001b[B':
+    case '\u001bOB':
+    case 'j':
+    case 'J':
       return { type: 'cursor_down' };
+    case '\u001b[5~':
+      return { type: 'page_up' };
+    case '\u001b[6~':
+      return { type: 'page_down' };
+    case '\u001b[H':
+    case '\u001b[1~':
+    case '\u001bOH':
+      return { type: 'scroll_top' };
+    case '\u001b[F':
+    case '\u001b[4~':
+    case '\u001bOF':
+      return { type: 'scroll_bottom' };
     case '\r':
     case '\n':
       return { type: 'select' };
