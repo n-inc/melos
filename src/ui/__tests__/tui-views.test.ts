@@ -107,6 +107,16 @@ describe('ui/tui views', () => {
     expect(lines).toContain('state=awaiting_approval');
   });
 
+  it('wraps long preview lines in docs view', () => {
+    const state = createState();
+    state.prdPreviewLines = [
+      'This is a very long preview line that should wrap instead of being heavily truncated in docs panel rendering.',
+    ];
+    const lines = docsView.render({ width: 70, height: 20 }, state).join('\n');
+    expect(lines).toContain('This is a very long preview line');
+    expect(lines).toContain('heavily truncated in docs panel rendering.');
+  });
+
   it('renders features view with active feature details', () => {
     const lines = featuresView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Features');

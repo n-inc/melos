@@ -1307,8 +1307,8 @@ export class Orchestrator {
       missionId: missionPlan.mission.id ?? this.resolveMissionId(),
       missionTitle: missionPlan.mission.goal,
       missionState: missionPlan.state,
-      prdPreviewLines: buildPrdPreviewLines(this.state.prd, 6),
-      taskPreviewLines: buildTaskPreviewLines(missionPlan, 6),
+      prdPreviewLines: buildPrdPreviewLines(this.state.prd),
+      taskPreviewLines: buildTaskPreviewLines(missionPlan),
       activity,
       elapsedLabel,
       progressLabel,
@@ -1459,35 +1459,92 @@ function extractGoalFromPrd(prd: string | null): string | null {
   return goal.length > 0 ? goal : null;
 }
 
-function buildPrdPreviewLines(prd: string | null, maxLines: number): string[] {
+function buildPrdPreviewLines(prd: string | null): string[] {
   if (!prd) {
     return ['(PRD not found)'];
   }
-  const lines = prd
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (lines.length === 0) {
+  const rawLines = prd.split(/\r?\n/).map((line) => line.trimEnd());
+  const nonEmpty = rawLines.map((line) => line.trim()).filter((line) => line.length > 0);
+  if (nonEmpty.length === 0) {
     return ['(PRD is empty)'];
   }
-  return truncateLines(lines, Math.max(1, maxLines));
-}
 
-function buildTaskPreviewLines(missionPlan: MissionPlan, maxLines: number): string[] {
+  const headingLines = nonEmpty.filter((line) => /^#{1,6}\s+/.test(line));
+  const bulletLines = nonEmpty.filter((line) => /^[-*]\s+/.test(line));
+  const introLines = collectIntroLines(nonEmpty, 8);
+  const sections = headingLines.slice(0, 14);
+
   const lines: string[] = [
-    `state=${missionPlan.state} iterations=${missionPlan.totalIterations}`,
-    `activeMilestone=${missionPlan.activeMilestoneId ?? '-'} activeFeature=${missionPlan.activeFeatureId ?? '-'}`,
+    `lineCount=${rawLines.length} sections=${headingLines.length} bullets=${bulletLines.length}`,
+    'Sections:',
+    ...sections.map((line, index) => `  ${index + 1}. ${line}`),
   ];
-  for (const milestone of missionPlan.milestones) {
-    lines.push(`${milestone.id} ${milestone.title} (${milestone.features.length} features)`);
-    for (const feature of milestone.features.slice(0, 2)) {
-      lines.push(`  - ${feature.id} ${feature.status} ${feature.description}`);
-    }
-    if (milestone.features.length > 2) {
-      lines.push(`  - ... +${milestone.features.length - 2} features`);
+  if (headingLines.length > sections.length) {
+    lines.push(`  ... +${headingLines.length - sections.length} sections`);
+  }
+  lines.push('');
+  lines.push('Intro:');
+  lines.push(...introLines.map((line) => `  ${line}`));
+  if (bulletLines.length > 0) {
+    lines.push('');
+    lines.push('Checklist/requirements excerpt:');
+    lines.push(...bulletLines.slice(0, 12).map((line) => `  ${line}`));
+    if (bulletLines.length > 12) {
+      lines.push(`  ... +${bulletLines.length - 12} bullet items`);
     }
   }
-  return truncateLines(lines, Math.max(2, maxLines));
+
+  return lines;
+}
+
+function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
+  const lines: string[] = [
+    `state=${missionPlan.state} iterations=${missionPlan.totalIterations} milestones=${missionPlan.milestones.length}`,
+    `activeMilestone=${missionPlan.activeMilestoneId ?? '-'} activeFeature=${missionPlan.activeFeatureId ?? '-'}`,
+    `goal=${missionPlan.mission.goal}`,
+  ];
+  for (const milestone of missionPlan.milestones) {
+    const doneCount = milestone.features.filter((feature) => feature.status === 'done' || feature.status === 'skipped').length;
+    lines.push(`${milestone.id} ${milestone.title} status=${milestone.status} ${doneCount}/${milestone.features.length}`);
+    for (const feature of milestone.features) {
+      lines.push(`  - ${feature.id} status=${feature.status} attempts=${feature.attempts} ${feature.description}`);
+    }
+    const validationCommands = [
+      ...milestone.validationContract.staticChecks,
+      ...milestone.validationContract.testSuites,
+      ...(milestone.validationContract.e2eChecks ?? []),
+    ]
+      .map((check) => check.command)
+      .filter((command): command is string => typeof command === 'string' && command.trim().length > 0);
+    if (validationCommands.length > 0) {
+      lines.push('  validation commands:');
+      for (const command of validationCommands.slice(0, 4)) {
+        lines.push(`    • ${command}`);
+      }
+      if (validationCommands.length > 4) {
+        lines.push(`    • ... +${validationCommands.length - 4} commands`);
+      }
+    }
+    lines.push('');
+  }
+  return lines;
+}
+
+function collectIntroLines(lines: string[], maxLines: number): string[] {
+  const collected: string[] = [];
+  for (const line of lines) {
+    if (/^#{1,6}\s+/.test(line)) {
+      continue;
+    }
+    collected.push(line);
+    if (collected.length >= maxLines) {
+      break;
+    }
+  }
+  if (collected.length === 0) {
+    return ['(no intro text found)'];
+  }
+  return collected;
 }
 
 function formatElapsed(startedAt: Date): string {
