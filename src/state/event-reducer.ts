@@ -321,16 +321,17 @@ function createLogEntry(
 ): UnifiedLogEntry {
   const lines = rawMessage
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line) => line.replace(/\s+$/g, ''))
     .filter((line) => line.length > 0);
   const first = lines[0] ?? '';
   const parsed = parseKindAndMessage(first, defaultKind);
+  const detailLines = lines.length > 1 ? limitDetailLines(lines.slice(1)) : undefined;
   return {
     timestamp,
     actor,
     kind: parsed.kind,
     message: parsed.message,
-    detailLines: lines.length > 1 ? lines.slice(1) : undefined,
+    detailLines,
   };
 }
 
@@ -380,4 +381,14 @@ function resolveActorFromEvent(event: MissionEvent): LogActor {
     return 'worker';
   }
   return 'system';
+}
+
+function limitDetailLines(lines: string[]): string[] {
+  const clipped = lines
+    .slice(0, 3)
+    .map((line) => (line.length > 180 ? `${line.slice(0, 177)}...` : line));
+  if (lines.length > 3) {
+    clipped.push(`... +${lines.length - 3} more lines`);
+  }
+  return clipped;
 }

@@ -90,7 +90,7 @@ export interface OrchestratorConfig {
   };
   resume?: boolean;
   missionId?: string;
-  runtimeUIMode?: 'tui' | 'plain';
+  runtimeUIMode?: 'tui' | 'plain' | 'headless';
   onStatusUpdate?: (state: MissionControlState) => void | Promise<void>;
 }
 
@@ -161,7 +161,7 @@ export class Orchestrator {
       model: this.modelRouter.getModel('planner'),
       effort: config.managerEffort ?? 'high',
       requestTimeoutMs: 900_000,
-      suppressTerminalOutput: config.runtimeUIMode === 'tui',
+      suppressTerminalOutput: config.runtimeUIMode !== 'plain',
     };
     this.manager = new ManagerAgent(managerConfig);
 
@@ -172,7 +172,7 @@ export class Orchestrator {
       reasoningEffort: config.workerReasoningEffort ?? 'high',
       claudeModel: this.modelRouter.getModel('worker'),
       claudeEffort: config.managerEffort ?? 'high',
-      suppressTerminalOutput: config.runtimeUIMode === 'tui',
+      suppressTerminalOutput: config.runtimeUIMode !== 'plain',
     };
     this.worker = new WorkerAgent(workerConfig);
 
@@ -519,6 +519,11 @@ export class Orchestrator {
       : await this.promptPlanApproval();
 
     if (!approved) {
+      if (this.state.missionPlan && this.state.missionPlan.state !== 'awaiting_approval') {
+        await this.persistMissionPlan();
+        await this.emitStatusUpdate();
+        return;
+      }
       if (!this.aborted) {
         this.activityLabel = 'Approval required. Press y to continue or Ctrl+C to abort.';
         await this.emitStatusUpdate();
@@ -1261,6 +1266,14 @@ export class Orchestrator {
   }
 
   private async promptPlanApproval(): Promise<boolean> {
+    if (this.config.runtimeUIMode === 'headless') {
+      const promptMessage = '承認待ち: `melos approve` で承認 / `melos reject` で差し戻し / `melos cancel` で中止';
+      await this.setPendingPrompt(promptMessage);
+      const decision = await this.waitForHeadlessApprovalDecision();
+      await this.setPendingPrompt(null);
+      return decision === 'approve';
+    }
+
     if (!process.stdin.isTTY) {
       return true;
     }
@@ -1282,6 +1295,38 @@ export class Orchestrator {
     }
     const answer = rawAnswer.trim().toLowerCase();
     return answer === 'y' || answer === 'yes' || answer === 'approve';
+  }
+
+  private async waitForHeadlessApprovalDecision(): Promise<'approve' | 'reject' | 'abort'> {
+    while (!this.aborted) {
+      if (!missionFileExists(this.config.missionFile)) {
+        await delay(400);
+        continue;
+      }
+
+      try {
+        const latest = await loadMissionPlan(this.config.missionFile);
+        this.state.missionPlan = latest;
+        this.kernelState.missionPlan = latest;
+        await this.emitStatusUpdate();
+
+        if (latest.state === 'running') {
+          return 'approve';
+        }
+        if (latest.state === 'planning') {
+          return 'reject';
+        }
+        if (latest.state === 'aborted' || latest.state === 'failed') {
+          return 'abort';
+        }
+      } catch {
+        // ignore transient parse/write races and continue polling
+      }
+
+      await delay(400);
+    }
+
+    return 'abort';
   }
 
   private ensureMelosDir(): void {
@@ -1835,7 +1880,7 @@ function normalizeStreamingText(value: string): string | null {
   if (!compact) {
     return null;
   }
-  return truncateMessage(compact, 140);
+  return truncateMessage(compact, 180);
 }
 
 export function formatAgentEventDetail(method: string, params: unknown): string | null {
@@ -1955,6 +2000,9 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
 
   if (safeMethod.endsWith('/delta')) {
     const delta = extractString(params, 'delta');
+    if (delta && /tool_use_error|sibling tool call errored/i.test(delta)) {
+      return '[ERR] tool call failed';
+    }
     const normalized = delta ? normalizeStreamingText(delta) : null;
     return normalized && isMeaningfulLogFragment(normalized) ? `[INFO] ${normalized}` : null;
   }
@@ -1986,7 +2034,8 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
 
   if (safeMethod.endsWith('/tool_result')) {
     const content = extractString(params, 'content');
-    const normalized = content ? normalizeStreamingText(content) : null;
+    const summarized = content ? summarizeToolResult(content) : null;
+    const normalized = summarized ? normalizeStreamingText(summarized) : null;
     if (!normalized || !isMeaningfulLogFragment(normalized)) {
       return null;
     }
@@ -2118,7 +2167,30 @@ function isMeaningfulLogFragment(value: string): boolean {
   if (/^codex\/event\//.test(compact.toLowerCase())) {
     return false;
   }
+  if (/^<tool_use_error>/i.test(compact)) {
+    return false;
+  }
   return true;
+}
+
+function summarizeToolResult(content: string): string | null {
+  const normalized = content.replace(/\r\n/g, '\n').trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+  if (/tool_use_error|sibling tool call errored/i.test(normalized)) {
+    return 'tool call failed';
+  }
+  if (/no matches found/i.test(normalized)) {
+    return 'No matches found';
+  }
+
+  const noisyDump = /(^|\s)\d+→|(^|\s)\d+-|\bResult \d+→/m.test(normalized);
+  if (noisyDump || normalized.length > 260) {
+    return `verbose tool output omitted (${normalized.length} chars)`;
+  }
+
+  return normalized;
 }
 
 function mapEscalationSingleKey(value: string): 'retry' | 'skip' | 'abort' | 'modify' | null {
@@ -2134,6 +2206,13 @@ function mapEscalationSingleKey(value: string): 'retry' | 'skip' | 'abort' | 'mo
     default:
       return null;
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
 }
 
 function isRecoverableResumeState(state: MissionState): boolean {
