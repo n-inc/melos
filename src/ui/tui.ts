@@ -6,8 +6,8 @@ import { overviewView } from './tui-overview.js';
 import { featuresView } from './tui-features.js';
 import { workersView } from './tui-workers.js';
 import { modelsView } from './tui-models.js';
-import { costsView } from './tui-costs.js';
-import { docsView } from './tui-docs.js';
+import { prdView } from './tui-prd.js';
+import { taskView } from './tui-task.js';
 
 export interface TUIOptions {
   plain?: boolean;
@@ -45,14 +45,14 @@ export interface RuntimeUI {
 
 const DEFAULT_TERMINAL_COLUMNS = 100;
 const DEFAULT_TERMINAL_ROWS = 32;
-const VIEW_ORDER: ViewId[] = ['overview', 'features', 'workers', 'models', 'costs', 'docs'];
+const VIEW_ORDER: ViewId[] = ['overview', 'features', 'workers', 'models', 'prd', 'task'];
 const VIEW_MAP: Record<ViewId, TUIView> = {
   overview: overviewView,
   features: featuresView,
   workers: workersView,
   models: modelsView,
-  costs: costsView,
-  docs: docsView,
+  prd: prdView,
+  task: taskView,
 };
 
 function resolveModelHotkey(raw: string): ModelRole | null {
@@ -94,6 +94,14 @@ export function createRuntimeUI(
   let state: MissionControlState | null = null;
   let previousFrame: string[] = [];
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  const viewScroll: Record<ViewId, number> = {
+    overview: 0,
+    features: 0,
+    workers: 0,
+    models: 0,
+    prd: 0,
+    task: 0,
+  };
 
   let rawModeEnabled = false;
   let inputResumed = false;
@@ -113,6 +121,7 @@ export function createRuntimeUI(
         width: getColumns(),
         height: getRows(),
         view: currentView,
+        scrollOffset: viewScroll[currentView],
         steerMode,
         steerBuffer,
       })
@@ -196,9 +205,21 @@ export function createRuntimeUI(
           return;
         }
         case 'goto_view':
-          if (action.view === 'models' || action.view === 'docs') {
+          if (action.view === 'models' || action.view === 'prd' || action.view === 'task') {
             currentView = action.view;
             userChangedView = true;
+            render();
+          }
+          return;
+        case 'cursor_up':
+          if (currentView === 'prd' || currentView === 'task') {
+            viewScroll[currentView] = Math.max(0, viewScroll[currentView] - 1);
+            render();
+          }
+          return;
+        case 'cursor_down':
+          if (currentView === 'prd' || currentView === 'task') {
+            viewScroll[currentView] = viewScroll[currentView] + 1;
             render();
           }
           return;
@@ -245,6 +266,18 @@ export function createRuntimeUI(
           currentView = action.view;
           userChangedView = true;
           render();
+          return;
+        case 'cursor_up':
+          if (currentView === 'prd' || currentView === 'task') {
+            viewScroll[currentView] = Math.max(0, viewScroll[currentView] - 1);
+            render();
+          }
+          return;
+        case 'cursor_down':
+          if (currentView === 'prd' || currentView === 'task') {
+            viewScroll[currentView] = viewScroll[currentView] + 1;
+            render();
+          }
           return;
         case 'overview':
           currentView = 'overview';
@@ -313,6 +346,12 @@ export function createRuntimeUI(
     started = true;
     currentView = 'overview';
     userChangedView = false;
+    viewScroll.overview = 0;
+    viewScroll.features = 0;
+    viewScroll.workers = 0;
+    viewScroll.models = 0;
+    viewScroll.prd = 0;
+    viewScroll.task = 0;
 
     if (mode === 'tui') {
       output.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l');
@@ -341,8 +380,14 @@ export function createRuntimeUI(
     if (firstStateUpdate) {
       currentView = 'overview';
       userChangedView = false;
+      viewScroll.overview = 0;
+      viewScroll.features = 0;
+      viewScroll.workers = 0;
+      viewScroll.models = 0;
+      viewScroll.prd = 0;
+      viewScroll.task = 0;
     } else if (nextState.pendingPrompt) {
-      if (currentView !== 'models') {
+      if (currentView !== 'models' && currentView !== 'prd' && currentView !== 'task') {
         currentView = 'overview';
       }
     } else if (!userChangedView) {
@@ -395,6 +440,7 @@ export function renderTUIFrameForTest(input: {
   width: number;
   height: number;
   view: ViewId;
+  scrollOffset?: number;
   steerMode?: boolean;
   steerBuffer?: string;
 }): string[] {
@@ -411,6 +457,7 @@ export function renderTUIFrameForTest(input: {
     width: input.width,
     height: input.height,
     view: input.view,
+    scrollOffset: input.scrollOffset ?? 0,
     steerMode: input.steerMode === true,
     steerBuffer: input.steerBuffer ?? '',
   });
@@ -423,6 +470,7 @@ function buildFrame(
     width: number;
     height: number;
     view: ViewId;
+    scrollOffset: number;
     steerMode: boolean;
     steerBuffer: string;
   }
@@ -443,7 +491,7 @@ function buildFrame(
   );
 
   const view = VIEW_MAP[options.view];
-  const contentLines = view.render({ width, height: contentHeight }, state);
+  const contentLines = view.render({ width, height: contentHeight }, state, { scrollOffset: options.scrollOffset });
   const clipped = contentLines.slice(0, contentHeight).map((line) => truncateDisplay(line, width));
   while (clipped.length < contentHeight) {
     clipped.push('');
@@ -453,8 +501,10 @@ function buildFrame(
     state.pendingPrompt
       ? `Input Required  ${state.pendingPrompt}`
       : options.view === 'models'
-        ? `Tab Next  Shift+Tab Prev  F/W/M/C/T View  1 Planner 2 Worker 3 Validator 4 Research`
-        : `Tab Next  Shift+Tab Prev  F/W/M/C/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
+        ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker 3 Validator 4 Research`
+        : options.view === 'prd' || options.view === 'task'
+          ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓ Scroll  P Pause  R Resume  Esc Overview`
+          : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
 

@@ -6,8 +6,8 @@ import { overviewView } from '../tui-overview.js';
 import { featuresView } from '../tui-features.js';
 import { workersView } from '../tui-workers.js';
 import { modelsView } from '../tui-models.js';
-import { costsView } from '../tui-costs.js';
-import { docsView } from '../tui-docs.js';
+import { prdView } from '../tui-prd.js';
+import { taskView } from '../tui-task.js';
 import { getDisplayWidth } from '../tui-ansi.js';
 import type { MissionControlState, TUIView } from '../tui-views.js';
 
@@ -153,7 +153,7 @@ describe('ui/tui contract', () => {
     expect(rendered).not.toContain('Worker Log Stream');
   });
 
-  it('supports full view navigation contract (Tab/Shift+Tab/F/W/M/C/T/Esc)', () => {
+  it('supports full view navigation contract (Tab/Shift+Tab/F/W/M/D/T/Esc)', () => {
     const h = createHarness();
     h.ui.start(createSessionInfo(), {
       onPause: h.onPause,
@@ -178,11 +178,11 @@ describe('ui/tui contract', () => {
     h.input.write('M');
     expect(h.getRendered()).toContain('Models');
 
-    h.input.write('C');
-    expect(h.getRendered()).toContain('Costs');
+    h.input.write('D');
+    expect(h.getRendered()).toContain('PRD');
 
     h.input.write('T');
-    expect(h.getRendered()).toContain('Docs');
+    expect(h.getRendered()).toContain('TASK');
 
     h.input.write('\u001b');
     h.ui.stop();
@@ -200,7 +200,7 @@ describe('ui/tui contract', () => {
     });
     expect(h.getRendered()).toContain('INITIALIZING');
 
-    h.input.write('C');
+    h.input.write('D');
     h.input.write('W');
     h.ui.updateState(createState());
     h.ui.stop();
@@ -294,7 +294,7 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).toContain('worker-log-v2');
   });
 
-  it('pending input allows view navigation/docs/model switching, but blocks run controls', () => {
+  it('pending input allows PRD/TASK navigation and model switching, but blocks run controls', () => {
     const h = createHarness();
     h.ui.start(createSessionInfo(), {
       onPause: h.onPause,
@@ -304,8 +304,8 @@ describe('ui/tui contract', () => {
     });
     h.ui.updateState(createState());
 
-    h.input.write('C');
-    expect(h.getRendered()).toContain('Costs');
+    h.input.write('D');
+    expect(h.getRendered()).toContain('PRD');
 
     h.ui.updateState(createState({
       missionState: 'awaiting_approval',
@@ -320,7 +320,7 @@ describe('ui/tui contract', () => {
 
     h.input.write('2');
     h.input.write('T');
-    expect(h.getRendered()).toContain('Docs');
+    expect(h.getRendered()).toContain('TASK');
     h.input.write('\t');
     h.input.write('W');
     h.input.write('p');
@@ -405,7 +405,7 @@ describe('ui/tui contract', () => {
 });
 
 describe('ui/view layout contract', () => {
-  const views: TUIView[] = [overviewView, featuresView, workersView, modelsView, costsView, docsView];
+  const views: TUIView[] = [overviewView, featuresView, workersView, modelsView, prdView, taskView];
   it('keeps every rendered line within viewport width (80x24)', () => {
     const state = createState();
     for (const view of views) {

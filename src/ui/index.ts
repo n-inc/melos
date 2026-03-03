@@ -10,5 +10,5 @@ export * from './tui-overview.js';
 export * from './tui-features.js';
 export * from './tui-workers.js';
 export * from './tui-models.js';
-export * from './tui-costs.js';
-export * from './tui-docs.js';
+export * from './tui-prd.js';
+export * from './tui-task.js';

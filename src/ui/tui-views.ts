@@ -2,7 +2,7 @@ import type { ModelAssignment, ModelRole } from '../models/router.js';
 import type { FeatureStatus, MilestoneStatus, MissionState } from '../state/mission.js';
 import type { TokenUsageSnapshot } from '../state/token-tracker.js';
 
-export type ViewId = 'overview' | 'features' | 'workers' | 'models' | 'costs' | 'docs';
+export type ViewId = 'overview' | 'features' | 'workers' | 'models' | 'prd' | 'task';
 
 export interface WorkerRunView {
   id: number;
@@ -65,6 +65,6 @@ export interface KeyEvent {
 
 export interface TUIView {
   readonly id: ViewId;
-  render(viewport: ViewPort, state: MissionControlState): string[];
+  render(viewport: ViewPort, state: MissionControlState, context?: { scrollOffset?: number }): string[];
   handleKey?(key: KeyEvent, state: MissionControlState): boolean;
 }

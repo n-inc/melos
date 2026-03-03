@@ -89,7 +89,7 @@ exports[`ui/tui visual snapshots narrow terminal snapshot (80x24) 1`] = `
 
 
 
-Tab Next  Shift+Tab Prev  F/W/M/C/T View  P Pause  R Resume  Ctrl+G Steer  Esc …
+Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc …
 melos> Running m1-f2...  (Ctrl+G steer)                                         "
 `;
 
@@ -122,7 +122,7 @@ exports[`ui/tui visual snapshots overview frame snapshot 1`] = `
 
 
 
-Tab Next  Shift+Tab Prev  F/W/M/C/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview             
+Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview             
 melos> Running m1-f2...  (Ctrl+G steer)                                                             "
 `;
 
@@ -155,6 +155,6 @@ exports[`ui/tui visual snapshots workers frame snapshot 1`] = `
 
 
 
-Tab Next  Shift+Tab Prev  F/W/M/C/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview             
+Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview             
 melos> Running m1-f2...  (Ctrl+G steer)                                                             "
 `;

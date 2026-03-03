@@ -2,8 +2,8 @@ import { overviewView } from '../tui-overview.js';
 import { featuresView } from '../tui-features.js';
 import { workersView } from '../tui-workers.js';
 import { modelsView } from '../tui-models.js';
-import { costsView } from '../tui-costs.js';
-import { docsView } from '../tui-docs.js';
+import { prdView } from '../tui-prd.js';
+import { taskView } from '../tui-task.js';
 import type { MissionControlState } from '../tui-views.js';
 
 function createState(): MissionControlState {
@@ -95,26 +95,40 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Planning mission from PRD.md...');
   });
 
-  it('renders docs view with PRD/TASK previews', () => {
+  it('renders PRD view', () => {
     const state = createState();
     state.prdPreviewLines = ['# PRD Heading', 'Implement persona LP pages'];
-    state.taskPreviewLines = ['state=awaiting_approval', 'activeFeature=m1-f1'];
-    const lines = docsView.render({ width: 100, height: 24 }, state).join('\n');
-    expect(lines).toContain('Docs');
-    expect(lines).toContain('PRD.md Preview');
-    expect(lines).toContain('TASK.json Preview');
+    const lines = prdView.render({ width: 100, height: 24 }, state).join('\n');
+    expect(lines).toContain('PRD');
+    expect(lines).toContain('Line 1-2 / 2');
     expect(lines).toContain('# PRD Heading');
+  });
+
+  it('renders TASK view', () => {
+    const state = createState();
+    state.taskPreviewLines = ['state=awaiting_approval', 'activeFeature=m1-f1'];
+    const lines = taskView.render({ width: 100, height: 24 }, state).join('\n');
+    expect(lines).toContain('TASK');
     expect(lines).toContain('state=awaiting_approval');
   });
 
-  it('wraps long preview lines in docs view', () => {
+  it('wraps long preview lines in PRD view', () => {
     const state = createState();
     state.prdPreviewLines = [
       'This is a very long preview line that should wrap instead of being heavily truncated in docs panel rendering.',
     ];
-    const lines = docsView.render({ width: 70, height: 20 }, state).join('\n');
+    const lines = prdView.render({ width: 70, height: 20 }, state).join('\n');
     expect(lines).toContain('This is a very long preview line');
     expect(lines).toContain('heavily truncated in docs panel rendering.');
+  });
+
+  it('supports scroll offset in TASK view', () => {
+    const state = createState();
+    state.taskPreviewLines = Array.from({ length: 40 }, (_, idx) => `line-${idx + 1}`);
+    const top = taskView.render({ width: 80, height: 20 }, state, { scrollOffset: 0 }).join('\n');
+    const scrolled = taskView.render({ width: 80, height: 20 }, state, { scrollOffset: 10 }).join('\n');
+    expect(top).toContain('line-1');
+    expect(scrolled).toContain('line-11');
   });
 
   it('renders features view with active feature details', () => {
@@ -167,10 +181,4 @@ describe('ui/tui views', () => {
     expect(lines).toContain('4 Research');
   });
 
-  it('renders costs view totals', () => {
-    const lines = costsView.render({ width: 100, height: 24 }, createState()).join('\n');
-    expect(lines).toContain('Costs');
-    expect(lines).toContain('Total');
-    expect(lines).toContain('Estimated cost: $0.2300');
-  });
 });

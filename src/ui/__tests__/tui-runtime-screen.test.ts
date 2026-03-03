@@ -281,7 +281,7 @@ describe('ui/tui runtime screen contract', () => {
     h.ui.stop();
   });
 
-  it('pending input allows docs/models navigation and tab, but blocks run controls', () => {
+  it('pending input allows task/models navigation and tab, but blocks run controls', () => {
     const h = createHarness();
     h.ui.start(createSession(), {
       onPause: h.onPause,
@@ -306,13 +306,13 @@ describe('ui/tui runtime screen contract', () => {
 
     h.input.write('2');
     h.input.write('T');
-    expect(h.screen()).toContain('Docs');
+    expect(h.screen()).toContain('TASK');
     h.input.write('\t');
     h.input.write('W');
-    h.input.write('C');
+    h.input.write('D');
     h.input.write('p');
     h.input.write('r');
-    expect(h.screen()).toContain('Overview');
+    expect(h.screen()).toContain('PRD');
     expect(h.screen()).not.toContain('Workers');
     expect(h.onPause).not.toHaveBeenCalled();
     expect(h.onResume).not.toHaveBeenCalled();
@@ -331,12 +331,12 @@ describe('ui/tui runtime screen contract', () => {
     });
     expect(h.screen()).toContain('INITIALIZING');
 
-    h.input.write('C');
+    h.input.write('D');
     h.input.write('W');
     h.input.write('\t');
     h.ui.updateState(createState());
     expect(h.screen()).toContain('Overview');
-    expect(h.screen()).not.toContain('Costs');
+    expect(h.screen()).not.toContain('PRD');
     expect(h.screen()).not.toContain('Workers');
 
     h.ui.stop();
@@ -357,6 +357,31 @@ describe('ui/tui runtime screen contract', () => {
     h.input.write('3');
     expect(h.onCycleModel).toHaveBeenNthCalledWith(1, 'planner');
     expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'validator');
+
+    h.ui.stop();
+  });
+
+  it('supports scrolling in TASK view (including pending input)', () => {
+    const h = createHarness();
+    h.ui.start(createSession());
+    h.ui.updateState(createState({
+      taskPreviewLines: Array.from({ length: 80 }, (_, idx) => `task-line-${idx + 1}`),
+    }));
+
+    h.input.write('T');
+    expect(h.screen()).toContain('TASK');
+    expect(h.screen()).toContain('Line 1-');
+
+    h.input.write('\u001b[B');
+    expect(h.screen()).toContain('Line 2-');
+
+    h.ui.updateState(createState({
+      missionState: 'awaiting_approval',
+      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+      taskPreviewLines: Array.from({ length: 80 }, (_, idx) => `task-line-${idx + 1}`),
+    }));
+    h.input.write('\u001b[B');
+    expect(h.screen()).toContain('Line 3-');
 
     h.ui.stop();
   });
