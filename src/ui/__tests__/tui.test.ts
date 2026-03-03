@@ -31,6 +31,10 @@ function createState(): MissionControlState {
     activeMilestoneId: 'm1',
     activeFeatureId: 'm1-f1',
     activeBranch: 'melos/auth/m1-f1',
+    currentActor: 'worker',
+    logEntries: [
+      { timestamp: new Date().toISOString(), actor: 'worker', kind: 'READ', message: 'src/a.ts' },
+    ],
     milestones: [
       {
         id: 'm1',
@@ -53,7 +57,7 @@ function createState(): MissionControlState {
         durationLabel: '0m 10s',
         engine: 'codex',
         model: 'gpt-5.3-codex',
-        log: ['read src/a.ts'],
+        log: [{ timestamp: new Date().toISOString(), actor: 'worker', kind: 'READ', message: 'src/a.ts' }],
       },
     ],
     modelAssignments: {
@@ -123,7 +127,7 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('Mission Control');
     expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
     expect(rendered).toContain('Overview');
-    expect(rendered).not.toContain('Worker Log Stream');
+    expect(rendered).not.toContain('SWITCH:');
     expect(rendered).toContain('melos> Running m1-f1...  (Ctrl+G steer)');
   });
 
@@ -262,13 +266,13 @@ describe('ui/tui v0.8', () => {
     );
     ui.start(createSessionInfo());
     ui.updateState(createState());
-    expect(rendered).not.toContain('Worker Log Stream');
+    expect(rendered).not.toContain('NOW RUNNING  WORKER');
 
     input.write('W');
     ui.stop();
 
-    expect(rendered).toContain('Workers');
-    expect(rendered).toContain('Worker Log Stream');
+    expect(rendered).toContain('NOW RUNNING  WORKER');
+    expect(rendered).toContain('[READ] src/a.ts');
   });
 
   it('pending input allows task/models navigation, but blocks run controls', () => {
@@ -298,7 +302,7 @@ describe('ui/tui v0.8', () => {
     ui.updateState({
       ...createState(),
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+      pendingPrompt: '承認待ち: y=承認 / Ctrl+C=中止',
     });
 
     input.write('M');
@@ -311,9 +315,9 @@ describe('ui/tui v0.8', () => {
 
     expect(onResume).not.toHaveBeenCalled();
     expect(onCycleModel).toHaveBeenCalledWith('worker');
-    expect(rendered).toContain('Input Required');
-    expect(rendered).toContain('[INPUT] Awaiting approval (single key)');
-    expect(rendered).not.toContain('Worker Log Stream');
+    expect(rendered).toContain('入力待ち');
+    expect(rendered).toContain('[INPUT] 承認待ち: y=承認 / Ctrl+C=中止');
+    expect(rendered).not.toContain('NOW RUNNING  WORKER');
     expect(rendered).toContain('TASK');
   });
 
@@ -346,12 +350,12 @@ describe('ui/tui v0.8', () => {
     ui.updateState({
       ...createState(),
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+      pendingPrompt: '承認待ち: y=承認 / Ctrl+C=中止',
     });
     ui.stop();
 
     expect(rendered).toContain('Overview');
-    expect(rendered).toContain('Input Required');
+    expect(rendered).toContain('入力待ち');
   });
 
   it('keeps models view during pending input when user switched to models', () => {
@@ -383,11 +387,11 @@ describe('ui/tui v0.8', () => {
     ui.updateState({
       ...createState(),
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+      pendingPrompt: '承認待ち: y=承認 / Ctrl+C=中止',
     });
     ui.stop();
 
     expect(rendered).toContain('Models');
-    expect(rendered).toContain('Input Required');
+    expect(rendered).toContain('入力待ち');
   });
 });

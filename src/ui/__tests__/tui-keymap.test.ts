@@ -10,6 +10,8 @@ describe('ui/tui-keymap', () => {
     expect(parseKey('m')).toEqual({ type: 'goto_view', view: 'models' });
     expect(parseKey('D')).toEqual({ type: 'goto_view', view: 'prd' });
     expect(parseKey('T')).toEqual({ type: 'goto_view', view: 'task' });
+    expect(parseKey('L')).toEqual({ type: 'toggle_log_source' });
+    expect(parseKey('o')).toEqual({ type: 'toggle_secondary' });
     expect(parseKey('p')).toEqual({ type: 'pause' });
     expect(parseKey('\u0003')).toEqual({ type: 'abort' });
     expect(parseKey('R')).toEqual({ type: 'resume' });

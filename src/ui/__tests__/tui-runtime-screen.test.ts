@@ -26,6 +26,11 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
     activeMilestoneId: 'm1',
     activeFeatureId: 'm1-f1',
     activeBranch: 'melos/mission/m1-f1',
+    currentActor: 'worker',
+    logEntries: [
+      { timestamp: '2026-02-28T08:59:58.000Z', actor: 'planning', kind: 'PLAN_CREATED', message: 'manager-marker-v1' },
+      { timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-marker-v1' },
+    ],
     milestones: [
       {
         id: 'm1',
@@ -53,7 +58,7 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         durationLabel: '0m 15s',
         engine: 'codex',
         model: 'gpt-5.3-codex',
-        log: ['worker-marker-v1'],
+        log: [{ timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-marker-v1' }],
       },
     ],
     modelAssignments: {
@@ -256,15 +261,17 @@ describe('ui/tui runtime screen contract', () => {
     expect(h.screen()).not.toContain('worker-marker-v1');
 
     h.input.write('W');
-    expect(h.screen()).toContain('Workers');
-    expect(h.screen()).toContain('Manager Log Stream');
+    expect(h.screen()).toContain('NOW RUNNING');
     expect(h.screen()).toContain('manager-marker-v1');
-    expect(h.screen()).toContain('Worker Log Stream');
     expect(h.screen()).toContain('worker-marker-v1');
 
     h.ui.updateState(createState({
       progressLog: [{ timestamp: '2026-02-28T09:00:10.000Z', message: 'progress-marker-v2' }],
       managerLog: [{ timestamp: '2026-02-28T09:00:11.000Z', message: 'planning: manager-marker-v2' }],
+      logEntries: [
+        { timestamp: '2026-02-28T09:00:10.000Z', actor: 'manager', kind: 'INFO', message: 'manager-marker-v2' },
+        { timestamp: '2026-02-28T09:00:12.000Z', actor: 'worker', kind: 'INFO', message: 'worker-marker-v2' },
+      ],
       workerRuns: [{
         id: 1,
         type: 'implement',
@@ -274,7 +281,7 @@ describe('ui/tui runtime screen contract', () => {
         durationLabel: '0m 16s',
         engine: 'codex',
         model: 'gpt-5.3-codex',
-        log: ['worker-marker-v2'],
+        log: [{ timestamp: '2026-02-28T09:00:12.000Z', actor: 'worker', kind: 'INFO', message: 'worker-marker-v2' }],
       }],
     }));
     expect(h.screen()).toContain('manager-marker-v2');
@@ -298,15 +305,15 @@ describe('ui/tui runtime screen contract', () => {
     });
     h.ui.updateState(createState());
     h.input.write('W');
-    expect(h.screen()).toContain('Workers');
+    expect(h.screen()).toContain('NOW RUNNING');
 
     h.ui.updateState(createState({
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+      pendingPrompt: '承認待ち: y=承認 / Ctrl+C=中止',
     }));
     expect(h.screen()).toContain('Overview');
-    expect(h.screen()).toContain('Input Required');
-    expect(h.screen()).toContain('[INPUT] Awaiting approval (single key):');
+    expect(h.screen()).toContain('入力待ち');
+    expect(h.screen()).toContain('[INPUT] 承認待ち: y=承認 / Ctrl+C=中止');
 
     h.input.write('M');
     expect(h.screen()).toContain('Models');
@@ -320,7 +327,7 @@ describe('ui/tui runtime screen contract', () => {
     h.input.write('p');
     h.input.write('r');
     expect(h.screen()).toContain('PRD');
-    expect(h.screen()).not.toContain('Workers');
+    expect(h.screen()).not.toContain('NOW RUNNING  WORKER');
     expect(h.onPause).not.toHaveBeenCalled();
     expect(h.onResume).not.toHaveBeenCalled();
     expect(h.onCycleModel).toHaveBeenCalledWith('worker');
@@ -344,7 +351,7 @@ describe('ui/tui runtime screen contract', () => {
     h.ui.updateState(createState());
     expect(h.screen()).toContain('Overview');
     expect(h.screen()).not.toContain('PRD');
-    expect(h.screen()).not.toContain('Workers');
+    expect(h.screen()).not.toContain('NOW RUNNING  WORKER');
 
     h.ui.stop();
   });
@@ -390,7 +397,7 @@ describe('ui/tui runtime screen contract', () => {
 
     h.ui.updateState(createState({
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+      pendingPrompt: '承認待ち: y=承認 / Ctrl+C=中止',
       taskPreviewLines: Array.from({ length: 80 }, (_, idx) => `task-line-${idx + 1}`),
     }));
     h.input.write('\u001b[B');

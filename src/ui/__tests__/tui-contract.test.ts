@@ -33,6 +33,11 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
     activeMilestoneId: 'm1',
     activeFeatureId: 'm1-f1',
     activeBranch: 'melos/mission/m1-f1',
+    currentActor: 'worker',
+    logEntries: [
+      { timestamp: '2026-02-28T09:00:00.000Z', actor: 'planning', kind: 'PLAN_CREATED', message: 'mission run started' },
+      { timestamp: '2026-02-28T09:00:01.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- parser' },
+    ],
     milestones: [
       {
         id: 'm1',
@@ -69,8 +74,8 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         engine: 'codex',
         model: 'gpt-5.3-codex',
         log: [
-          'Read src/parser.ts',
-          'Execute npm test -- parser',
+          { timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'READ', message: 'src/parser.ts' },
+          { timestamp: '2026-02-28T09:00:01.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- parser' },
         ],
       },
     ],
@@ -150,7 +155,7 @@ describe('ui/tui contract', () => {
 
     const rendered = h.getRendered();
     expect(rendered).toContain('Overview');
-    expect(rendered).not.toContain('Worker Log Stream');
+    expect(rendered).not.toContain('NOW RUNNING  WORKER');
   });
 
   it('supports full view navigation contract (Tab/Shift+Tab/F/W/M/D/T/Esc)', () => {
@@ -167,13 +172,13 @@ describe('ui/tui contract', () => {
     expect(h.getRendered()).toContain('Features');
 
     h.input.write('\t');
-    expect(h.getRendered()).toContain('Workers');
+    expect(h.getRendered()).toContain('NOW RUNNING');
 
     h.input.write('\u001b[Z');
     expect(h.getRendered()).toContain('Features');
 
     h.input.write('W');
-    expect(h.getRendered()).toContain('Worker Log Stream');
+    expect(h.getRendered()).toContain('NOW RUNNING');
 
     h.input.write('M');
     expect(h.getRendered()).toContain('Models');
@@ -206,19 +211,19 @@ describe('ui/tui contract', () => {
     h.ui.stop();
 
     expect(h.getRendered()).toContain('Overview');
-    expect(h.getRendered()).not.toContain('Worker Log Stream');
+    expect(h.getRendered()).not.toContain('NOW RUNNING  WORKER');
   });
 
   it('shows worker logs only in workers view', () => {
     const h = createHarness();
     h.ui.start(createSessionInfo());
     h.ui.updateState(createState());
-    expect(h.getRendered()).not.toContain('Worker Log Stream');
+    expect(h.getRendered()).not.toContain('NOW RUNNING  WORKER');
 
     h.input.write('W');
     h.ui.stop();
-    expect(h.getRendered()).toContain('Worker Log Stream');
-    expect(h.getRendered()).toContain('Execute npm test -- parser');
+    expect(h.getRendered()).toContain('NOW RUNNING  WORKER');
+    expect(h.getRendered()).toContain('[BASH] npm test -- parser');
   });
 
   it('routes runtime log updates to the correct view sections', () => {
@@ -227,6 +232,9 @@ describe('ui/tui contract', () => {
     h.ui.updateState(createState({
       progressLog: [
         { timestamp: '2026-02-28T09:00:00.000Z', message: 'progress only marker' },
+      ],
+      logEntries: [
+        { timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-only-log-marker' },
       ],
       workerRuns: [
         {
@@ -238,7 +246,7 @@ describe('ui/tui contract', () => {
           durationLabel: '0m 35s',
           engine: 'codex',
           model: 'gpt-5.3-codex',
-          log: ['worker-only-log-marker'],
+          log: [{ timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-only-log-marker' }],
         },
       ],
     }));
@@ -265,9 +273,10 @@ describe('ui/tui contract', () => {
           durationLabel: '0m 35s',
           engine: 'codex',
           model: 'gpt-5.3-codex',
-          log: ['worker-log-v1'],
+          log: [{ timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v1' }],
         },
       ],
+      logEntries: [{ timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v1' }],
     }));
     expect(h.getRendered()).not.toContain('worker-log-v1');
 
@@ -282,8 +291,15 @@ describe('ui/tui contract', () => {
           durationLabel: '0m 40s',
           engine: 'codex',
           model: 'gpt-5.3-codex',
-          log: ['worker-log-v1', 'worker-log-v2'],
+          log: [
+            { timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v1' },
+            { timestamp: '2026-02-28T09:00:02.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v2' },
+          ],
         },
+      ],
+      logEntries: [
+        { timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v1' },
+        { timestamp: '2026-02-28T09:00:02.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v2' },
       ],
     }));
     expect(h.getRendered()).not.toContain('worker-log-v2');
@@ -309,11 +325,11 @@ describe('ui/tui contract', () => {
 
     h.ui.updateState(createState({
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+      pendingPrompt: '承認待ち: y=承認 / Ctrl+C=中止',
     }));
     expect(h.getRendered()).toContain('Overview');
-    expect(h.getRendered()).toContain('Input Required');
-    expect(h.getRendered()).toContain('[INPUT] Awaiting approval (single key)');
+    expect(h.getRendered()).toContain('入力待ち');
+    expect(h.getRendered()).toContain('[INPUT] 承認待ち: y=承認 / Ctrl+C=中止');
 
     h.input.write('M');
     expect(h.getRendered()).toContain('Models');
@@ -327,7 +343,7 @@ describe('ui/tui contract', () => {
     h.input.write('r');
     h.ui.stop();
 
-    expect(h.getRendered()).not.toContain('Worker Log Stream');
+    expect(h.getRendered()).not.toContain('NOW RUNNING  WORKER');
     expect(h.onPause).not.toHaveBeenCalled();
     expect(h.onResume).not.toHaveBeenCalled();
     expect(h.onCycleModel).toHaveBeenCalledWith('worker');
@@ -366,12 +382,12 @@ describe('ui/tui contract', () => {
 
     h.ui.updateState(createState({
       missionState: 'awaiting_approval',
-      pendingPrompt: 'Awaiting approval (single key): y=approve / Ctrl+C=abort',
+      pendingPrompt: '承認待ち: y=承認 / Ctrl+C=中止',
     }));
 
     const rendered = h.getRendered();
-    expect(rendered).toContain('Input Required  Awaiting approval');
-    expect(rendered.lastIndexOf('Input Required')).toBeGreaterThan(rendered.lastIndexOf('[STEER MODE]'));
+    expect(rendered).toContain('入力待ち  承認待ち: y=承認 / Ctrl+C=中止');
+    expect(rendered.lastIndexOf('入力待ち')).toBeGreaterThan(rendered.lastIndexOf('[STEER MODE]'));
 
     h.input.write('\n');
     h.ui.stop();

@@ -18,6 +18,13 @@ function createState(): MissionControlState {
     activeMilestoneId: 'm2',
     activeFeatureId: 'm2-f3',
     activeBranch: 'melos/auth/m2-f3-auth-middleware',
+    currentActor: 'worker',
+    logEntries: [
+      { timestamp: '2026-02-28T11:59:50.000Z', actor: 'planning', kind: 'READ', message: 'PRD.md (3 lines)' },
+      { timestamp: '2026-02-28T11:59:51.000Z', actor: 'planning', kind: 'PLAN_CREATED', message: 'milestones=2 features=4' },
+      { timestamp: '2026-02-28T12:00:00.000Z', actor: 'worker', kind: 'READ', message: 'src/middleware/auth.ts' },
+      { timestamp: '2026-02-28T12:00:10.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- auth' },
+    ],
     milestones: [
       {
         id: 'm1',
@@ -59,7 +66,10 @@ function createState(): MissionControlState {
         durationLabel: '1m 12s',
         engine: 'codex',
         model: 'gpt-5.3-codex',
-        log: ['Read src/middleware/auth.ts', 'Execute npm test -- auth'],
+        log: [
+          { timestamp: '2026-02-28T12:00:00.000Z', actor: 'worker', kind: 'READ', message: 'src/middleware/auth.ts' },
+          { timestamp: '2026-02-28T12:00:10.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- auth' },
+        ],
       },
     ],
     modelAssignments: {
@@ -82,9 +92,9 @@ describe('ui/tui views', () => {
   it('renders overview view sections', () => {
     const lines = overviewView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Overview');
-    expect(lines).toContain('Active Feature');
-    expect(lines).toContain('Features');
-    expect(lines).toContain('Progress Log');
+    expect(lines).toContain('MISSION SUMMARY');
+    expect(lines).toContain('FEATURES');
+    expect(lines).toContain('RECENT EVENTS');
     expect(lines).not.toContain('Active Worker');
     expect(lines).not.toContain('Execute npm test -- auth');
   });
@@ -95,7 +105,7 @@ describe('ui/tui views', () => {
     state.missionState = 'planning';
     state.activity = 'Planning mission from PRD.md...';
     const lines = overviewView.render({ width: 100, height: 24 }, state).join('\n');
-    expect(lines).toContain('Progress Log (mission events)');
+    expect(lines).toContain('RECENT EVENTS');
     expect(lines).toContain('Planning mission from PRD.md...');
   });
 
@@ -147,13 +157,11 @@ describe('ui/tui views', () => {
 
   it('renders workers view table and logs', () => {
     const lines = workersView.render({ width: 100, height: 24 }, createState()).join('\n');
-    expect(lines).toContain('Workers');
-    expect(lines).toContain('Active Worker');
-    expect(lines).toContain('Manager Log Stream');
-    expect(lines).toContain('Worker Log Stream');
-    expect(lines).toContain('planning: Generated milestones');
+    expect(lines).toContain('NOW RUNNING');
+    expect(lines).toContain('SWITCH: PLANNING -> WORKER');
+    expect(lines).toContain('[READ] src/middleware/auth.ts');
     expect(lines).toContain('m2-f3');
-    expect(lines).toContain('Execute npm test -- auth');
+    expect(lines).toContain('[BASH] npm test -- auth');
   });
 
   it('renders waiting message when worker has no structured logs yet', () => {
@@ -172,9 +180,10 @@ describe('ui/tui views', () => {
       },
     ];
     state.activity = 'Worker executing m2-f4...';
+    state.logEntries = [];
     const lines = workersView.render({ width: 100, height: 24 }, state).join('\n');
-    expect(lines).toContain('No structured worker events yet.');
-    expect(lines).toContain('Current activity: Worker executing m2-f4...');
+    expect(lines).toContain('No logs yet. Waiting for next event...');
+    expect(lines).toContain('NOW RUNNING  WORKER #8');
   });
 
   it('renders models view assignments', () => {
