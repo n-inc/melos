@@ -5,3 +5,9 @@ dist/
 coverage/
 
 .melos/
+
+# Mission runtime artifacts (do not commit)
+HANDOFF.md
+PROGRESS.md
+WORK_REPORT.json
+SESSION.json

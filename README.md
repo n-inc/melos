@@ -91,6 +91,16 @@ npx melos cancel
 - `validations/*.json`: milestone validation レポート
 - `RUN.json`: 実行中プロセス情報
 
+## Git Hygiene
+
+以下は実行時に生成されるローカル運用ファイルのため、コミット対象外です。
+
+- `HANDOFF.md`
+- `PROGRESS.md`
+- `WORK_REPORT.json`
+- `SESSION.json`
+- `.melos/` 配下の全ファイル
+
 ## 設定 (`.melos.json`)
 
 ```json
