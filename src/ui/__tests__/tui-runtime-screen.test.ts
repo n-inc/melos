@@ -428,4 +428,29 @@ describe('ui/tui runtime screen contract', () => {
 
     h.ui.stop();
   });
+
+  it('supports split escape scrolling in workers log view', () => {
+    const h = createHarness();
+    h.ui.start(createSession());
+    h.ui.updateState(createState({
+      logEntries: Array.from({ length: 40 }, (_, idx) => ({
+        timestamp: `2026-02-28T09:00:${String(idx % 60).padStart(2, '0')}.000Z`,
+        actor: 'worker',
+        kind: 'INFO',
+        message: `worker-log-${idx + 1}`,
+      })),
+    }));
+
+    h.input.write('W');
+    expect(h.screen()).toContain('worker-log-1');
+
+    h.input.write('\u001b');
+    h.input.write('[B');
+    expect(h.screen()).toContain('Lines 2-');
+
+    h.input.write('\u001b[6~');
+    expect(h.screen()).toContain('Lines 14-');
+
+    h.ui.stop();
+  });
 });
