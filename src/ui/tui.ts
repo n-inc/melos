@@ -1,4 +1,4 @@
-import { parseKey } from './tui-keymap.js';
+import { consumeKeyStream, parseKey } from './tui-keymap.js';
 import { truncateDisplay, padDisplay, getDisplayWidth, colorize, canUseColor } from './tui-ansi.js';
 import type { MissionControlState, TUIView, ViewId } from './tui-views.js';
 import type { ModelRole } from '../models/router.js';
@@ -114,6 +114,8 @@ export function createRuntimeUI(
   let inputResumed = false;
   let steerMode = false;
   let steerBuffer = '';
+  let keyStreamRemainder = '';
+  let keyStreamFlushTimer: NodeJS.Timeout | null = null;
   const useColor = mode === 'tui' && canUseColor(output.isTTY === true);
 
   const getColumns = () => output.columns ?? process.stderr.columns ?? DEFAULT_TERMINAL_COLUMNS;
@@ -199,12 +201,15 @@ export function createRuntimeUI(
     }
   };
 
-  const handleKeyChunk = (chunk: Buffer | string) => {
-    const raw = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-    if (raw.length === 0) {
+  const clearKeyStreamFlushTimer = () => {
+    if (!keyStreamFlushTimer) {
       return;
     }
+    clearTimeout(keyStreamFlushTimer);
+    keyStreamFlushTimer = null;
+  };
 
+  const handleRawKey = (raw: string) => {
     // 初回状態が届くまでは画面遷移キーを受け付けない（Ctrl+Cのみ許可）
     if (!state) {
       if (raw === '\u0003') {
@@ -284,7 +289,6 @@ export function createRuntimeUI(
         default:
           return;
       }
-      return;
     }
 
     if (!steerMode) {
@@ -399,6 +403,46 @@ export function createRuntimeUI(
     }
   };
 
+  const flushPendingKeyRemainder = () => {
+    if (keyStreamRemainder.length === 0) {
+      return;
+    }
+    const pending = keyStreamRemainder;
+    keyStreamRemainder = '';
+    for (const key of Array.from(pending)) {
+      handleRawKey(key);
+    }
+  };
+
+  const handleKeyChunk = (chunk: Buffer | string) => {
+    const raw = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    if (raw.length === 0) {
+      return;
+    }
+
+    // steer mode中は文字列をそのまま扱う（貼り付け対応）
+    if (steerMode) {
+      handleRawKey(raw);
+      return;
+    }
+
+    clearKeyStreamFlushTimer();
+    keyStreamRemainder += raw;
+    const parsed = consumeKeyStream(keyStreamRemainder);
+    keyStreamRemainder = parsed.remainder;
+    for (const key of parsed.keys) {
+      handleRawKey(key);
+    }
+
+    if (keyStreamRemainder.length > 0) {
+      keyStreamFlushTimer = setTimeout(() => {
+        keyStreamFlushTimer = null;
+        flushPendingKeyRemainder();
+      }, 25);
+      keyStreamFlushTimer.unref?.();
+    }
+  };
+
   const start = (nextSession: SessionInfo, nextControls: RuntimeUIControls = {}) => {
     if (started) {
       return;
@@ -415,6 +459,8 @@ export function createRuntimeUI(
     viewScroll.models = 0;
     viewScroll.prd = 0;
     viewScroll.task = 0;
+    keyStreamRemainder = '';
+    clearKeyStreamFlushTimer();
 
     if (mode === 'tui') {
       output.write('\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l');
@@ -485,6 +531,8 @@ export function createRuntimeUI(
     }
 
     input.removeListener('data', handleKeyChunk);
+    keyStreamRemainder = '';
+    clearKeyStreamFlushTimer();
     if (inputResumed && typeof input.pause === 'function') {
       input.pause();
       inputResumed = false;

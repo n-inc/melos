@@ -1,4 +1,4 @@
-import { parseKey } from '../tui-keymap.js';
+import { consumeKeyStream, parseKey } from '../tui-keymap.js';
 
 describe('ui/tui-keymap', () => {
   it('parses mission control hotkeys', () => {
@@ -29,5 +29,17 @@ describe('ui/tui-keymap', () => {
 
   it('returns none for unknown keys', () => {
     expect(parseKey('x')).toEqual({ type: 'none' });
+  });
+
+  it('consumes combined key chunks into individual keys', () => {
+    const parsed = consumeKeyStream('\u001b[B\u001b[Bjj');
+    expect(parsed.keys).toEqual(['\u001b[B', '\u001b[B', 'j', 'j']);
+    expect(parsed.remainder).toBe('');
+  });
+
+  it('keeps incomplete escape sequence as remainder', () => {
+    const parsed = consumeKeyStream('\u001b[');
+    expect(parsed.keys).toEqual([]);
+    expect(parsed.remainder).toBe('\u001b[');
   });
 });

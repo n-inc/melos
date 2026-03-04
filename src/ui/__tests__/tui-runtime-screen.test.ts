@@ -246,7 +246,7 @@ function createHarness() {
 }
 
 describe('ui/tui runtime screen contract', () => {
-  it('keeps logs in correct regions across view switches', () => {
+  it('keeps logs in correct regions across view switches', async () => {
     const h = createHarness();
     h.ui.start(createSession(), {
       onPause: h.onPause,
@@ -288,6 +288,7 @@ describe('ui/tui runtime screen contract', () => {
     expect(h.screen()).toContain('worker-marker-v2');
 
     h.input.write('\u001b');
+    await new Promise((resolve) => setTimeout(resolve, 40));
     expect(h.screen()).toContain('Overview');
     expect(h.screen()).toContain('progress-marker-v2');
     expect(h.screen()).not.toContain('worker-marker-v2');
@@ -402,6 +403,28 @@ describe('ui/tui runtime screen contract', () => {
     }));
     h.input.write('\u001b[B');
     expect(h.screen()).toContain('Line 2-');
+
+    h.ui.stop();
+  });
+
+  it('supports scroll keys when escape sequences are split or combined in one chunk', () => {
+    const h = createHarness();
+    h.ui.start(createSession());
+    h.ui.updateState(createState({
+      taskPreviewLines: Array.from({ length: 80 }, (_, idx) => `task-line-${idx + 1}`),
+    }));
+
+    h.input.write('T');
+    expect(h.screen()).toContain('Line 1-');
+
+    // split chunk: ESC + [B
+    h.input.write('\u001b');
+    h.input.write('[B');
+    expect(h.screen()).toContain('Line 2-');
+
+    // combined chunk: down + down
+    h.input.write('\u001b[B\u001b[B');
+    expect(h.screen()).toContain('Line 4-');
 
     h.ui.stop();
   });
