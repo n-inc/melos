@@ -16,6 +16,7 @@ import {
   createEmptyValidationContract,
 } from '../state/validation.js';
 import type { CheckType } from '../state/validation.js';
+import { isCodexModel } from '../models/router.js';
 import type {
   Agent,
   AgentMode,
@@ -48,7 +49,6 @@ export class MissionPlanningError extends Error {
   }
 }
 
-const CODEX_MODEL_PATTERN = /codex/i;
 const CODEBASE_CONTEXT_MAX_LINES = 32;
 const PLANNING_PROMPT_MAX_CHARS = 220_000;
 const PLANNING_CONTEXT_SECTION_MAX_CHARS = 80_000;
@@ -541,7 +541,7 @@ export class ManagerAgent implements Agent {
         description: normalizeFeatureDescription(feature.description),
         checks: feature.checks?.map((check) => ({ text: check.text, type: check.type, passed: false })),
         status: 'pending' as const,
-        model: feature.model ?? inferFeatureModel(feature.description),
+        model: resolveFeatureModel(feature.model, feature.description),
         attempts: 0,
       })),
     }));
@@ -594,6 +594,8 @@ export class ManagerAgent implements Agent {
       '- If scope is too large, fold details into phase descriptions and keep executable features compact.',
       '- Each milestone requires validationContract with executable commands where possible',
       '- Feature IDs must follow mX-fY',
+      '- Default feature model is codex (worker runtime default: gpt-5.4)',
+      '- Use model "claude" only for UI creation, UI fixes, styling, layout, or visual design work',
       '',
       'Files already reviewed by system and required for planning coverage:',
       reviewedFilesBlock,
@@ -710,7 +712,7 @@ export class ManagerAgent implements Agent {
     if (typeof model !== 'string' || model.trim().length === 0) {
       return true;
     }
-    return CODEX_MODEL_PATTERN.test(model);
+    return isCodexModel(model);
   }
 
   private mapEffortForCodex(
@@ -737,11 +739,109 @@ function normalizeCheckType(
 }
 
 function inferFeatureModel(description: string): 'claude' | 'codex' {
-  const normalized = normalizeFeatureDescription(description).toLowerCase();
-  if (normalized.includes('ui') || normalized.includes('design') || normalized.includes('layout') || normalized.includes('style')) {
+  if (isUiFocusedFeature(description)) {
     return 'claude';
   }
   return 'codex';
+}
+
+function resolveFeatureModel(
+  model: 'claude' | 'codex' | undefined,
+  description: string
+): 'claude' | 'codex' {
+  if (isUiFocusedFeature(description)) {
+    return 'claude';
+  }
+  return model ?? 'codex';
+}
+
+function isUiFocusedFeature(description: string): boolean {
+  const normalized = normalizeFeatureDescription(description).toLowerCase();
+
+  const strongSignalPatterns = [
+    /\bui\b/,
+    /\bux\b/,
+    /\bdesign\b/,
+    /\bredesign\b/,
+    /\blayout\b/,
+    /\bstyle\b/,
+    /\bstyling\b/,
+    /\bvisual\b/,
+    /\btheme\b/,
+    /\bcss\b/,
+    /\btailwind\b/,
+  ];
+  if (strongSignalPatterns.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+
+  const japaneseStrongSignals = [
+    'レスポンシブ',
+    'デザイン',
+    'レイアウト',
+    'スタイル',
+    'スタイリング',
+    '見た目',
+    '画面デザイン',
+    '配色',
+    '余白',
+    'タイポグラフィ',
+  ];
+  if (japaneseStrongSignals.some((signal) => normalized.includes(signal))) {
+    return true;
+  }
+
+  const uiTargets = [
+    'page',
+    'screen',
+    'component',
+    'modal',
+    'dialog',
+    'form',
+    'button',
+    'card',
+    'header',
+    'footer',
+    'navbar',
+    'sidebar',
+    'ページ',
+    '画面',
+    'コンポーネント',
+    'モーダル',
+    'ダイアログ',
+    'フォーム',
+    'ボタン',
+    'カード',
+    'ヘッダー',
+    'フッター',
+    'ナビゲーション',
+    'サイドバー',
+  ];
+  const uiActions = [
+    'create',
+    'build',
+    'implement',
+    'add',
+    'update',
+    'fix',
+    'adjust',
+    'refine',
+    'polish',
+    'tweak',
+    'repair',
+    '作成',
+    '新規',
+    '実装',
+    '追加',
+    '更新',
+    '修正',
+    '改修',
+    '調整',
+    '改善',
+  ];
+
+  return uiTargets.some((target) => normalized.includes(target))
+    && uiActions.some((action) => normalized.includes(action));
 }
 
 function normalizeFeatureDescription(description: unknown): string {

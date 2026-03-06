@@ -6,6 +6,7 @@ import {
   type AppServerEngineOptions,
 } from '../engines/app-server.js';
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
+import { isCodexModel } from '../models/router.js';
 import type {
   Agent,
   AgentMode,
@@ -356,7 +357,7 @@ export class WorkerAgent implements Agent {
     if (!candidate || candidate.trim().length === 0) {
       return DEFAULT_CLAUDE_MODEL;
     }
-    if (candidate.toLowerCase().includes('codex')) {
+    if (isCodexModel(candidate)) {
       return DEFAULT_CLAUDE_MODEL;
     }
     return candidate;

@@ -188,4 +188,143 @@ describe('WorkerAgent', () => {
     const options = codexExecute.mock.calls[0]?.[1] as { threadId?: string } | undefined;
     expect(options?.threadId).toBeUndefined();
   });
+
+  it('falls back to opus when claude worker model is set to codex family', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+      claudeModel: 'gpt-5.4',
+    });
+    const claudeExecute = jest.spyOn((agent as unknown as { claudeEngine: { execute: (...args: unknown[]) => Promise<unknown> } }).claudeEngine, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: `\`\`\`json\n${JSON.stringify({
+          status: 'SUCCESS',
+          summary: 'claude task complete',
+          filesChanged: [],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+        })}\n\`\`\``,
+        exitCode: 0,
+      });
+
+    const plan = createMissionPlan({
+      goal: 'Sample goal',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'design feature',
+              status: 'pending',
+              attempts: 0,
+              model: 'claude',
+            },
+          ],
+        },
+      ],
+    });
+
+    await agent.run({
+      iteration: 1,
+      missionPlan: plan,
+      milestone: plan.milestones[0],
+      feature: plan.milestones[0].features[0],
+      prd: '# PRD',
+    });
+
+    const options = claudeExecute.mock.calls[0]?.[1] as { model?: string } | undefined;
+    expect(options?.model).toBe('opus');
+  });
+
+  it('normalizes discoveredFeatures when worker returns string entries', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: `\`\`\`json\n${JSON.stringify({
+          status: 'SUCCESS',
+          summary: 'ok',
+          filesChanged: [],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [
+            'Add FAQ copy for students',
+            { description: 'Tune hero message match', priority: 'high', rationale: 'Improve CTR' },
+            '',
+          ],
+          learnings: [],
+          requestsHelp: false,
+        })}\n\`\`\``,
+        exitCode: 0,
+      });
+
+    const plan = createMissionPlan({
+      goal: 'Sample goal',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'feature',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await agent.run({
+      iteration: 1,
+      missionPlan: plan,
+      milestone: plan.milestones[0],
+      feature: plan.milestones[0].features[0],
+      prd: '# PRD',
+    });
+
+    expect(result.report.discoveredFeatures).toEqual([
+      { description: 'Add FAQ copy for students', priority: 'medium' },
+      { description: 'Tune hero message match', priority: 'high', rationale: 'Improve CTR' },
+    ]);
+  });
 });

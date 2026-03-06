@@ -10,6 +10,59 @@ describe('ManagerAgent', () => {
     jest.restoreAllMocks();
   });
 
+  it('routes planner model gpt-5.4 to codex engine', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+      claudeEngine: {
+        execute: (...args: unknown[]) => Promise<unknown>;
+      };
+    };
+    const codexExecute = jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Auth system',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Tests pass'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Core',
+            description: 'Implement core',
+            validationContract: {
+              staticChecks: [],
+              testSuites: [],
+              e2eChecks: [],
+              manualSteps: [],
+            },
+            features: [{ id: 'm1-f1', description: 'Implement auth', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+    const claudeExecute = jest.spyOn(agentAny.claudeEngine, 'execute');
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'auth',
+      prd: '# Auth system',
+    });
+
+    expect(plan.mission.goal).toBe('Auth system');
+    expect(codexExecute).toHaveBeenCalled();
+    expect(claudeExecute).not.toHaveBeenCalled();
+  });
+
   it('generates mission plan from model output', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
@@ -152,6 +205,63 @@ describe('ManagerAgent', () => {
     expect(prompt).toContain('END_MISSION_PLAN_JSON');
   });
 
+  it('caps planning prompt size before sending it to the model', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-manager-planning-budget-'));
+    mkdirSync(join(cwd, 'src'), { recursive: true });
+    for (let index = 0; index < 300; index += 1) {
+      writeFileSync(
+        join(cwd, 'src', `feature-${String(index).padStart(3, '0')}.ts`),
+        [
+          `export const feature${index} = 'students';`,
+          `export const notes${index} = '${'copy '.repeat(120)}';`,
+        ].join('\n'),
+        'utf-8'
+      );
+    }
+
+    const agent = new ManagerAgent({
+      cwd,
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    const executeSpy = jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Student LP',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Plan is valid'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Planning',
+            description: 'Plan the work',
+            validationContract: { staticChecks: [], testSuites: [] },
+            features: [{ id: 'm1-f1', description: 'Implement student LP', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    await agent.generateMissionPlan({
+      missionId: 'planning-budget',
+      prd: `# Student LP\n\n${'students '.repeat(40_000)}`,
+    });
+
+    const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
+    expect(prompt.length).toBeLessThanOrEqual(220_000);
+    expect(prompt).toContain('planner prompt budget');
+  });
+
   it('falls back missing feature description in plan output', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
@@ -240,6 +350,47 @@ describe('ManagerAgent', () => {
     expect(plan.milestones.length).toBeGreaterThanOrEqual(2);
     expect(plan.milestones[0]?.features[0]?.description).toContain('ForPageLayout');
     expect(events.some((event) => event.method === 'manager/fallback')).toBe(true);
+  });
+
+  it('includes planner output preview in fallback event when execution fails', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          error?: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: false,
+      output: "There's an issue with the selected model (gpt-5.4). It may not exist or you may not have access to it.",
+      error: 'Process exited with code 1',
+      exitCode: 1,
+    });
+
+    const events: Array<{ method: string; params: Record<string, unknown> }> = [];
+    await agent.generateMissionPlan({
+      missionId: 'planner-failure-preview',
+      prd: '# Sample mission',
+      onAppServerEvent: (method, params) => {
+        if (method === 'manager/fallback' && params && typeof params === 'object') {
+          events.push({ method, params: params as Record<string, unknown> });
+        }
+      },
+    });
+
+    const fallback = events[0]?.params;
+    expect(fallback?.reason).toBe('planner engine execution failed');
+    expect(fallback?.error).toBe('Process exited with code 1');
+    expect(String(fallback?.outputPreview ?? '')).toContain('selected model (gpt-5.4)');
+    expect(String(fallback?.detail ?? '')).toContain('output:');
   });
 
   it('parses mission JSON between explicit markers even with noisy text', async () => {
@@ -384,6 +535,50 @@ describe('ManagerAgent', () => {
     const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
     expect(prompt).toContain('Prefer 2-3 milestones (phases)');
     expect(prompt).toContain('For large implementations, keep phase count compact but allow sufficient features');
+    expect(prompt).toContain('Default feature model is codex (worker runtime default: gpt-5.4)');
+    expect(prompt).toContain('Use model "claude" only for UI creation, UI fixes, styling, layout, or visual design work');
+  });
+
+  it('forces claude for Japanese UI repair tasks even when planner returns codex', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'LP refresh',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Tests pass'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'UI',
+            description: 'Refresh landing page UI',
+            validationContract: { staticChecks: [], testSuites: [] },
+            features: [{ id: 'm1-f1', description: 'LPのレイアウトを修正する', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'ui-repair',
+      prd: '# LP refresh',
+    });
+
+    expect(plan.milestones[0]?.features[0]?.model).toBe('claude');
   });
 
   it('embeds repository context and asks planner to inspect related files before planning', async () => {
@@ -451,6 +646,134 @@ describe('ManagerAgent', () => {
     expect(prompt).toContain('Package name: planning-context-app');
     expect(prompt).toContain('Framework hints: react, vite');
     expect(prompt).toContain('src/auth/session.ts');
+  });
+
+  it('prefers explicit path references over generic keyword filename matches during planning', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-manager-explicit-paths-'));
+    mkdirSync(join(cwd, 'frontend', 'apps', 'web', 'src', 'page_contents', 'features'), { recursive: true });
+    mkdirSync(join(cwd, 'api', 'app', 'services', 'assistant_messages'), { recursive: true });
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({
+      name: 'explicit-path-app',
+      scripts: {
+        test: 'vitest',
+      },
+    }, null, 2));
+    writeFileSync(
+      join(cwd, 'frontend', 'apps', 'web', 'src', 'page_contents', 'features', 'ReviewPage.tsx'),
+      'export const ReviewPage = () => null;\n'
+    );
+    writeFileSync(
+      join(cwd, 'api', 'app', 'services', 'assistant_messages', 'agentic_completion_handler.rb'),
+      'class AgenticCompletionHandler; end\n'
+    );
+
+    const agent = new ManagerAgent({
+      cwd,
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    const executeSpy = jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Student LP',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Plan is valid'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Core',
+            description: 'Implement student LP',
+            validationContract: { staticChecks: [], testSuites: [] },
+            features: [{ id: 'm1-f1', description: 'Update review page', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    await agent.generateMissionPlan({
+      missionId: 'explicit-paths',
+      prd: [
+        '# Student LP',
+        'Assistant demo theme is important.',
+        'Review should match the persona.',
+        'Local evidence:',
+        '- `frontend/apps/web/src/page_contents/features/ReviewPage.tsx`',
+      ].join('\n'),
+    });
+
+    const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
+    expect(prompt).toContain('frontend/apps/web/src/page_contents/features/ReviewPage.tsx');
+    expect(prompt).not.toContain('api/app/services/assistant_messages/agentic_completion_handler.rb');
+  });
+
+  it('excludes binary files from planning coverage context even when filenames match PRD keywords', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-manager-binary-context-'));
+    mkdirSync(join(cwd, 'frontend', 'assets'), { recursive: true });
+    mkdirSync(join(cwd, 'src', 'auth'), { recursive: true });
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({
+      name: 'binary-context-app',
+      scripts: {
+        test: 'vitest',
+      },
+    }, null, 2));
+    writeFileSync(join(cwd, 'src', 'auth', 'session.ts'), 'export const session = true;\n');
+    writeFileSync(
+      join(cwd, 'frontend', 'assets', 'auth-diagram.png'),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03])
+    );
+
+    const agent = new ManagerAgent({
+      cwd,
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    const executeSpy = jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Auth session planning',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Tests pass'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Core',
+            description: 'Implement auth session',
+            validationContract: { staticChecks: [], testSuites: [] },
+            features: [{ id: 'm1-f1', description: 'Implement auth session flow', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    await agent.generateMissionPlan({
+      missionId: 'binary-context',
+      prd: '# Auth Session\n\nImplement auth session flow.',
+    });
+
+    const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
+    expect(prompt).toContain('src/auth/session.ts');
+    expect(prompt).not.toContain('frontend/assets/auth-diagram.png');
+    expect(prompt.includes('\u0000')).toBe(false);
   });
 
   it('coarsens overly fragmented milestone features without hard total cap', async () => {

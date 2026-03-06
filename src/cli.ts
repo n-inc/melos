@@ -994,14 +994,13 @@ function resolveModels(options: CLIOptions, config: MelosConfig): {
   validator: string;
   research: string;
 } {
-  const fallback = options.model ?? config.models?.planner ?? 'opus';
-  const workerFallback = options.model ?? config.models?.worker ?? 'gpt-5.4';
+  const fallback = options.model ?? 'gpt-5.4';
 
   return {
     planner: options.plannerModel ?? config.models?.planner ?? fallback,
-    worker: options.workerModel ?? config.models?.worker ?? workerFallback,
-    validator: options.validatorModel ?? config.models?.validator ?? 'gpt-5.4',
-    research: options.researchModel ?? config.models?.research ?? 'opus',
+    worker: options.workerModel ?? config.models?.worker ?? fallback,
+    validator: options.validatorModel ?? config.models?.validator ?? fallback,
+    research: options.researchModel ?? config.models?.research ?? fallback,
   };
 }
 

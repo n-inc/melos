@@ -63,7 +63,7 @@ import { loadSnapshot, saveSnapshot } from './state/snapshot.js';
 import { Watchdog } from './state/watchdog.js';
 import { TokenTracker } from './state/token-tracker.js';
 import type { LogActor } from './state/log-entry.js';
-import { ModelRouter, type ModelRole } from './models/router.js';
+import { ModelRouter, isCodexModel, type ModelRole } from './models/router.js';
 import type { MissionControlState, MissionMilestoneView, WorkerRunView } from './ui/tui-views.js';
 
 export interface OrchestratorConfig {
@@ -1933,7 +1933,7 @@ function resolveRuntimeModelForEngine(
   engine: 'claude' | 'codex',
   selectedWorkerModel: string
 ): string {
-  const selectedEngine = selectedWorkerModel.toLowerCase().includes('codex') ? 'codex' : 'claude';
+  const selectedEngine = isCodexModel(selectedWorkerModel) ? 'codex' : 'claude';
   if (selectedEngine === engine) {
     return selectedWorkerModel;
   }

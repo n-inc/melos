@@ -16,6 +16,8 @@
 - `milestones` は配列順で作る
 - 各 milestone は `validationContract` を持つ
 - 各 feature は `mX-fY` 形式
+- feature の `model` は原則 `codex` を使う（実行時の既定 worker model は `gpt-5.4`）
+- UI 作成・UI 修正・デザイン調整・スタイリング・レイアウト変更を主目的とする feature のみ `model: "claude"` を明示する
 - plan を確定する前に、関連ファイル・エントリーポイント・local import・既存テスト・設定ファイルを必ず確認する
 - ファイル読解は件数で切らず、対象領域の参照関係に抜けがなくなるまで追う
 - ハードカットオーバー: 後方互換タスクを含めない

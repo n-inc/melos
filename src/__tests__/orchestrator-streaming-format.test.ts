@@ -59,5 +59,10 @@ describe('orchestrator streaming event formatting', () => {
       reason: 'planner output parse failed',
       detail: 'unexpected token at position 12',
     })).toContain('[FALLBACK] planner output parse failed');
+
+    expect(formatAgentEventDetail('manager/fallback', {
+      reason: 'planner engine execution failed',
+      outputPreview: "There's an issue with the selected model (gpt-5.4).",
+    })).toContain('selected model');
   });
 });

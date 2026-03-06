@@ -16,6 +16,17 @@ export interface ModelRouterConfig {
   };
 }
 
+export function isCodexModel(model: string | undefined | null): boolean {
+  if (typeof model !== 'string') {
+    return false;
+  }
+  const normalized = model.trim().toLowerCase();
+  if (normalized.length === 0) {
+    return false;
+  }
+  return normalized.includes('codex') || normalized === 'gpt-5.4';
+}
+
 export class ModelRouter {
   private readonly assignments: Record<ModelRole, string>;
   private readonly escalationPolicy: NonNullable<ModelRouterConfig['escalationPolicy']>;
@@ -65,8 +76,7 @@ export class ModelRouter {
   }
 
   resolveEngine(model: string): 'claude' | 'codex' {
-    const normalized = model.toLowerCase();
-    if (normalized.includes('codex') || normalized === 'gpt-5.4') {
+    if (isCodexModel(model)) {
       return 'codex';
     }
     return 'claude';
@@ -74,7 +84,7 @@ export class ModelRouter {
 
   resolveEffort(model: string): string {
     const normalized = model.toLowerCase();
-    if (normalized.includes('codex') || normalized === 'gpt-5.4') {
+    if (isCodexModel(model)) {
       return 'high';
     }
     if (normalized === 'opus') {
