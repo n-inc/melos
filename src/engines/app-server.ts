@@ -24,7 +24,7 @@ import {
   JsonRpcTransport,
 } from './jsonrpc-transport.js';
 
-const DEFAULT_MODEL = 'gpt-5.3-codex';
+const DEFAULT_MODEL = 'gpt-5.4';
 const DEFAULT_REASONING_EFFORT = 'high';
 const DEFAULT_APPROVAL_POLICY: AppServerApprovalPolicy = 'never';
 const DEFAULT_SANDBOX_POLICY: AppServerSandboxPolicyOption = 'dangerFullAccess';

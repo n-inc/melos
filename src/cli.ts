@@ -992,12 +992,12 @@ function resolveModels(options: CLIOptions, config: MelosConfig): {
   research: string;
 } {
   const fallback = options.model ?? config.models?.planner ?? 'opus';
-  const workerFallback = options.model ?? config.models?.worker ?? 'gpt-5.3-codex';
+  const workerFallback = options.model ?? config.models?.worker ?? 'gpt-5.4';
 
   return {
     planner: options.plannerModel ?? config.models?.planner ?? fallback,
     worker: options.workerModel ?? config.models?.worker ?? workerFallback,
-    validator: options.validatorModel ?? config.models?.validator ?? 'gpt-5.3-codex',
+    validator: options.validatorModel ?? config.models?.validator ?? 'gpt-5.4',
     research: options.researchModel ?? config.models?.research ?? 'opus',
   };
 }

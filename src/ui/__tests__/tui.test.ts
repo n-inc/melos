@@ -15,7 +15,7 @@ function createSessionInfo(): SessionInfo {
     missionId: 'auth',
     missionTitle: 'Auth system',
     planner: 'opus',
-    worker: 'gpt-5.3-codex',
+    worker: 'gpt-5.4',
   };
 }
 
@@ -40,7 +40,6 @@ function createState(): MissionControlState {
         id: 'm1',
         title: 'Core',
         status: 'in_progress',
-        order: 1,
         features: [
           { id: 'm1-f1', description: 'feature', status: 'in_progress', attempts: 1 },
         ],
@@ -56,20 +55,20 @@ function createState(): MissionControlState {
         status: 'running',
         durationLabel: '0m 10s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [{ timestamp: new Date().toISOString(), actor: 'worker', kind: 'READ', message: 'src/a.ts' }],
       },
     ],
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
+      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
       research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
     tokenUsage: {
       total: { input: 100, output: 50, cached: 20, cost: 0.01 },
       byRole: {
-        worker: { model: 'gpt-5.3-codex', input: 100, output: 50, cached: 20, cost: 0.01 },
+        worker: { model: 'gpt-5.4', input: 100, output: 50, cached: 20, cost: 0.01 },
       },
     },
   };

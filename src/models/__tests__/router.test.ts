@@ -5,7 +5,7 @@ describe('models/router', () => {
     const router = new ModelRouter({
       assignments: {
         planner: 'opus',
-        worker: 'gpt-5.3-codex',
+        worker: 'gpt-5.4',
         validator: 'sonnet',
         research: 'haiku',
       },
@@ -24,16 +24,16 @@ describe('models/router', () => {
     expect(assignments.worker.engine).toBe('codex');
     expect(assignments.planner.effort).toBe('max');
     expect(assignments.worker.effort).toBe('high');
-    expect(router.resolveEngine('gpt-5.3-codex')).toBe('codex');
+    expect(router.resolveEngine('gpt-5.4')).toBe('codex');
     expect(router.resolveEffort('opus')).toBe('max');
-    expect(router.resolveEffort('gpt-5.3-codex')).toBe('high');
+    expect(router.resolveEffort('gpt-5.4')).toBe('high');
   });
 
   it('escalates model according to chain', () => {
     const router = new ModelRouter({
       assignments: {
         planner: 'haiku',
-        worker: 'gpt-5.3-codex',
+        worker: 'gpt-5.4',
         validator: 'sonnet',
         research: 'sonnet',
       },

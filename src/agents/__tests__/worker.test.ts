@@ -12,7 +12,7 @@ describe('WorkerAgent', () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
 
     const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
@@ -86,7 +86,7 @@ describe('WorkerAgent', () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
       .mockResolvedValue({
@@ -146,7 +146,7 @@ describe('WorkerAgent', () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
       .mockResolvedValue({

@@ -112,7 +112,7 @@ interface RuntimeState {
   startedAt: Date;
 }
 
-const MODEL_ROTATION: string[] = ['gpt-5.3-codex', 'opus', 'sonnet', 'haiku'];
+const MODEL_ROTATION: string[] = ['gpt-5.4', 'opus', 'sonnet', 'haiku'];
 
 export class Orchestrator {
   private readonly config: OrchestratorConfig;
@@ -141,8 +141,8 @@ export class Orchestrator {
     this.modelRouter = new ModelRouter({
       assignments: {
         planner: config.plannerModel ?? 'opus',
-        worker: config.workerModel ?? 'gpt-5.3-codex',
-        validator: config.validatorModel ?? 'gpt-5.3-codex',
+        worker: config.workerModel ?? 'gpt-5.4',
+        validator: config.validatorModel ?? 'gpt-5.4',
         research: config.researchModel ?? 'opus',
       },
       escalationPolicy: {

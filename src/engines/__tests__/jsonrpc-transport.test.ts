@@ -30,7 +30,7 @@ describe('JsonRpcTransport', () => {
 
   it('correlates request and response by id', async () => {
     const responsePromise = transport.request<{ ok: boolean }>('thread/start', {
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
 
     const [rawRequest] = await once(clientToServer, 'data');

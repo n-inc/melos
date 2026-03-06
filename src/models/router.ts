@@ -65,12 +65,16 @@ export class ModelRouter {
   }
 
   resolveEngine(model: string): 'claude' | 'codex' {
-    return model.toLowerCase().includes('codex') ? 'codex' : 'claude';
+    const normalized = model.toLowerCase();
+    if (normalized.includes('codex') || normalized === 'gpt-5.4') {
+      return 'codex';
+    }
+    return 'claude';
   }
 
   resolveEffort(model: string): string {
     const normalized = model.toLowerCase();
-    if (normalized.includes('codex')) {
+    if (normalized.includes('codex') || normalized === 'gpt-5.4') {
       return 'high';
     }
     if (normalized === 'opus') {

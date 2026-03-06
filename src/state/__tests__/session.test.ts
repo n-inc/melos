@@ -30,7 +30,7 @@ describe('session state', () => {
       interruptedAgent: 'worker',
       iteration: 3,
       interruptedAt: '2026-02-22T00:00:00.000Z',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
 
     expect(sessionExists(melosDir)).toBe(true);
@@ -40,7 +40,7 @@ describe('session state', () => {
       interruptedAgent: 'worker',
       iteration: 3,
       interruptedAt: '2026-02-22T00:00:00.000Z',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
   });
 
@@ -51,7 +51,7 @@ describe('session state', () => {
       interruptedAgent: 'worker',
       iteration: 3,
       interruptedAt: '2026-02-22T00:00:00.000Z',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     await clearSession(melosDir);
 
@@ -83,7 +83,7 @@ describe('session state', () => {
       interruptedAgent: 'manager',
       iteration: 8,
       interruptedAt: '2026-02-25T12:00:00.000Z',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
 
     await expect(loadSession(melosDir)).resolves.toEqual({
@@ -91,7 +91,7 @@ describe('session state', () => {
       interruptedAgent: 'manager',
       iteration: 8,
       interruptedAt: '2026-02-25T12:00:00.000Z',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
   });
 });

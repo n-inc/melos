@@ -11,7 +11,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {
@@ -62,7 +62,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {
@@ -108,7 +108,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {
@@ -153,7 +153,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {
@@ -200,7 +200,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {
@@ -243,7 +243,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {
@@ -296,7 +296,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {
@@ -343,7 +343,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {
@@ -387,7 +387,7 @@ describe('ManagerAgent', () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
     });
     const agentAny = agent as unknown as {
       codexEngine: {

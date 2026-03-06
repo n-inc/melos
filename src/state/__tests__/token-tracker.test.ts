@@ -14,7 +14,7 @@ describe('state/token-tracker', () => {
 
     tracker.record({
       role: 'worker',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
       input: 5000,
       output: 2000,
       cached: 1000,
@@ -22,7 +22,7 @@ describe('state/token-tracker', () => {
 
     tracker.record({
       role: 'worker',
-      model: 'gpt-5.3-codex',
+      model: 'gpt-5.4',
       input: 1000,
       output: 500,
       cached: 200,

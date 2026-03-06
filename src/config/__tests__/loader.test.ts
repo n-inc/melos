@@ -11,7 +11,7 @@ describe('config loader v0.8', () => {
       maxIterations: 321,
       models: {
         planner: 'opus',
-        worker: 'gpt-5.3-codex',
+        worker: 'gpt-5.4',
         validator: 'sonnet',
         research: 'sonnet',
       },
@@ -27,7 +27,7 @@ describe('config loader v0.8', () => {
     const config = await loadConfig(cwd);
     expect(config.maxIterations).toBe(321);
     expect(config.models?.planner).toBe('opus');
-    expect(config.models?.worker).toBe('gpt-5.3-codex');
+    expect(config.models?.worker).toBe('gpt-5.4');
     expect(config.git?.enabled).toBe(true);
     expect(config.git?.baseBranch).toBe('develop');
     expect(config.git?.validationCommands).toEqual(['npm run typecheck']);

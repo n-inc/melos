@@ -129,7 +129,7 @@ melos> Running m1-f2...  (Ctrl+G steer)                                         
 exports[`ui/tui visual snapshots workers frame snapshot 1`] = `
 "● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
 ● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2                                 
-NOW RUNNING  WORKER #1  m1-f2  model=gpt-5.3-codex  elapsed=1m 12s  Lines 1-5/5
+NOW RUNNING  WORKER #1  m1-f2  model=gpt-5.4  elapsed=1m 12s  Lines 1-5/5
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ────────── LOG START: PLANNING ──────────
 09:00:00 [PLAN_CREATED] milestones=2 features=4

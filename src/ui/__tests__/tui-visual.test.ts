@@ -7,7 +7,7 @@ function createSession(): SessionInfo {
     missionId: 'mission',
     missionTitle: 'テキスト統計ユーティリティの追加',
     planner: 'opus',
-    worker: 'gpt-5.3-codex',
+    worker: 'gpt-5.4',
   };
 }
 
@@ -34,7 +34,6 @@ function createState(): MissionControlState {
         id: 'm1',
         title: 'Core',
         status: 'in_progress',
-        order: 1,
         features: [
           { id: 'm1-f1', description: 'Read files', status: 'done', attempts: 1 },
           { id: 'm1-f2', description: 'Implement parser and CLI options', status: 'in_progress', attempts: 2 },
@@ -44,7 +43,6 @@ function createState(): MissionControlState {
         id: 'm2',
         title: 'Validation',
         status: 'pending',
-        order: 2,
         features: [
           { id: 'm2-f1', description: 'Run validations', status: 'pending', attempts: 0 },
         ],
@@ -64,7 +62,7 @@ function createState(): MissionControlState {
         status: 'running',
         durationLabel: '1m 12s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [
           { timestamp: '2026-02-28T09:00:10.000Z', actor: 'worker', kind: 'READ', message: 'src/parser.ts' },
           { timestamp: '2026-02-28T09:00:11.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- parser' },
@@ -73,15 +71,15 @@ function createState(): MissionControlState {
     ],
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
+      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
       research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
     tokenUsage: {
       total: { input: 12000, output: 8800, cached: 2500, cost: 0.23 },
       byRole: {
         planner: { model: 'opus', input: 4200, output: 2100, cached: 800, cost: 0.12 },
-        worker: { model: 'gpt-5.3-codex', input: 6800, output: 5200, cached: 1200, cost: 0.08 },
+        worker: { model: 'gpt-5.4', input: 6800, output: 5200, cached: 1200, cost: 0.08 },
       },
     },
   };
