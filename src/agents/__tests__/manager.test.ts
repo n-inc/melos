@@ -158,6 +158,140 @@ describe('ManagerAgent', () => {
 
     expect(followUps.length).toBeGreaterThan(0);
     expect(followUps[0]?.description).toContain('Jest');
+    expect(followUps[0]?.trackingKey).toBe('jest-failed');
+  });
+
+  it('groups fallback follow-up features by shared root cause', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          error?: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: false,
+      output: '',
+      error: 'failed',
+      exitCode: 1,
+    });
+
+    const followUps = await agent.generateFollowUpFeatures({
+      milestoneId: 'm1',
+      failures: [
+        {
+          checkId: 'typecheck',
+          passed: false,
+          failure: {
+            summary: 'Typecheck failed',
+            affectedFiles: ['src/a.ts'],
+            errorMessages: ['error'],
+            rootCause: 'shared ts config mismatch',
+          },
+        },
+        {
+          checkId: 'unit-test',
+          passed: false,
+          failure: {
+            summary: 'Unit test failed',
+            affectedFiles: ['src/b.ts'],
+            errorMessages: ['error'],
+            rootCause: 'shared ts config mismatch',
+          },
+        },
+      ],
+      missionPlan: await agent.generateMissionPlan({
+        missionId: 'sample',
+        prd: '# Sample',
+      }),
+    });
+
+    expect(followUps).toHaveLength(1);
+    expect(followUps[0]?.trackingKey).toBe('shared-ts-config-mismatch');
+    expect(followUps[0]?.description).toContain('shared ts config mismatch');
+  });
+
+  it('fills missing follow-up descriptions from tracking data and merges duplicates', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify([
+        {
+          trackingKey: 'shared-jest-root-cause',
+          priority: 'medium',
+          affectedChecks: ['jest'],
+          rationale: 'First draft',
+        },
+        {
+          description: 'Resolve flaky jest setup',
+          trackingKey: 'shared-jest-root-cause',
+          priority: 'high',
+          affectedChecks: ['jest', 'lint'],
+          rationale: 'More specific',
+        },
+      ])}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const followUps = await agent.generateFollowUpFeatures({
+      milestoneId: 'm1',
+      failures: [
+        {
+          checkId: 'jest',
+          passed: false,
+          failure: {
+            summary: 'Jest failed',
+            affectedFiles: ['src/a.ts'],
+            errorMessages: ['error'],
+            rootCause: 'shared jest root cause',
+          },
+        },
+        {
+          checkId: 'lint',
+          passed: false,
+          failure: {
+            summary: 'Lint failed',
+            affectedFiles: ['src/b.ts'],
+            errorMessages: ['error'],
+          },
+        },
+      ],
+      missionPlan: await agent.generateMissionPlan({
+        missionId: 'sample',
+        prd: '# Sample',
+      }),
+    });
+
+    expect(followUps).toHaveLength(1);
+    expect(followUps[0]).toEqual({
+      description: 'Resolve flaky jest setup',
+      trackingKey: 'shared-jest-root-cause',
+      priority: 'high',
+      affectedChecks: ['jest', 'lint'],
+      rationale: 'More specific',
+      model: 'codex-latest',
+    });
   });
 
   it('requests planning output in the same language as PRD', async () => {
@@ -306,7 +440,7 @@ describe('ManagerAgent', () => {
       prdFile: 'PRD.md',
     });
 
-    expect(plan.milestones[0]?.features[0]?.description).toBe('No description provided');
+    expect(plan.milestones[0]?.features[0]?.description).toBe('Feature m1-f1');
   });
 
   it('falls back in Japanese and emits fallback reason when PRD is Japanese', async () => {

@@ -55,6 +55,7 @@ export interface Milestone {
 export interface Feature {
   id: string;
   description: string;
+  trackingKey?: string;
   checks?: CheckItem[];
   status: FeatureStatus;
   model?: string;
@@ -85,6 +86,8 @@ const ALLOWED_TRANSITIONS: Record<MissionState, MissionState[]> = {
   failed: [],
   aborted: [],
 };
+
+const MISSING_DESCRIPTION_PLACEHOLDER = 'No description provided';
 
 export function missionFileExists(path: string): boolean {
   return existsSync(path);
@@ -409,14 +412,21 @@ function normalizeFeatureList(features: unknown, milestoneId: string): Feature[]
 function normalizeFeature(feature: unknown, fallbackId?: string): Feature {
   const rawFeature = asRecord(feature);
   const normalizedId = asTrimmedString(rawFeature.id) || fallbackId || 'feature-1';
+  const trackingKey = normalizeTrackingKey(rawFeature.trackingKey);
+  const checks = normalizeFeatureChecks(rawFeature.checks);
   const model = normalizeFeatureModel(rawFeature.model)
     ?? normalizeFeatureModel(rawFeature.requestedModel)
     ?? normalizeFeatureModel(rawFeature.effectiveModel)
     ?? normalizeFeatureModel(rawFeature.resolvedModel);
   return {
     id: normalizedId,
-    description: asTrimmedString(rawFeature.description) || 'No description provided',
-    checks: normalizeFeatureChecks(rawFeature.checks),
+    description: synthesizeFeatureDescription(rawFeature, {
+      fallbackId: normalizedId,
+      trackingKey,
+      checks,
+    }),
+    trackingKey,
+    checks,
     status: normalizeFeatureStatus(rawFeature.status),
     model,
     attempts: normalizeNonNegativeInteger(rawFeature.attempts),
@@ -445,6 +455,14 @@ function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function normalizeDescriptionText(value: unknown): string {
+  const normalized = asTrimmedString(value);
+  if (normalized === MISSING_DESCRIPTION_PLACEHOLDER) {
+    return '';
+  }
+  return normalized;
+}
+
 function normalizeStringList(values: unknown): string[] {
   if (!Array.isArray(values)) {
     return [];
@@ -456,6 +474,56 @@ function normalizeStringList(values: unknown): string[] {
 
 function normalizeFeatureModel(value: unknown): string | undefined {
   return normalizeModelName(typeof value === 'string' ? value : undefined);
+}
+
+function normalizeTrackingKey(value: unknown): string | undefined {
+  const normalized = asTrimmedString(value);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function synthesizeFeatureDescription(
+  rawFeature: Record<string, unknown>,
+  input: {
+    fallbackId: string;
+    trackingKey?: string;
+    checks?: CheckItem[];
+  }
+): string {
+  const explicitDescription = normalizeDescriptionText(rawFeature.description);
+  if (explicitDescription.length > 0) {
+    return explicitDescription;
+  }
+
+  if (input.checks && input.checks.length > 0) {
+    const checkSummary = input.checks
+      .map((check) => check.text.trim())
+      .filter((text) => text.length > 0)
+      .slice(0, 2)
+      .join(' / ');
+    if (checkSummary.length > 0) {
+      return truncateDescription(`Address ${checkSummary}`);
+    }
+  }
+
+  if (input.trackingKey) {
+    return truncateDescription(`Resolve ${humanizeTrackingKey(input.trackingKey)}`);
+  }
+
+  return `Feature ${input.fallbackId}`;
+}
+
+function humanizeTrackingKey(value: string): string {
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function truncateDescription(value: string, maxLength: number = 200): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 3).trimEnd()}...`;
 }
 
 function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {

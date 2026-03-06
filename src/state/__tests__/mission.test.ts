@@ -119,12 +119,20 @@ describe('state/mission', () => {
     });
 
     plan = appendFeaturesToMilestone(plan, 'm1', [
-      { id: 'm1-f2', description: 'follow-up', status: 'pending', attempts: 0, model: 'codex' },
+      {
+        id: 'm1-f2',
+        description: 'follow-up',
+        trackingKey: 'validation-jest-failure',
+        status: 'pending',
+        attempts: 0,
+        model: 'codex',
+      },
     ]);
 
     expect(plan.milestones[0].features).toHaveLength(2);
     expect(plan.milestones[0].features[1]?.id).toBe('m1-f2');
     expect(plan.milestones[0].features[1]?.model).toBe('codex-latest');
+    expect(plan.milestones[0].features[1]?.trackingKey).toBe('validation-jest-failure');
   });
 
   it('rejects legacy TASK array (hard cutover: MissionPlan v3 only)', async () => {
@@ -189,7 +197,46 @@ describe('state/mission', () => {
     }, null, 2), 'utf-8');
 
     const loaded = await loadMissionPlan(taskPath);
-    expect(loaded.milestones[0]?.features[0]?.description).toBe('No description provided');
+    expect(loaded.milestones[0]?.features[0]?.description).toBe('Feature m1-f1');
+  });
+
+  it('derives feature description from trackingKey when placeholder is stored', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-tracking-key-description-'));
+    const taskPath = join(dir, 'TASK.json');
+    writeFileSync(taskPath, JSON.stringify({
+      version: 3,
+      mission: {
+        goal: 'Tracking key normalization',
+        constraints: [],
+        successCriteria: [],
+      },
+      state: 'planning',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'No description provided',
+              trackingKey: 'shared-jest-root-cause',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+      activeMilestoneId: null,
+      activeFeatureId: null,
+      totalIterations: 0,
+    }, null, 2), 'utf-8');
+
+    const loaded = await loadMissionPlan(taskPath);
+    expect(loaded.milestones[0]?.features[0]?.description).toBe('Resolve shared jest root cause');
+    expect(loaded.milestones[0]?.features[0]?.trackingKey).toBe('shared-jest-root-cause');
   });
 
   it('migrates legacy model fields into model for v3', async () => {
@@ -283,5 +330,42 @@ describe('state/mission', () => {
     expect(feature.model).toBe('claude-latest');
     expect(feature.requestedModel).toBeUndefined();
     expect(feature.effectiveModel).toBeUndefined();
+  });
+
+  it('persists trackingKey when mission plan is saved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-tracking-key-save-'));
+    const taskPath = join(dir, 'TASK.json');
+    const plan = createMissionPlan({
+      goal: 'Save tracking key',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Resolve shared root cause',
+              trackingKey: 'shared-root-cause',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+    });
+
+    await saveMissionPlan(taskPath, plan);
+
+    const saved = JSON.parse(readFileSync(taskPath, 'utf-8')) as {
+      milestones: Array<{ features: Array<Record<string, unknown>> }>;
+    };
+    expect(saved.milestones[0]?.features[0]?.trackingKey).toBe('shared-root-cause');
+
+    const loaded = await loadMissionPlan(taskPath);
+    expect(loaded.milestones[0]?.features[0]?.trackingKey).toBe('shared-root-cause');
   });
 });

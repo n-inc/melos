@@ -348,6 +348,8 @@ export class ManagerAgent implements Agent {
     const prompt = [
       'You are a technical manager.',
       'Generate follow-up features to repair failed milestone validation.',
+      'Group failures by root cause. Merge checks that should be fixed together into the same follow-up.',
+      'Prefer reusing the same tracking key for the same root cause.',
       'Return JSON array only.',
       '',
       `Milestone ID: ${input.milestoneId}`,
@@ -355,7 +357,7 @@ export class ManagerAgent implements Agent {
       JSON.stringify(failedChecks, null, 2),
       '',
       'Schema:',
-      '[{"description":"...","priority":"high|medium|low","rationale":"...","model":"codex-latest|claude-latest|explicit-model"}]',
+      '[{"description":"...","trackingKey":"stable-root-cause-key","priority":"high|medium|low","affectedChecks":["check-id"],"rationale":"...","model":"codex-latest|claude-latest|explicit-model"}]',
     ].join('\n');
 
     const result = await this.executeWithConfiguredEngine(prompt, 'high', {
@@ -373,28 +375,7 @@ export class ManagerAgent implements Agent {
       return this.fallbackFollowUpFeatures(failedChecks);
     }
 
-    const drafts: FollowUpFeatureDraft[] = [];
-    for (const candidate of parsed) {
-      if (!candidate || typeof candidate !== 'object') {
-        continue;
-      }
-      const description = String((candidate as { description?: unknown }).description ?? '').trim();
-      if (!description) {
-        continue;
-      }
-      const priority = String((candidate as { priority?: unknown }).priority ?? 'medium').toLowerCase();
-      drafts.push({
-        description,
-        priority: priority === 'high' || priority === 'low' ? priority : 'medium',
-        rationale: String((candidate as { rationale?: unknown }).rationale ?? '').trim() || undefined,
-        model: resolveFeatureModel(
-          typeof (candidate as { model?: unknown }).model === 'string'
-            ? (candidate as { model?: string }).model
-            : undefined,
-          description
-        ),
-      });
-    }
+    const drafts = normalizeFollowUpDrafts(parsed, failedChecks);
 
     if (drafts.length === 0) {
       return this.fallbackFollowUpFeatures(failedChecks);
@@ -660,11 +641,17 @@ export class ManagerAgent implements Agent {
   }
 
   private fallbackFollowUpFeatures(failures: ValidationCheckResult[]): FollowUpFeatureDraft[] {
-    return failures.slice(0, 3).map((failure, index) => ({
-      description: failure.failure?.summary
-        ?? `Fix validation failure: ${failure.checkId}`,
+    const groups = groupValidationFailuresByTrackingKey(failures);
+    return groups.map((group, index) => ({
+      description: synthesizeFollowUpDescription({
+        trackingKey: group.trackingKey,
+        affectedChecks: group.failures.map((failure) => failure.checkId),
+        failures: group.failures,
+      }) ?? `Resolve ${group.trackingKey.replace(/[-_]+/g, ' ')}`,
+      trackingKey: group.trackingKey,
       priority: index === 0 ? 'high' : 'medium',
-      rationale: failure.failure?.rootCause,
+      affectedChecks: group.failures.map((failure) => failure.checkId),
+      rationale: group.failures.map((failure) => failure.failure?.rootCause).find((value) => typeof value === 'string' && value.trim().length > 0),
       model: CODEX_LATEST_ALIAS,
     }));
   }
@@ -858,10 +845,228 @@ function isUiFocusedFeature(description: string): boolean {
 
 function normalizeFeatureDescription(description: unknown): string {
   if (typeof description !== 'string') {
-    return 'No description provided';
+    return 'Requested feature scope';
   }
   const trimmed = description.trim();
-  return trimmed.length > 0 ? trimmed : 'No description provided';
+  return trimmed.length > 0 ? trimmed : 'Requested feature scope';
+}
+
+function normalizeFollowUpDrafts(
+  candidates: unknown[],
+  failures: ValidationCheckResult[]
+): FollowUpFeatureDraft[] {
+  const drafts: FollowUpFeatureDraft[] = [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      continue;
+    }
+
+    const record = candidate as Record<string, unknown>;
+    const affectedChecks = toStringArray(record.affectedChecks);
+    const trackingKey = normalizeFollowUpTrackingKey(
+      toNonEmptyString(record.trackingKey)
+      ?? deriveTrackingKeyFromChecks(affectedChecks, failures)
+      ?? deriveTrackingKeyFromText(toNonEmptyString(record.description))
+    );
+    const description = synthesizeFollowUpDescription({
+      explicitDescription: toNonEmptyString(record.description),
+      trackingKey,
+      affectedChecks,
+      failures,
+    });
+    if (!description || !trackingKey) {
+      continue;
+    }
+
+    const priority = String(record.priority ?? 'medium').toLowerCase();
+    drafts.push({
+      description,
+      trackingKey,
+      priority: priority === 'high' || priority === 'low' ? priority : 'medium',
+      affectedChecks,
+      rationale: toNonEmptyString(record.rationale) ?? undefined,
+      model: resolveFeatureModel(
+        typeof record.model === 'string' ? record.model : undefined,
+        description
+      ),
+    });
+  }
+
+  return mergeFollowUpDrafts(drafts);
+}
+
+function mergeFollowUpDrafts(drafts: FollowUpFeatureDraft[]): FollowUpFeatureDraft[] {
+  const grouped = new Map<string, FollowUpFeatureDraft>();
+  for (const draft of drafts) {
+    const trackingKey = normalizeFollowUpTrackingKey(draft.trackingKey)
+      ?? normalizeFollowUpTrackingKey(deriveTrackingKeyFromText(draft.description));
+    if (!trackingKey) {
+      continue;
+    }
+
+    const existing = grouped.get(trackingKey);
+    if (!existing) {
+      grouped.set(trackingKey, {
+        ...draft,
+        trackingKey,
+        affectedChecks: Array.from(new Set(draft.affectedChecks ?? [])),
+      });
+      continue;
+    }
+
+    grouped.set(trackingKey, {
+      description: draft.description || existing.description,
+      trackingKey,
+      priority: pickHigherPriority(existing.priority, draft.priority),
+      affectedChecks: Array.from(new Set([...(existing.affectedChecks ?? []), ...(draft.affectedChecks ?? [])])),
+      rationale: pickMoreSpecificDescription(existing.rationale, draft.rationale),
+      model: chooseDraftModel(existing.model, draft.model),
+    });
+  }
+
+  return Array.from(grouped.values());
+}
+
+function groupValidationFailuresByTrackingKey(
+  failures: ValidationCheckResult[]
+): Array<{ trackingKey: string; failures: ValidationCheckResult[] }> {
+  const grouped = new Map<string, ValidationCheckResult[]>();
+  for (const failure of failures) {
+    const trackingKey = normalizeFollowUpTrackingKey(deriveTrackingKeyFromFailure(failure))
+      ?? normalizeFollowUpTrackingKey(failure.checkId)
+      ?? 'validation-failure';
+    const bucket = grouped.get(trackingKey) ?? [];
+    bucket.push(failure);
+    grouped.set(trackingKey, bucket);
+  }
+  return Array.from(grouped.entries()).map(([trackingKey, groupedFailures]) => ({
+    trackingKey,
+    failures: groupedFailures,
+  }));
+}
+
+function deriveTrackingKeyFromFailure(failure: ValidationCheckResult): string | null {
+  return deriveTrackingKeyFromText(
+    failure.failure?.rootCause
+    ?? failure.failure?.summary
+    ?? failure.checkId
+  );
+}
+
+function deriveTrackingKeyFromChecks(
+  affectedChecks: string[],
+  failures: ValidationCheckResult[]
+): string | null {
+  if (affectedChecks.length === 0) {
+    return null;
+  }
+
+  const firstMatchingFailure = affectedChecks
+    .map((checkId) => failures.find((failure) => failure.checkId === checkId))
+    .find((failure): failure is ValidationCheckResult => Boolean(failure));
+
+  if (!firstMatchingFailure) {
+    return deriveTrackingKeyFromText(affectedChecks.join('-'));
+  }
+
+  return deriveTrackingKeyFromFailure(firstMatchingFailure);
+}
+
+function deriveTrackingKeyFromText(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return slug.length > 0 ? slug : null;
+}
+
+function normalizeFollowUpTrackingKey(value: string | null | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function synthesizeFollowUpDescription(input: {
+  explicitDescription?: string | null;
+  trackingKey?: string;
+  affectedChecks?: string[];
+  failures: ValidationCheckResult[];
+}): string | null {
+  const explicitDescription = input.explicitDescription?.trim();
+  if (explicitDescription) {
+    return explicitDescription;
+  }
+
+  const matchingFailures = (input.affectedChecks && input.affectedChecks.length > 0
+    ? input.affectedChecks
+      .map((checkId) => input.failures.find((failure) => failure.checkId === checkId))
+      .filter((failure): failure is ValidationCheckResult => Boolean(failure))
+    : input.failures
+  );
+
+  const rootCause = matchingFailures
+    .map((failure) => failure.failure?.rootCause?.trim())
+    .find((value): value is string => Boolean(value));
+  if (rootCause) {
+    return truncateMessage(`Resolve ${rootCause}`, 220);
+  }
+
+  const summary = matchingFailures
+    .map((failure) => failure.failure?.summary?.trim())
+    .find((value): value is string => Boolean(value));
+  if (summary) {
+    return truncateMessage(`Resolve validation failure: ${summary}`, 220);
+  }
+
+  if (input.affectedChecks && input.affectedChecks.length > 0) {
+    return truncateMessage(`Resolve validation failures in ${input.affectedChecks.join(', ')}`, 220);
+  }
+
+  if (input.trackingKey) {
+    return truncateMessage(`Resolve ${input.trackingKey.replace(/[-_]+/g, ' ')}`, 220);
+  }
+
+  return null;
+}
+
+function pickHigherPriority(
+  left: FollowUpFeatureDraft['priority'],
+  right: FollowUpFeatureDraft['priority']
+): FollowUpFeatureDraft['priority'] {
+  const ranking: Record<FollowUpFeatureDraft['priority'], number> = {
+    high: 3,
+    medium: 2,
+    low: 1,
+  };
+  return ranking[left] >= ranking[right] ? left : right;
+}
+
+function chooseDraftModel(left?: string, right?: string): string | undefined {
+  if (left && isClaudeFamily(left)) {
+    return left;
+  }
+  if (right && isClaudeFamily(right)) {
+    return right;
+  }
+  return left ?? right;
+}
+
+function pickMoreSpecificDescription(left?: string, right?: string): string | undefined {
+  const normalizedLeft = left?.trim();
+  const normalizedRight = right?.trim();
+  if (!normalizedLeft) {
+    return normalizedRight;
+  }
+  if (!normalizedRight) {
+    return normalizedLeft;
+  }
+  return normalizedRight.length > normalizedLeft.length ? normalizedRight : normalizedLeft;
 }
 
 function extractGoalFromPrd(prd: string | null): string | null {

@@ -432,6 +432,266 @@ describe('Orchestrator v0.8', () => {
     expect(existsSync(passFlagPath)).toBe(true);
   });
 
+  it('does not append TASK features from worker discoveredFeatures', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-worker-discovered-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Worker discovered features\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'worker-discovered',
+      goal: 'Ignore worker discovered features for TASK growth',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['Mission completes without appending follow-ups'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Execute single feature',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Initial feature',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'done',
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        discoveredFeatures: [
+          { description: 'This should stay in the report only', priority: 'high', rationale: 'Do not append' },
+        ],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    const saved = JSON.parse(readFileSync(missionPath, 'utf-8')) as {
+      milestones: Array<{ features: Array<{ id: string; description: string }> }>;
+    };
+    expect(saved.milestones[0]?.features).toHaveLength(1);
+    expect(saved.milestones[0]?.features[0]?.id).toBe('m1-f1');
+  });
+
+  it('merges validation follow-up into existing unfinished feature by trackingKey', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-merge-followup-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    const passFlagPath = join(cwd, '.pass-validation');
+    writeFileSync(prdPath, '# Merge follow-up mission', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'merge-followup',
+      goal: 'Merge validation follow-up features',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['Validation passes without feature growth'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Build and validate',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [
+              {
+                id: 'flag-check',
+                description: 'validation flag exists',
+                type: 'command',
+                command: `[ -f "${passFlagPath}" ]`,
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Initial feature',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Resolve shared validation root cause with more context',
+        trackingKey: 'shared-validation-root-cause',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+
+    const featureRuns = new Map<string, number>();
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
+      const count = (featureRuns.get(input.feature.id) ?? 0) + 1;
+      featureRuns.set(input.feature.id, count);
+
+      if (input.feature.id === 'm1-f2' && count >= 2) {
+        writeFileSync(passFlagPath, 'ok', 'utf-8');
+        return {
+          type: 'success',
+          report: {
+            iteration: count,
+            milestoneId: input.milestone.id,
+            featureId: input.feature.id,
+            status: 'SUCCESS',
+            summary: 'resolved on retry',
+            filesChanged: [],
+            validation: {
+              testsRun: true,
+              testsPassed: 1,
+              testsFailed: 0,
+              lintPassed: true,
+              typecheckPassed: true,
+            },
+            checks: [],
+            discoveredFeatures: [],
+            learnings: [],
+            requestsHelp: false,
+            createdAt: new Date().toISOString(),
+          },
+        };
+      }
+
+      if (input.feature.id === 'm1-f2') {
+        return {
+          type: 'failed',
+          report: {
+            iteration: count,
+            milestoneId: input.milestone.id,
+            featureId: input.feature.id,
+            status: 'FAILED',
+            summary: 'needs retry',
+            filesChanged: [],
+            validation: {
+              testsRun: true,
+              testsPassed: 0,
+              testsFailed: 1,
+              lintPassed: true,
+              typecheckPassed: true,
+            },
+            checks: [],
+            discoveredFeatures: [],
+            learnings: [],
+            requestsHelp: false,
+            createdAt: new Date().toISOString(),
+          },
+        };
+      }
+
+      return {
+        type: 'success',
+        report: {
+          iteration: count,
+          milestoneId: input.milestone.id,
+          featureId: input.feature.id,
+          status: 'SUCCESS',
+          summary: `done ${input.feature.id}`,
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 20,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(featureRuns.get('m1-f2')).toBe(2);
+
+    const saved = JSON.parse(readFileSync(missionPath, 'utf-8')) as {
+      milestones: Array<{
+        features: Array<{ id: string; description: string; trackingKey?: string; status: string }>;
+      }>;
+    };
+    expect(saved.milestones[0]?.features).toHaveLength(2);
+    expect(saved.milestones[0]?.features[1]?.id).toBe('m1-f2');
+    expect(saved.milestones[0]?.features[1]?.trackingKey).toBe('shared-validation-root-cause');
+    expect(saved.milestones[0]?.features[1]?.description).toBe('Resolve shared validation root cause with more context');
+  });
+
   it('replays events after snapshot on resume', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-resume-'));
     const melosDir = join(cwd, '.melos');

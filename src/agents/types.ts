@@ -88,7 +88,9 @@ export interface WorkerInput {
 
 export interface FollowUpFeatureDraft {
   description: string;
+  trackingKey?: string;
   priority: 'high' | 'medium' | 'low';
+  affectedChecks?: string[];
   rationale?: string;
   model?: string;
 }

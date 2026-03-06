@@ -68,12 +68,10 @@ import {
   CLAUDE_LATEST_ALIAS,
   CODEX_LATEST_ALIAS,
   getModelRotation,
-  isCodexFamily,
   normalizeModelName,
   resolveDisplayModel,
   resolveModel,
   resolveModelEngine,
-  resolveRuntimeModel,
   type ModelEngine,
 } from './models/registry.js';
 import type { MissionControlState, MissionMilestoneView, WorkerRunView } from './ui/tui-views.js';
@@ -812,21 +810,6 @@ export class Orchestrator {
       status
     );
 
-    if (result.report.discoveredFeatures.length > 0) {
-      const followups = result.report.discoveredFeatures.map((discovered, index) => ({
-        id: `${updatedMilestone.id}-f${updatedMilestone.features.length + index + 1}`,
-        description: discovered.description,
-        status: 'pending' as const,
-        attempts: 0,
-        model: discovered.priority === 'high' ? CODEX_LATEST_ALIAS : dispatchModelState.model,
-      }));
-      missionPlan = appendFeaturesToMilestone(missionPlan, updatedMilestone.id, followups);
-      this.emitEvent('task_added', 'orchestrator', {
-        milestoneId: updatedMilestone.id,
-        features: followups,
-      });
-    }
-
     missionPlan = incrementMissionIterations(missionPlan);
     this.state.missionPlan = missionPlan;
     this.kernelState.missionPlan = missionPlan;
@@ -997,26 +980,20 @@ export class Orchestrator {
       },
     });
 
-    const milestoneForFollowUps = missionPlan.milestones.find((item) => item.id === milestoneId);
-    const baseCount = milestoneForFollowUps?.features.length ?? 0;
-    const followUpFeatures: Feature[] = followUps.map((draft, index) => ({
-      id: `${milestoneId}-f${baseCount + index + 1}`,
-      description: draft.description,
-      status: 'pending',
-      attempts: 0,
-      model: draft.model ?? CODEX_LATEST_ALIAS,
-    }));
-
-    missionPlan = appendFeaturesToMilestone(missionPlan, milestoneId, followUpFeatures);
+    const followUpResult = this.applyValidationFollowUps(missionPlan, milestoneId, followUps);
+    missionPlan = followUpResult.plan;
     missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
     this.state.missionPlan = missionPlan;
     this.kernelState.missionPlan = missionPlan;
     this.activityLabel = `Validation failed for ${milestoneId}. Generated follow-up features.`;
 
-    this.emitEvent('task_added', 'manager', {
-      milestoneId,
-      followUpFeatures,
-    });
+    if (followUpResult.addedFeatures.length > 0) {
+      this.emitEvent('task_added', 'manager', {
+        milestoneId,
+        features: followUpResult.addedFeatures,
+        followUpFeatures: followUpResult.addedFeatures,
+      });
+    }
 
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
@@ -1447,6 +1424,100 @@ export class Orchestrator {
         milestone.id === milestoneId ? update(milestone) : milestone
       ),
     };
+  }
+
+  private applyValidationFollowUps(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    followUps: Array<{
+      description: string;
+      trackingKey?: string;
+      model?: string;
+    }>
+  ): {
+    plan: MissionPlan;
+    addedFeatures: Feature[];
+    updatedFeatures: Feature[];
+  } {
+    const milestone = missionPlan.milestones.find((item) => item.id === milestoneId);
+    if (!milestone || followUps.length === 0) {
+      return {
+        plan: missionPlan,
+        addedFeatures: [],
+        updatedFeatures: [],
+      };
+    }
+
+    const updatedFeatures: Feature[] = [];
+    const features = milestone.features.map((feature) => ({ ...feature }));
+    const appendDrafts: Array<{ description: string; trackingKey?: string; model?: string }> = [];
+
+    for (const draft of followUps) {
+      const trackingKey = draft.trackingKey?.trim();
+      const matchIndex = trackingKey
+        ? features.findIndex((feature) =>
+          feature.trackingKey === trackingKey
+          && (feature.status === 'pending' || feature.status === 'in_progress' || feature.status === 'failed')
+        )
+        : -1;
+
+      if (matchIndex >= 0) {
+        const existing = features[matchIndex];
+        const merged: Feature = {
+          ...existing,
+          description: this.pickMoreSpecificFeatureDescription(existing.description, draft.description),
+          trackingKey: existing.trackingKey ?? trackingKey,
+          model: existing.model ?? normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+          status: existing.status === 'failed' ? 'pending' : existing.status,
+        };
+        features[matchIndex] = merged;
+        updatedFeatures.push(merged);
+        continue;
+      }
+
+      appendDrafts.push({
+        description: draft.description,
+        trackingKey,
+        model: normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+      });
+    }
+
+    let nextPlan = this.replaceMilestone(missionPlan, milestoneId, (current) => ({
+      ...current,
+      features,
+    }));
+
+    if (appendDrafts.length === 0) {
+      return {
+        plan: nextPlan,
+        addedFeatures: [],
+        updatedFeatures,
+      };
+    }
+
+    const milestoneForAppend = nextPlan.milestones.find((item) => item.id === milestoneId);
+    const baseCount = milestoneForAppend?.features.length ?? 0;
+    const addedFeatures: Feature[] = appendDrafts.map((draft, index) => ({
+      id: `${milestoneId}-f${baseCount + index + 1}`,
+      description: draft.description,
+      trackingKey: draft.trackingKey,
+      status: 'pending',
+      attempts: 0,
+      model: draft.model ?? CODEX_LATEST_ALIAS,
+    }));
+
+    nextPlan = appendFeaturesToMilestone(nextPlan, milestoneId, addedFeatures);
+    return {
+      plan: nextPlan,
+      addedFeatures,
+      updatedFeatures,
+    };
+  }
+
+  private pickMoreSpecificFeatureDescription(left: string, right: string): string {
+    const normalizedLeft = left.trim();
+    const normalizedRight = right.trim();
+    return normalizedRight.length > normalizedLeft.length ? normalizedRight : normalizedLeft;
   }
 
   private async promptPlanApproval(): Promise<boolean> {

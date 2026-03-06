@@ -26,8 +26,9 @@
 
 ## Follow-up 生成ルール
 
-- validation 失敗原因を分解して feature 化する
-- 1 feature = 1修復責務
+- validation 失敗原因は根本原因単位でまとめて feature 化する
+- 同じ根本原因・同じ修復対象は 1 feature に集約する
+- 既存の未完了 follow-up と同じ根本原因なら再利用できる `trackingKey` を返す
 - 高優先度から先に実行可能な順序で返す
 
 ## 出力

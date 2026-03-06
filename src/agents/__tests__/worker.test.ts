@@ -1,7 +1,83 @@
 import { jest } from '@jest/globals';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { WorkerAgent } from '../worker.js';
 import { createMissionPlan } from '../../state/mission.js';
+
+function createTestPlan() {
+  return createMissionPlan({
+    missionId: 'mission-test',
+    goal: 'Sample goal',
+    milestones: [
+      {
+        id: 'm1',
+        title: 'M1',
+        description: 'desc',
+        order: 1,
+        status: 'pending',
+        validationContract: {
+          staticChecks: [
+            {
+              id: 'typecheck',
+              description: 'Typecheck',
+              type: 'auto:typecheck',
+              command: 'npm run typecheck',
+              passed: false,
+              failureCount: 0,
+            },
+          ],
+          testSuites: [
+            {
+              id: 'test',
+              description: 'Jest',
+              type: 'auto:test',
+              command: 'npm test',
+              passed: false,
+              failureCount: 0,
+            },
+          ],
+        },
+        features: [
+          {
+            id: 'm1-f1',
+            description: 'feature',
+            status: 'pending',
+            attempts: 0,
+            model: 'codex',
+            checks: [{ text: 'feature check' }],
+          },
+          {
+            id: 'm1-f2',
+            description: 'feature 2',
+            status: 'pending',
+            attempts: 0,
+            model: 'codex',
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function createRunInput(overrides: Partial<Parameters<WorkerAgent['run']>[0]> = {}): Parameters<WorkerAgent['run']>[0] {
+  const plan = createTestPlan();
+  const milestone = overrides.milestone ?? plan.milestones[0];
+  const feature = overrides.feature ?? milestone.features[0];
+
+  return {
+    iteration: 1,
+    missionPlan: plan,
+    milestone,
+    feature,
+    prd: '# PRD',
+    briefing: 'brief',
+    currentBranch: 'test',
+    baseBranch: 'main',
+    ...overrides,
+  };
+}
 
 describe('WorkerAgent', () => {
   afterEach(() => {
@@ -37,49 +113,85 @@ describe('WorkerAgent', () => {
         exitCode: 0,
       });
 
-    const plan = createMissionPlan({
-      goal: 'Sample goal',
-      milestones: [
-        {
-          id: 'm1',
-          title: 'M1',
-          description: 'desc',
-          order: 1,
-          status: 'pending',
-          validationContract: {
-            staticChecks: [],
-            testSuites: [],
-          },
-          features: [
-            {
-              id: 'm1-f1',
-              description: 'feature',
-              status: 'pending',
-              attempts: 0,
-              model: 'codex',
-            },
-          ],
-        },
-      ],
-    });
-
-    const milestone = plan.milestones[0];
-    const feature = milestone.features[0];
-    const result = await agent.run({
-      iteration: 1,
-      missionPlan: plan,
-      milestone,
-      feature,
-      prd: '# PRD',
-      briefing: 'brief',
-      currentBranch: 'test',
-      baseBranch: 'main',
-    });
+    const result = await agent.run(createRunInput());
 
     expect(result.type).toBe('success');
     expect(result.report.summary).toContain('feature implemented');
     expect(result.report.featureId).toBe('m1-f1');
     expect(codexExecute).toHaveBeenCalled();
+  });
+
+  it('builds the worker prompt from prompts/worker.md and commit context', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+        exitCode: 0,
+      });
+
+    await agent.run(createRunInput());
+
+    const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
+    expect(prompt).toContain('# Worker Agent - Feature Executor');
+    expect(prompt).toContain('git-committer');
+    expect(prompt).toContain('type(scope): subject');
+    expect(prompt).toContain('.claude/skills/git-committer/SKILL.md');
+    expect(prompt).toContain('git status --porcelain');
+    expect(prompt).toContain('git diff --staged');
+    expect(prompt).toContain('## Runtime Context');
+    expect(prompt).toContain('Mission goal: Sample goal');
+  });
+
+  it('loads worker prompt from a custom promptsDir', async () => {
+    const promptsDir = await mkdtemp(join(tmpdir(), 'melos-worker-prompts-'));
+    try {
+      await writeFile(
+        join(promptsDir, 'worker.md'),
+        '# Custom Worker Prompt\n\nUse this custom prompt.'
+      );
+
+      const agent = new WorkerAgent({
+        cwd: process.cwd(),
+        promptsDir,
+        model: 'gpt-5.4',
+      });
+      const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+        .mockResolvedValue({
+          success: true,
+          output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+          exitCode: 0,
+        });
+
+      await agent.run(createRunInput());
+
+      const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
+      expect(prompt).toContain('# Custom Worker Prompt');
+      expect(prompt).toContain('Use this custom prompt.');
+    } finally {
+      await rm(promptsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails when the worker prompt file is missing', async () => {
+    const promptsDir = await mkdtemp(join(tmpdir(), 'melos-worker-missing-'));
+    try {
+      const agent = new WorkerAgent({
+        cwd: process.cwd(),
+        promptsDir,
+        model: 'gpt-5.4',
+      });
+
+      await expect(agent.run(createRunInput())).rejects.toThrow(
+        `Prompt file not found: ${join(promptsDir, 'worker.md')}`
+      );
+    } finally {
+      await rm(promptsDir, { recursive: true, force: true });
+    }
   });
 
   it('reuses codex thread across multiple features in the same mission', async () => {
