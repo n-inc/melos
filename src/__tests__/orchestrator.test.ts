@@ -282,6 +282,88 @@ describe('Orchestrator v0.8', () => {
     expect(progressMessages.some((message) => message.includes('planning: [CMD] npm query planning-context'))).toBe(true);
   });
 
+  it('refreshes status updates while planning before TASK.json exists', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-live-planning-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Live planning mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'live-planning',
+      goal: 'Verify live planning refresh',
+      constraints: ['Keep streaming updates visible'],
+      successCriteria: ['Planning logs appear before TASK.json is generated'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'single feature',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Do work',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockImplementation(async (input) => {
+      input.onAgentMessageDelta?.('Inspecting repository coverage...\n');
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      return planned;
+    });
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+
+    const snapshots: MissionControlState[] = [];
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 2,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: true,
+      resume: false,
+      onStatusUpdate: async (state) => {
+        snapshots.push(state);
+      },
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+
+    expect(snapshots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          taskPreviewLines: expect.arrayContaining([
+            '# TASK generation in progress',
+            'TASK.json has not been created yet.',
+          ]),
+          progressLog: expect.arrayContaining([
+            expect.objectContaining({
+              message: expect.stringContaining('planning: Inspecting repository coverage...'),
+            }),
+          ]),
+        }),
+      ])
+    );
+  });
+
   it('does not create TASK.json when planning fails before a plan is generated', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-planning-failure-'));
     const melosDir = join(cwd, '.melos');

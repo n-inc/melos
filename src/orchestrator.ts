@@ -1608,7 +1608,7 @@ export class Orchestrator {
   }
 
   private scheduleStatusRefresh(): void {
-    if (!this.config.onStatusUpdate || !this.state.missionPlan) {
+    if (!this.config.onStatusUpdate) {
       return;
     }
     if (this.statusRefreshTimer) {
