@@ -441,6 +441,9 @@ export async function executeWithOptions(
       onCycleModel: (role) => {
         void orchestrator.cycleModel(role);
       },
+      onSetActiveFeatureModel: (model) => {
+        void orchestrator.setActiveFeatureModel(model);
+      },
     });
 
     const result = await orchestrator.run();
@@ -703,7 +706,7 @@ export async function applyApprovalDecision(cwd: string, decision: 'approve' | '
   }
 
   const next = decision === 'approve'
-    ? transitionMissionState(mission, 'running', { approvalMethod: 'interactive' })
+    ? transitionMissionState(mission, 'running')
     : transitionMissionState(mission, 'planning');
   await saveMissionPlan(missionFilePath, next);
   return decision === 'approve'

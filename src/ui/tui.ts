@@ -35,6 +35,7 @@ export interface RuntimeUIControls {
   onResume?: () => void;
   onSteer?: (instruction: string) => void;
   onCycleModel?: (role: ModelRole) => void;
+  onSetActiveFeatureModel?: (model: 'codex' | 'claude' | null) => void;
 }
 
 export interface RuntimeUI {
@@ -201,6 +202,26 @@ export function createRuntimeUI(
     }
   };
 
+  const applyActiveFeatureModelAction = (actionType: string): boolean => {
+    if (currentView !== 'features' && currentView !== 'task') {
+      return false;
+    }
+
+    switch (actionType) {
+      case 'set_feature_model_codex':
+        controls.onSetActiveFeatureModel?.('codex');
+        return true;
+      case 'set_feature_model_claude':
+        controls.onSetActiveFeatureModel?.('claude');
+        return true;
+      case 'clear_feature_model':
+        controls.onSetActiveFeatureModel?.(null);
+        return true;
+      default:
+        return false;
+    }
+  };
+
   const clearKeyStreamFlushTimer = () => {
     if (!keyStreamFlushTimer) {
       return;
@@ -237,6 +258,9 @@ export function createRuntimeUI(
       }
 
       const action = parseKey(raw);
+      if (applyActiveFeatureModelAction(action.type)) {
+        return;
+      }
       switch (action.type) {
         case 'toggle_log_source': {
           const previous = logSourceLock;
@@ -301,6 +325,9 @@ export function createRuntimeUI(
       }
 
       const action = parseKey(raw);
+      if (applyActiveFeatureModelAction(action.type)) {
+        return;
+      }
       switch (action.type) {
         case 'toggle_log_source': {
           const previous = logSourceLock;
@@ -647,8 +674,12 @@ function buildFrame(
       ? `入力待ち  ${state.pendingPrompt}`
       : options.view === 'models'
         ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker 3 Validator 4 Research`
-        : options.view === 'prd' || options.view === 'task'
-          ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  Enter=More`
+        : options.view === 'task'
+          ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=Codex A=Claude U=Auto  ↑↓/PgUp/PgDn/Home/End Scroll`
+          : options.view === 'prd'
+            ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  Enter=More`
+            : options.view === 'features'
+              ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=Codex A=Claude U=Auto  P Pause  R Resume  Ctrl+G Steer`
           : options.view === 'workers'
             ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  L Focus  P Pause  R Resume  Ctrl+G Steer`
             : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,

@@ -118,14 +118,14 @@ describe('state/mission', () => {
     });
 
     plan = appendFeaturesToMilestone(plan, 'm1', [
-      { id: 'm1-f2', description: 'follow-up', status: 'pending', attempts: 0, model: 'codex' },
+      { id: 'm1-f2', description: 'follow-up', status: 'pending', attempts: 0, requestedModel: 'codex' },
     ]);
 
     expect(plan.milestones[0].features).toHaveLength(2);
     expect(plan.milestones[0].features[1]?.id).toBe('m1-f2');
   });
 
-  it('rejects legacy TASK array (hard cutover: MissionPlan v2 only)', async () => {
+  it('rejects legacy TASK array (hard cutover: MissionPlan v3 only)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'melos-mission-hard-cutover-'));
     const taskPath = join(dir, 'TASK.json');
     writeFileSync(taskPath, JSON.stringify([
@@ -133,7 +133,7 @@ describe('state/mission', () => {
     ]), 'utf-8');
 
     await expect(loadMissionPlan(taskPath)).rejects.toThrow(/legacy task array/);
-    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/MissionPlan v2/);
+    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/MissionPlan v3/);
   });
 
   it('shows actionable error when version is missing', async () => {
@@ -188,5 +188,70 @@ describe('state/mission', () => {
 
     const loaded = await loadMissionPlan(taskPath);
     expect(loaded.milestones[0]?.features[0]?.description).toBe('No description provided');
+  });
+
+  it('migrates legacy model fields into requestedModel/effectiveModel for v3', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-resolved-model-'));
+    const taskPath = join(dir, 'TASK.json');
+    writeFileSync(taskPath, JSON.stringify({
+      version: 2,
+      mission: {
+        goal: 'Resolved model normalization',
+        constraints: [],
+        successCriteria: [],
+      },
+      state: 'planning',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'unset feature',
+              status: 'pending',
+              attempts: 0,
+              resolvedModel: 'claude',
+              resolvedModelSource: 'default',
+            },
+            {
+              id: 'm1-f2',
+              description: 'fixed feature',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+              resolvedModel: 'claude',
+              resolvedModelSource: 'user',
+            },
+            {
+              id: 'm1-f3',
+              description: 'invalid source',
+              status: 'pending',
+              attempts: 0,
+              resolvedModel: 'codex',
+              resolvedModelSource: 'invalid',
+            },
+          ],
+        },
+      ],
+      createdAt: new Date().toISOString(),
+      lastTransitionAt: new Date().toISOString(),
+      activeMilestoneId: null,
+      activeFeatureId: null,
+      totalIterations: 0,
+    }, null, 2), 'utf-8');
+
+    const loaded = await loadMissionPlan(taskPath);
+    expect(loaded.version).toBe(3);
+    expect(loaded.milestones[0]?.features[0]?.requestedModel).toBeUndefined();
+    expect(loaded.milestones[0]?.features[0]?.effectiveModel).toBe('claude');
+    expect(loaded.milestones[0]?.features[1]?.requestedModel).toBe('codex');
+    expect(loaded.milestones[0]?.features[1]?.effectiveModel).toBeUndefined();
+    expect(loaded.milestones[0]?.features[2]?.requestedModel).toBeUndefined();
+    expect(loaded.milestones[0]?.features[2]?.effectiveModel).toBe('codex');
   });
 });

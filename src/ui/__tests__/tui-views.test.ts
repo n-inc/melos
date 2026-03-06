@@ -30,7 +30,6 @@ function createState(): MissionControlState {
         id: 'm1',
         title: 'Core',
         status: 'done',
-        order: 1,
         features: [
           { id: 'm1-f1', description: 'User model', status: 'done', attempts: 1 },
         ],
@@ -39,7 +38,6 @@ function createState(): MissionControlState {
         id: 'm2',
         title: 'Login API',
         status: 'in_progress',
-        order: 2,
         features: [
           { id: 'm2-f1', description: 'POST /login', status: 'done', attempts: 1 },
           { id: 'm2-f2', description: 'POST /logout', status: 'done', attempts: 1 },
@@ -65,7 +63,7 @@ function createState(): MissionControlState {
         status: 'running',
         durationLabel: '1m 12s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [
           { timestamp: '2026-02-28T12:00:00.000Z', actor: 'worker', kind: 'READ', message: 'src/middleware/auth.ts' },
           { timestamp: '2026-02-28T12:00:10.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- auth' },
@@ -74,15 +72,15 @@ function createState(): MissionControlState {
     ],
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
+      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
       research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
     tokenUsage: {
       total: { input: 12200, output: 7900, cached: 2450, cost: 0.23 },
       byRole: {
         planner: { model: 'opus', input: 4200, output: 2100, cached: 800, cost: 0.12 },
-        worker: { model: 'gpt-5.3-codex', input: 6800, output: 5200, cached: 1200, cost: 0.08 },
+        worker: { model: 'gpt-5.4', input: 6800, output: 5200, cached: 1200, cost: 0.08 },
       },
     },
   };
@@ -151,8 +149,10 @@ describe('ui/tui views', () => {
     const lines = featuresView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Features');
     expect(lines).toContain('m2 Login API');
-    expect(lines).toContain('m2-f3 Auth middleware');
+    expect(lines).toContain('m2-f3 [U:-] Auth middleware');
     expect(lines).toContain('Active Feature: m2-f3 Auth middleware');
+    expect(lines).toContain('Requested Model: -');
+    expect(lines).toContain('Effective Model: - (source=default)');
   });
 
   it('renders workers view table and logs', () => {
@@ -189,7 +189,7 @@ describe('ui/tui views', () => {
         status: 'running',
         durationLabel: '0m 09s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [],
       },
     ];
@@ -204,7 +204,7 @@ describe('ui/tui views', () => {
     const lines = modelsView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('Models');
     expect(lines).toContain('planner');
-    expect(lines).toContain('gpt-5.3-codex');
+    expect(lines).toContain('gpt-5.4');
     expect(lines).toContain('Effort');
     expect(lines).toContain('max');
     expect(lines).toContain('high');

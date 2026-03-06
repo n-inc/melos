@@ -23,7 +23,12 @@ export const featuresView: TUIView = {
     for (const milestone of state.milestones) {
       left.push(`${statusIcon(milestone.status)} ${milestone.id} ${milestone.title}`);
       for (const feature of milestone.features) {
-        left.push(`  ${statusIcon(feature.status)} ${feature.id} ${feature.description}`);
+        const modelBadge = feature.requestedModel
+          ? `R:${feature.effectiveModel ?? feature.requestedModel}`
+          : feature.modelStateSource === 'effective'
+            ? `D:${feature.effectiveModel ?? '-'}`
+            : `U:${feature.effectiveModel ?? '-'}`;
+        left.push(`  ${statusIcon(feature.status)} ${feature.id} [${modelBadge}] ${feature.description}`);
       }
       left.push('');
     }
@@ -47,6 +52,8 @@ export const featuresView: TUIView = {
       'Details',
       `Active Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
       `Active Feature: ${activeFeature ? `${activeFeature.id} ${activeFeature.description}` : '-'}`,
+      `Requested Model: ${activeFeature?.requestedModel ?? '-'}`,
+      `Effective Model: ${activeFeature ? `${activeFeature.effectiveModel ?? '-'} (source=${activeFeature.modelStateSource ?? 'default'})` : '-'}`,
       `Mission State: ${state.missionState}`,
       `Activity: ${state.activity}`,
       `Progress: ${state.progressLabel}`,
@@ -54,6 +61,9 @@ export const featuresView: TUIView = {
       'Recent Log (events)',
       logModeLine,
       ...recentLogLines,
+      '',
+      'Model badges: R=requested, U=unset, D=auto/defaulted',
+      'Feature model keys: C=codex A=claude U=unset(active feature)',
       '',
       'Hint: Worker execution log is in Workers view (W).',
     ];

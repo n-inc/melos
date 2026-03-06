@@ -202,7 +202,7 @@ describe('cli headless operations', () => {
     expect(status.warnings.some((line) => line.includes('TASK.json'))).toBe(true);
   });
 
-  it('writes approval transition metadata to TASK.json', async () => {
+  it('transitions TASK.json to running on approval without extra metadata', async () => {
     const missionPath = join(rootDir, 'TASK.json');
     const mission = createMissionPlan({
       missionId: 'meta',
@@ -223,9 +223,10 @@ describe('cli headless operations', () => {
     await saveMissionPlan(missionPath, mission);
 
     await applyApprovalDecision(rootDir, 'approve');
-    const raw = JSON.parse(readFileSync(missionPath, 'utf-8')) as { approvalMethod?: string; approvedAt?: string };
-    expect(raw.approvalMethod).toBe('interactive');
-    expect(typeof raw.approvedAt).toBe('string');
+    const raw = JSON.parse(readFileSync(missionPath, 'utf-8')) as { state?: string; approvalMethod?: string; approvedAt?: string };
+    expect(raw.state).toBe('running');
+    expect(raw.approvalMethod).toBeUndefined();
+    expect(raw.approvedAt).toBeUndefined();
   });
 
   it('validates actor filters with explicit error', async () => {

@@ -17,7 +17,7 @@ function createSessionInfo(): SessionInfo {
     missionId: 'mission',
     missionTitle: 'テキスト統計ユーティリティの追加',
     planner: 'opus',
-    worker: 'gpt-5.3-codex',
+    worker: 'gpt-5.4',
   };
 }
 
@@ -43,7 +43,6 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         id: 'm1',
         title: 'Core',
         status: 'in_progress',
-        order: 1,
         features: [
           { id: 'm1-f1', description: 'Implement parser', status: 'in_progress', attempts: 1 },
           { id: 'm1-f2', description: 'Add tests', status: 'pending', attempts: 0 },
@@ -53,7 +52,6 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         id: 'm2',
         title: 'CLI',
         status: 'pending',
-        order: 2,
         features: [
           { id: 'm2-f1', description: 'Command options', status: 'pending', attempts: 0 },
         ],
@@ -72,7 +70,7 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         status: 'running',
         durationLabel: '0m 35s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [
           { timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'READ', message: 'src/parser.ts' },
           { timestamp: '2026-02-28T09:00:01.000Z', actor: 'worker', kind: 'BASH', message: 'npm test -- parser' },
@@ -81,15 +79,15 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
     ],
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
+      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
       research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
     tokenUsage: {
       total: { input: 1200, output: 900, cached: 300, cost: 0.02 },
       byRole: {
         planner: { model: 'opus', input: 400, output: 200, cached: 100, cost: 0.01 },
-        worker: { model: 'gpt-5.3-codex', input: 800, output: 700, cached: 200, cost: 0.01 },
+        worker: { model: 'gpt-5.4', input: 800, output: 700, cached: 200, cost: 0.01 },
       },
     },
   };
@@ -120,6 +118,7 @@ function createHarness() {
   const onResume = jest.fn();
   const onSteer = jest.fn();
   const onCycleModel = jest.fn();
+  const onSetActiveFeatureModel = jest.fn();
 
   const ui = createRuntimeUI(
     'tui',
@@ -135,6 +134,7 @@ function createHarness() {
     onResume,
     onSteer,
     onCycleModel,
+    onSetActiveFeatureModel,
   };
 }
 
@@ -245,7 +245,7 @@ describe('ui/tui contract', () => {
           status: 'running',
           durationLabel: '0m 35s',
           engine: 'codex',
-          model: 'gpt-5.3-codex',
+          model: 'gpt-5.4',
           log: [{ timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-only-log-marker' }],
         },
       ],
@@ -272,7 +272,7 @@ describe('ui/tui contract', () => {
           status: 'running',
           durationLabel: '0m 35s',
           engine: 'codex',
-          model: 'gpt-5.3-codex',
+          model: 'gpt-5.4',
           log: [{ timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v1' }],
         },
       ],
@@ -290,7 +290,7 @@ describe('ui/tui contract', () => {
           status: 'running',
           durationLabel: '0m 40s',
           engine: 'codex',
-          model: 'gpt-5.3-codex',
+          model: 'gpt-5.4',
           log: [
             { timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v1' },
             { timestamp: '2026-02-28T09:00:02.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-v2' },
@@ -367,6 +367,27 @@ describe('ui/tui contract', () => {
     expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'worker');
     expect(h.onCycleModel).toHaveBeenNthCalledWith(3, 'validator');
     expect(h.onCycleModel).toHaveBeenNthCalledWith(4, 'research');
+  });
+
+  it('routes C/A/U keys to active feature model controls only in features/task views', () => {
+    const h = createHarness();
+    h.ui.start(createSessionInfo(), {
+      onSetActiveFeatureModel: h.onSetActiveFeatureModel,
+    });
+    h.ui.updateState(createState());
+
+    h.input.write('F');
+    h.input.write('C');
+    h.input.write('A');
+    h.input.write('U');
+    h.input.write('W');
+    h.input.write('C');
+    h.ui.stop();
+
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(1, 'codex');
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(2, 'claude');
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(3, null);
+    expect(h.onSetActiveFeatureModel).toHaveBeenCalledTimes(3);
   });
 
   it('cancels steer mode when pending prompt starts', () => {

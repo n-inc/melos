@@ -21,6 +21,7 @@ import {
   setActiveMilestone,
   setActiveFeature,
   updateFeatureStatus,
+  updateFeatureModels,
   updateMilestoneStatus,
   appendFeaturesToMilestone,
   incrementMissionIterations,
@@ -113,6 +114,10 @@ interface RuntimeState {
 }
 
 const MODEL_ROTATION: string[] = ['gpt-5.4', 'opus', 'sonnet', 'haiku'];
+const DEFAULT_ENGINE_MODEL: Record<'codex' | 'claude', string> = {
+  codex: 'gpt-5.4',
+  claude: 'opus',
+};
 
 export class Orchestrator {
   private readonly config: OrchestratorConfig;
@@ -340,7 +345,6 @@ export class Orchestrator {
       this.state.missionPlan = {
         ...this.state.missionPlan,
         state: 'aborted',
-        lastTransitionAt: new Date().toISOString(),
       };
       void this.persistMissionPlan();
       this.emitEvent('mission_failed', 'orchestrator', { reason: 'aborted by signal' });
@@ -414,6 +418,68 @@ export class Orchestrator {
     await this.emitStatusUpdate();
   }
 
+  async setActiveFeatureModel(model: 'codex' | 'claude' | null): Promise<void> {
+    const missionPlan = this.state.missionPlan;
+    if (!missionPlan) {
+      return;
+    }
+
+    const activeMilestoneId = missionPlan.activeMilestoneId;
+    const activeFeatureId = missionPlan.activeFeatureId;
+    if (!activeMilestoneId || !activeFeatureId) {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_model_selection_ignored',
+        reason: 'no_active_feature',
+      });
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const milestone = missionPlan.milestones.find((item) => item.id === activeMilestoneId);
+    const feature = milestone?.features.find((item) => item.id === activeFeatureId);
+    if (!milestone || !feature) {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_model_selection_ignored',
+        reason: 'active_feature_not_found',
+        milestoneId: activeMilestoneId,
+        featureId: activeFeatureId,
+      });
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    if (feature.status === 'done') {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_model_selection_ignored',
+        reason: 'feature_done',
+        milestoneId: activeMilestoneId,
+        featureId: activeFeatureId,
+      });
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    this.state.missionPlan = updateFeatureModels(
+      missionPlan,
+      activeMilestoneId,
+      activeFeatureId,
+      model
+        ? { requestedModel: model, effectiveModel: model }
+        : { requestedModel: null, effectiveModel: null }
+    );
+    this.kernelState.missionPlan = this.state.missionPlan;
+
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'feature_model_selected',
+      milestoneId: activeMilestoneId,
+      featureId: activeFeatureId,
+      model: model ?? null,
+      source: model ? 'user' : 'unset',
+    });
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
   private async loadState(): Promise<void> {
     if (existsSync(this.config.prdFile)) {
       this.state.prd = await readFile(this.config.prdFile, 'utf-8');
@@ -476,8 +542,6 @@ export class Orchestrator {
         missionId: this.resolveMissionId(),
         prd: this.state.prd,
         interactiveGoal: this.config.interactivePlanning ? current?.mission.goal : undefined,
-        approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
-        prdFile: this.config.prdFile,
         onAppServerEvent: (method, params) => {
           const detail = formatAgentEventDetail(method, params);
           if (!detail) {
@@ -531,9 +595,7 @@ export class Orchestrator {
       return;
     }
 
-    this.state.missionPlan = transitionMissionState(missionPlan, 'running', {
-      approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
-    });
+    this.state.missionPlan = transitionMissionState(missionPlan, 'running');
     this.activityLabel = 'Mission approved. Starting execution...';
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
@@ -642,28 +704,34 @@ export class Orchestrator {
       featureId: updatedFeature.id,
       message: `Manager finished feature briefing for ${updatedFeature.id}`,
     });
+    const dispatchModelState = resolveFeatureModelState(
+      updatedFeature,
+      normalizeFeatureEngine(this.modelRouter.resolveEngine(this.modelRouter.getModel('worker')))
+    );
     this.emitEvent('manager_decision', 'manager', {
       action: 'dispatch_feature',
       milestoneId: updatedMilestone.id,
       featureId: updatedFeature.id,
-      model: updatedFeature.model ?? 'codex',
+      model: dispatchModelState.effectiveModel,
+      modelSource: dispatchModelState.source,
     });
 
     this.activityLabel = `Worker executing ${updatedFeature.id}...`;
-    const result = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
+    const executionResult = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
+    const { result, execution } = executionResult;
     this.state.latestWorkerReport = result.report;
 
     if (result.report.tokenUsage) {
       this.tokenTracker.record({
         role: 'worker',
-        model: this.modelRouter.getModel('worker'),
+        model: execution.runtimeModel,
         input: result.report.tokenUsage.input,
         output: result.report.tokenUsage.output,
         cached: result.report.tokenUsage.cached,
       });
       this.emitEvent('token_usage', 'worker', {
         role: 'worker',
-        model: this.modelRouter.getModel('worker'),
+        model: execution.runtimeModel,
         ...result.report.tokenUsage,
       });
     }
@@ -681,11 +749,7 @@ export class Orchestrator {
       missionPlan,
       updatedMilestone.id,
       updatedFeature.id,
-      status,
-      {
-        lastReportSummary: result.report.summary,
-        briefing,
-      }
+      status
     );
 
     if (result.report.discoveredFeatures.length > 0) {
@@ -694,7 +758,7 @@ export class Orchestrator {
         description: discovered.description,
         status: 'pending' as const,
         attempts: 0,
-        model: discovered.priority === 'high' ? 'codex' : updatedFeature.model ?? 'codex',
+        requestedModel: discovered.priority === 'high' ? 'codex' : dispatchModelState.effectiveModel,
       }));
       missionPlan = appendFeaturesToMilestone(missionPlan, updatedMilestone.id, followups);
       this.emitEvent('task_added', 'orchestrator', {
@@ -902,14 +966,55 @@ export class Orchestrator {
     milestone: Milestone,
     feature: Feature,
     briefing?: string
-  ): Promise<WorkerResult> {
-    const selectedWorkerModel = this.modelRouter.getModel('worker');
-    const selectedWorkerEngine = this.modelRouter.resolveEngine(selectedWorkerModel);
-    const executionFeature: Feature = {
-      ...feature,
-      model: selectedWorkerEngine === 'claude' ? 'claude' : 'codex',
+  ): Promise<{
+    result: WorkerResult;
+    execution: {
+      engine: 'codex' | 'claude';
+      runtimeModel: string;
+      source: FeatureModelSource;
     };
-    this.worker.setRuntimeModel(selectedWorkerModel);
+  }> {
+    const selectedWorkerModel = this.modelRouter.getModel('worker');
+    const defaultWorkerEngine = normalizeFeatureEngine(this.modelRouter.resolveEngine(selectedWorkerModel));
+    let missionPlan = this.requireMissionPlan();
+    let runtimeFeature = missionPlan.milestones
+      .find((item) => item.id === milestone.id)
+      ?.features.find((item) => item.id === feature.id) ?? feature;
+
+    let modelState = resolveFeatureModelState(runtimeFeature, defaultWorkerEngine);
+    if (!runtimeFeature.requestedModel && !runtimeFeature.effectiveModel) {
+      missionPlan = updateFeatureModels(
+        missionPlan,
+        milestone.id,
+        feature.id,
+        {
+          effectiveModel: modelState.effectiveModel,
+        }
+      );
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+
+      runtimeFeature = missionPlan.milestones
+        .find((item) => item.id === milestone.id)
+        ?.features.find((item) => item.id === feature.id) ?? runtimeFeature;
+      modelState = resolveFeatureModelState(runtimeFeature, defaultWorkerEngine);
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_model_selected',
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        model: modelState.effectiveModel,
+        source: 'default',
+      });
+    }
+
+    const runtimeModel = resolveRuntimeModelForEngine(modelState.effectiveModel, selectedWorkerModel);
+    const executionFeature: Feature = {
+      ...runtimeFeature,
+      effectiveModel: modelState.effectiveModel,
+    };
+    this.worker.setRuntimeModel(runtimeModel);
 
     let branchName: string | null = null;
     let baseBranch: string | undefined;
@@ -946,8 +1051,9 @@ export class Orchestrator {
       milestoneId: milestone.id,
       featureId: feature.id,
       branch: branchName,
-      engine: selectedWorkerEngine,
-      model: selectedWorkerModel,
+      engine: modelState.effectiveModel,
+      model: runtimeModel,
+      modelSource: modelState.source,
     });
 
     if (this.config.dryRun) {
@@ -978,7 +1084,14 @@ export class Orchestrator {
         status: report.status,
         summary: report.summary,
       });
-      return result;
+      return {
+        result,
+        execution: {
+          engine: modelState.effectiveModel,
+          runtimeModel,
+          source: modelState.source,
+        },
+      };
     }
 
     const workerInput: WorkerInput = {
@@ -1004,7 +1117,7 @@ export class Orchestrator {
 
     let result = await this.worker.run(workerInput);
     this.watchdog.touch();
-    if (selectedWorkerEngine === 'codex') {
+    if (modelState.effectiveModel === 'codex') {
       const activeThreadId = this.worker.getActiveThreadId();
       if (activeThreadId) {
         const missionId = this.requireMissionPlan().mission.id ?? this.resolveMissionId();
@@ -1043,7 +1156,14 @@ export class Orchestrator {
       }
     );
 
-    return result;
+    return {
+      result,
+      execution: {
+        engine: modelState.effectiveModel,
+        runtimeModel,
+        source: modelState.source,
+      },
+    };
   }
 
   private async runGitPostProcess(
@@ -1106,7 +1226,7 @@ export class Orchestrator {
             description: `Resolve merge conflict for ${branchName}`,
             status: 'pending',
             attempts: 0,
-            model: 'codex',
+            requestedModel: 'codex',
           }]);
         }
         this.state.gitStrategy = this.state.gitStrategy
@@ -1405,6 +1525,7 @@ export class Orchestrator {
 
   private buildMissionControlState(missionPlan: MissionPlan | null): MissionControlState {
     const assignments = this.modelRouter.getAssignments();
+    const defaultWorkerEngine = normalizeFeatureEngine(assignments.worker.engine);
     const elapsedLabel = formatElapsed(this.state.startedAt);
     const activeBranch = this.state.gitStrategy?.activeBranch
       ?? (getCurrentBranch(this.config.cwd) || null);
@@ -1458,13 +1579,18 @@ export class Orchestrator {
       id: milestone.id,
       title: milestone.title,
       status: milestone.status,
-      order: milestone.order,
-      features: milestone.features.map((feature) => ({
-        id: feature.id,
-        description: feature.description,
-        status: feature.status,
-        attempts: feature.attempts,
-      })),
+      features: milestone.features.map((feature) => {
+        const modelState = resolveFeatureModelState(feature, defaultWorkerEngine);
+        return {
+          id: feature.id,
+          description: feature.description,
+          status: feature.status,
+          attempts: feature.attempts,
+          requestedModel: feature.requestedModel,
+          effectiveModel: modelState.effectiveModel,
+          modelStateSource: modelState.source,
+        };
+      }),
     }));
 
     const totalFeatures = missionPlan.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
@@ -1482,7 +1608,7 @@ export class Orchestrator {
       missionTitle: missionPlan.mission.goal,
       missionState: missionPlan.state,
       prdPreviewLines: buildPrdPreviewLines(this.state.prd),
-      taskPreviewLines: buildTaskPreviewLines(missionPlan),
+      taskPreviewLines: buildTaskPreviewLines(missionPlan, defaultWorkerEngine),
       activity,
       elapsedLabel,
       progressLabel,
@@ -1686,7 +1812,10 @@ function buildPrdPreviewLines(prd: string | null): string[] {
   return rawLines.map((line) => line.replace(/\t/g, '  '));
 }
 
-function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
+function buildTaskPreviewLines(
+  missionPlan: MissionPlan,
+  defaultWorkerEngine: 'claude' | 'codex'
+): string[] {
   const lines: string[] = [];
   lines.push('# Structured TASK View');
   lines.push(`state=${missionPlan.state}`);
@@ -1701,8 +1830,10 @@ function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
     lines.push(`${asMilestoneCheckbox(milestone.status)} ${milestone.id} ${milestone.title} [${milestone.status}]`);
     for (const feature of milestone.features) {
       const activeMark = missionPlan.activeFeatureId === feature.id ? '>' : ' ';
+      const modelState = resolveFeatureModelState(feature, defaultWorkerEngine);
+      const badge = toFeatureModelBadge(feature, modelState.source);
       lines.push(
-        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] attempts=${feature.attempts} ${feature.description}`
+        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] [${badge}:${modelState.effectiveModel}] attempts=${feature.attempts} ${feature.description}`
       );
     }
     const validationChecks = [
@@ -1740,6 +1871,65 @@ function buildTaskPlanningLines(): string[] {
     'No default placeholder task is shown during planning.',
     'TASK.json preview will appear here once the mission plan is generated.',
   ];
+}
+
+type FeatureModelSource = 'requested' | 'effective' | 'default';
+
+interface FeatureModelState {
+  effectiveModel: 'claude' | 'codex';
+  source: FeatureModelSource;
+}
+
+function normalizeFeatureEngine(engine: 'claude' | 'codex'): 'claude' | 'codex' {
+  return engine === 'claude' ? 'claude' : 'codex';
+}
+
+function resolveFeatureModelState(
+  feature: Pick<Feature, 'requestedModel' | 'effectiveModel'>,
+  defaultEngine: 'claude' | 'codex'
+): FeatureModelState {
+  if (feature.requestedModel === 'claude' || feature.requestedModel === 'codex') {
+    return {
+      effectiveModel: feature.requestedModel,
+      source: 'requested',
+    };
+  }
+
+  if (feature.effectiveModel === 'claude' || feature.effectiveModel === 'codex') {
+    return {
+      effectiveModel: feature.effectiveModel,
+      source: 'effective',
+    };
+  }
+
+  return {
+    effectiveModel: defaultEngine,
+    source: 'default',
+  };
+}
+
+function resolveRuntimeModelForEngine(
+  engine: 'claude' | 'codex',
+  selectedWorkerModel: string
+): string {
+  const selectedEngine = selectedWorkerModel.toLowerCase().includes('codex') ? 'codex' : 'claude';
+  if (selectedEngine === engine) {
+    return selectedWorkerModel;
+  }
+  return DEFAULT_ENGINE_MODEL[engine];
+}
+
+function toFeatureModelBadge(
+  feature: Pick<Feature, 'requestedModel' | 'effectiveModel'>,
+  source: FeatureModelSource
+): 'R' | 'D' | 'U' {
+  if (feature.requestedModel) {
+    return 'R';
+  }
+  if (source === 'effective') {
+    return 'D';
+  }
+  return 'U';
 }
 
 function asFeatureCheckbox(status: Feature['status']): string {
@@ -2219,11 +2409,9 @@ function isRecoverableResumeState(state: MissionState): boolean {
 }
 
 function recoverMissionPlanForResume(plan: MissionPlan): MissionPlan {
-  const now = new Date().toISOString();
   let recovered: MissionPlan = {
     ...plan,
     state: 'running',
-    lastTransitionAt: now,
     milestones: plan.milestones.map((milestone) => ({
       ...milestone,
       status: milestone.status === 'done' || milestone.status === 'skipped'

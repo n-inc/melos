@@ -23,13 +23,15 @@ export interface MissionFeatureView {
   description: string;
   status: FeatureStatus;
   attempts: number;
+  requestedModel?: 'claude' | 'codex';
+  effectiveModel?: 'claude' | 'codex';
+  modelStateSource?: 'requested' | 'effective' | 'default';
 }
 
 export interface MissionMilestoneView {
   id: string;
   title: string;
   status: MilestoneStatus;
-  order: number;
   features: MissionFeatureView[];
 }
 

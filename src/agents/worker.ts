@@ -367,7 +367,7 @@ export class WorkerAgent implements Agent {
   }
 
   private shouldExecuteWithClaude(input: WorkerInput): boolean {
-    return input.feature.model === 'claude';
+    return input.feature.effectiveModel === 'claude' || input.feature.requestedModel === 'claude';
   }
 }
 

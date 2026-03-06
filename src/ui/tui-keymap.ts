@@ -16,6 +16,9 @@ export type KeyAction =
   | { type: 'select' }
   | { type: 'toggle_log_source' }
   | { type: 'toggle_secondary' }
+  | { type: 'set_feature_model_codex' }
+  | { type: 'set_feature_model_claude' }
+  | { type: 'clear_feature_model' }
   | { type: 'none' };
 
 const ESCAPE_SEQUENCES = [
@@ -63,6 +66,15 @@ export function parseKey(chunk: string): KeyAction {
     case 'o':
     case 'O':
       return { type: 'toggle_secondary' };
+    case 'c':
+    case 'C':
+      return { type: 'set_feature_model_codex' };
+    case 'a':
+    case 'A':
+      return { type: 'set_feature_model_claude' };
+    case 'u':
+    case 'U':
+      return { type: 'clear_feature_model' };
     case 'p':
     case 'P':
       return { type: 'pause' };

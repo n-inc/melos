@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join, relative } from 'node:path';
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
 import {
   AppServerEngine,
@@ -32,6 +35,43 @@ export interface ManagerAgentConfig {
 }
 
 const CODEX_MODEL_PATTERN = /codex/i;
+const CODEBASE_CONTEXT_MAX_LINES = 32;
+const PLANNING_CONFIG_FILES = [
+  'package.json',
+  'tsconfig.json',
+  'tsconfig.base.json',
+  'vite.config.ts',
+  'vite.config.js',
+  'next.config.js',
+  'next.config.mjs',
+  'next.config.ts',
+  'astro.config.mjs',
+  'nuxt.config.ts',
+  'README.md',
+] as const;
+const PLANNING_ENTRYPOINT_PATTERNS = [
+  'src/index.',
+  'src/main.',
+  'src/app.',
+  'src/server.',
+  'src/routes.',
+  'app/page.',
+  'app/layout.',
+  'pages/index.',
+  'pages/_app.',
+  'pages/api/',
+] as const;
+const IGNORED_DIRECTORIES = new Set([
+  '.git',
+  '.melos',
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  '.next',
+  '.turbo',
+  '.cache',
+]);
 
 interface MissionPlanningOutput {
   goal: string;
@@ -68,6 +108,11 @@ interface LocalizedFallbackTemplate {
   featureFallbackDescription: string;
 }
 
+interface PlanningCodebaseContext {
+  summary: string;
+  reviewedFiles: string[];
+}
+
 const MAX_MILESTONES_PER_PLAN = 3;
 const MAX_FEATURES_PER_MILESTONE = 5;
 
@@ -99,7 +144,27 @@ export class ManagerAgent implements Agent {
     onAppServerEvent?: (method: string, params: unknown) => void;
   }): Promise<MissionPlan> {
     const preferredLanguage = detectPreferredLanguage(input.prd, input.interactiveGoal);
-    const prompt = this.buildMissionPlanPrompt(input.prd, input.interactiveGoal, preferredLanguage);
+    const codebaseContext = await buildPlanningCodebaseContext(
+      this.config.cwd,
+      input.prd,
+      input.interactiveGoal
+    );
+    for (const file of codebaseContext.reviewedFiles) {
+      input.onAppServerEvent?.('item/started', {
+        item: {
+          type: 'fileRead',
+          filePath: file,
+          limit: CODEBASE_CONTEXT_MAX_LINES,
+        },
+      });
+    }
+    const prompt = this.buildMissionPlanPrompt(
+      input.prd,
+      input.interactiveGoal,
+      preferredLanguage,
+      codebaseContext.summary,
+      codebaseContext.reviewedFiles
+    );
     const planningTimeoutMs = Math.max(300_000, this.config.requestTimeoutMs ?? 180_000);
 
     const result = await this.executeWithConfiguredEngine(
@@ -292,7 +357,6 @@ export class ManagerAgent implements Agent {
       title: milestone.title,
       description: milestone.description,
       status: 'pending' as const,
-      order: milestoneIndex + 1,
       validationContract: {
         ...createEmptyValidationContract(),
         staticChecks: [
@@ -320,7 +384,7 @@ export class ManagerAgent implements Agent {
         id: `m${milestoneIndex + 1}-f${featureIndex + 1}`,
         description: featureDescription,
         status: 'pending' as const,
-        model: inferFeatureModel(featureDescription),
+        requestedModel: inferFeatureModel(featureDescription),
         attempts: 0,
       })),
     }));
@@ -330,8 +394,6 @@ export class ManagerAgent implements Agent {
       goal,
       constraints,
       successCriteria,
-      prdFile: input.prdFile,
-      approvalMethod: input.approvalMethod,
       state: 'planning',
       milestones,
     });
@@ -350,7 +412,6 @@ export class ManagerAgent implements Agent {
       title: milestone.title,
       description: milestone.description,
       status: 'pending' as const,
-      order: milestoneIndex + 1,
       validationContract: {
         staticChecks: (milestone.validationContract?.staticChecks ?? []).map((check, index) => ({
           id: check.id || `m${milestoneIndex + 1}-static-${index + 1}`,
@@ -390,7 +451,7 @@ export class ManagerAgent implements Agent {
         description: normalizeFeatureDescription(feature.description),
         checks: feature.checks?.map((check) => ({ text: check.text, type: check.type, passed: false })),
         status: 'pending' as const,
-        model: feature.model ?? inferFeatureModel(feature.description),
+        requestedModel: feature.model ?? inferFeatureModel(feature.description),
         attempts: 0,
       })),
     }));
@@ -400,17 +461,17 @@ export class ManagerAgent implements Agent {
       goal: planning.goal,
       constraints: planning.constraints,
       successCriteria: planning.successCriteria,
-      prdFile: input.prdFile,
       milestones,
       state: 'planning',
-      approvalMethod: input.approvalMethod,
     });
   }
 
   private buildMissionPlanPrompt(
     prd: string | null,
     interactiveGoal?: string,
-    preferredLanguage: DocumentLanguage = detectPreferredLanguage(prd, interactiveGoal)
+    preferredLanguage: DocumentLanguage = detectPreferredLanguage(prd, interactiveGoal),
+    codebaseContext?: string,
+    reviewedFiles: string[] = []
   ): string {
     const languageLabel = preferredLanguage === 'ja' ? 'Japanese' : 'English';
     return [
@@ -418,11 +479,15 @@ export class ManagerAgent implements Agent {
       'Create a MissionPlan JSON for a coding mission.',
       'Hard cutover mode: do not include backward compatibility tasks.',
       `All natural language fields must be written in ${languageLabel}.`,
+      'You must inspect the repository before finalizing the plan.',
+      'Treat planning as coverage work, not spot-checking.',
+      'Read the relevant implementation files, their local imports, nearby tests, and config/entrypoint files until the requested scope has no unresolved references.',
+      'Do not stop after an arbitrary number of files.',
       '',
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","requestedModel":"codex"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -434,8 +499,14 @@ export class ManagerAgent implements Agent {
       '- Each milestone requires validationContract with executable commands where possible',
       '- Feature IDs must follow mX-fY',
       '',
+      'Files already reviewed by system and required for planning coverage:',
+      reviewedFiles.length > 0 ? reviewedFiles.join('\n') : '(none)',
+      '',
       'User stated goal:',
       interactiveGoal?.trim() || '(not provided)',
+      '',
+      'Repository Context (coverage-oriented, pre-read by system):',
+      codebaseContext?.trim() || '(no repository context available)',
       '',
       'PRD content:',
       prd?.trim() || '(PRD not found)',
@@ -796,7 +867,7 @@ function normalizePlanningFeature(
     ?? toNonEmptyString(feature.title)
     ?? toNonEmptyString(feature.task)
     ?? 'No description provided';
-  const model = toNonEmptyString(feature.model);
+  const model = toNonEmptyString(feature.requestedModel) ?? toNonEmptyString(feature.model);
   return {
     id: toNonEmptyString(feature.id) ?? undefined,
     description,
@@ -918,6 +989,313 @@ function toRecord(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return value as Record<string, unknown>;
+}
+
+async function buildPlanningCodebaseContext(
+  cwd: string,
+  prd: string | null,
+  interactiveGoal?: string
+): Promise<PlanningCodebaseContext> {
+  const topLevelEntries = await safeReadDir(cwd);
+  const topLevelNames = topLevelEntries
+    .map((entry) => entry.name)
+    .filter((name) => !IGNORED_DIRECTORIES.has(name))
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, 20);
+
+  const packageSummary = await buildPackageSummary(cwd);
+  const allFiles = await collectRepositoryFiles(cwd);
+  const reviewedFiles = await selectPlanningCoverageFiles(
+    cwd,
+    allFiles,
+    extractPlanningKeywords(`${interactiveGoal ?? ''}\n${prd ?? ''}`)
+  );
+  const snippets = await Promise.all(
+    reviewedFiles.map(async (relativePath) => {
+      const snippet = await readPlanningSnippet(join(cwd, relativePath));
+      return snippet
+        ? [`FILE: ${relativePath}`, snippet].join('\n')
+        : null;
+    })
+  );
+
+  const lines = [
+    `Repository root entries: ${topLevelNames.length > 0 ? topLevelNames.join(', ') : '(none)'}`,
+    `Coverage-required files: ${reviewedFiles.length > 0 ? reviewedFiles.join(', ') : '(none detected)'}`,
+    packageSummary,
+  ];
+
+  const normalizedSnippets = snippets.filter((snippet): snippet is string => snippet !== null);
+  if (normalizedSnippets.length > 0) {
+    lines.push('', 'Reviewed file snippets:');
+    lines.push(...normalizedSnippets);
+  }
+
+  return {
+    summary: lines.join('\n'),
+    reviewedFiles,
+  };
+}
+
+async function buildPackageSummary(cwd: string): Promise<string> {
+  const packageJsonPath = join(cwd, 'package.json');
+  if (!existsSync(packageJsonPath)) {
+    return 'Package summary: package.json not found';
+  }
+
+  try {
+    const raw = JSON.parse(await readFile(packageJsonPath, 'utf-8')) as Record<string, unknown>;
+    const scripts = toRecord(raw.scripts);
+    const dependencies = {
+      ...toRecord(raw.dependencies),
+      ...toRecord(raw.devDependencies),
+    };
+    const frameworkCandidates = [
+      'react',
+      'next',
+      'vite',
+      'vue',
+      'nuxt',
+      'svelte',
+      'astro',
+      'express',
+      'fastify',
+      'nestjs',
+      'vitest',
+      'jest',
+      'typescript',
+    ].filter((name) => Object.prototype.hasOwnProperty.call(dependencies, name));
+
+    const scriptNames = Object.keys(scripts ?? {}).slice(0, 8);
+    return [
+      `Package name: ${typeof raw.name === 'string' ? raw.name : '(unnamed)'}`,
+      `Framework hints: ${frameworkCandidates.length > 0 ? frameworkCandidates.join(', ') : '(none detected)'}`,
+      `Scripts: ${scriptNames.length > 0 ? scriptNames.join(', ') : '(none)'}`,
+    ].join('\n');
+  } catch {
+    return 'Package summary: failed to parse package.json';
+  }
+}
+
+async function selectPlanningCoverageFiles(
+  cwd: string,
+  allFiles: string[],
+  keywords: string[]
+): Promise<string[]> {
+  const fileIndex = new Set(allFiles);
+  const required = new Set<string>();
+  const frontier: string[] = [];
+
+  for (const configFile of PLANNING_CONFIG_FILES) {
+    const absolutePath = join(cwd, configFile);
+    if (fileIndex.has(absolutePath)) {
+      addCoverageFile(required, frontier, absolutePath);
+    }
+  }
+
+  for (const file of allFiles) {
+    const normalized = relative(cwd, file).replace(/\\/g, '/').toLowerCase();
+    if (PLANNING_ENTRYPOINT_PATTERNS.some((pattern) => normalized.startsWith(pattern))) {
+      addCoverageFile(required, frontier, file);
+    }
+  }
+
+  const keywordAnchors = allFiles.filter((file) => {
+    const normalized = relative(cwd, file).replace(/\\/g, '/').toLowerCase();
+    return keywords.some((keyword) => normalized.includes(keyword));
+  });
+
+  for (const file of keywordAnchors) {
+    addCoverageFile(required, frontier, file);
+  }
+
+  if (required.size === 0) {
+    for (const file of allFiles) {
+      const normalized = relative(cwd, file).replace(/\\/g, '/').toLowerCase();
+      if (normalized.startsWith('src/') || normalized.startsWith('app/') || normalized.startsWith('pages/')) {
+        addCoverageFile(required, frontier, file);
+      }
+    }
+  }
+
+  while (frontier.length > 0) {
+    const current = frontier.pop();
+    if (!current) {
+      continue;
+    }
+
+    const localImports = await extractLocalImports(current, fileIndex);
+    for (const imported of localImports) {
+      addCoverageFile(required, frontier, imported);
+    }
+
+    for (const relatedTest of findRelatedTestFiles(current, fileIndex)) {
+      addCoverageFile(required, frontier, relatedTest);
+    }
+  }
+
+  return Array.from(required)
+    .map((file) => relative(cwd, file).replace(/\\/g, '/'))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function addCoverageFile(required: Set<string>, frontier: string[], file: string): void {
+  if (required.has(file)) {
+    return;
+  }
+  required.add(file);
+  frontier.push(file);
+}
+
+async function extractLocalImports(file: string, fileIndex: Set<string>): Promise<string[]> {
+  try {
+    const content = await readFile(file, 'utf-8');
+    const imports = new Set<string>();
+    const patterns = [
+      /from\s+['"]([^'"]+)['"]/g,
+      /import\(\s*['"]([^'"]+)['"]\s*\)/g,
+      /require\(\s*['"]([^'"]+)['"]\s*\)/g,
+      /export\s+.*from\s+['"]([^'"]+)['"]/g,
+    ];
+
+    for (const pattern of patterns) {
+      for (const match of content.matchAll(pattern)) {
+        const specifier = match[1]?.trim();
+        if (!specifier || !specifier.startsWith('.')) {
+          continue;
+        }
+        const resolved = resolveLocalImport(file, specifier, fileIndex);
+        if (resolved) {
+          imports.add(resolved);
+        }
+      }
+    }
+
+    return Array.from(imports);
+  } catch {
+    return [];
+  }
+}
+
+function resolveLocalImport(file: string, specifier: string, fileIndex: Set<string>): string | null {
+  const basePath = join(dirname(file), specifier);
+  const candidates = [
+    basePath,
+    `${basePath}.ts`,
+    `${basePath}.tsx`,
+    `${basePath}.js`,
+    `${basePath}.jsx`,
+    `${basePath}.mjs`,
+    `${basePath}.cjs`,
+    join(basePath, 'index.ts'),
+    join(basePath, 'index.tsx'),
+    join(basePath, 'index.js'),
+    join(basePath, 'index.jsx'),
+    join(basePath, 'index.mjs'),
+    join(basePath, 'index.cjs'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fileIndex.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function findRelatedTestFiles(file: string, fileIndex: Set<string>): string[] {
+  const basename = file.replace(/\.(tsx?|jsx?|mjs|cjs)$/, '');
+  const candidates = [
+    `${basename}.test.ts`,
+    `${basename}.test.tsx`,
+    `${basename}.test.js`,
+    `${basename}.spec.ts`,
+    `${basename}.spec.tsx`,
+    `${basename}.spec.js`,
+  ];
+  return candidates.filter((candidate) => fileIndex.has(candidate));
+}
+
+async function collectRepositoryFiles(cwd: string): Promise<string[]> {
+  const results: string[] = [];
+  const queue: string[] = [cwd];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      break;
+    }
+
+    const entries = await safeReadDir(current);
+    for (const entry of entries) {
+      const absolutePath = join(current, entry.name);
+      const relativePath = relative(cwd, absolutePath);
+      if (!relativePath || relativePath.startsWith('..')) {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (!IGNORED_DIRECTORIES.has(entry.name)) {
+          queue.push(absolutePath);
+        }
+        continue;
+      }
+      results.push(absolutePath);
+    }
+  }
+
+  return results;
+}
+
+function extractPlanningKeywords(source: string): string[] {
+  const stopWords = new Set([
+    'implement',
+    'feature',
+    'page',
+    'pages',
+    'screen',
+    'task',
+    'plan',
+    'with',
+    'from',
+    'that',
+    'this',
+    'json',
+    'user',
+    'data',
+    'form',
+  ]);
+
+  const tokens = new Set<string>();
+  for (const match of source.toLowerCase().matchAll(/[a-z][a-z0-9_-]{2,}/g)) {
+    const token = match[0];
+    if (!stopWords.has(token)) {
+      tokens.add(token);
+    }
+  }
+  return Array.from(tokens).slice(0, 20);
+}
+
+async function readPlanningSnippet(path: string): Promise<string | null> {
+  try {
+    const content = await readFile(path, 'utf-8');
+    const lines = content
+      .split(/\r?\n/)
+      .slice(0, CODEBASE_CONTEXT_MAX_LINES)
+      .map((line) => line.slice(0, 160));
+    const snippet = lines.join('\n').trim();
+    return snippet.length > 0 ? snippet : null;
+  } catch {
+    return null;
+  }
+}
+
+async function safeReadDir(path: string): Promise<Array<{ name: string; isDirectory(): boolean }>> {
+  try {
+    return await readdir(path, { withFileTypes: true });
+  } catch {
+    return [];
+  }
 }
 
 function isGenericHeading(value: string): boolean {

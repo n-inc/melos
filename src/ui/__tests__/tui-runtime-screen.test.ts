@@ -10,7 +10,7 @@ function createSession(): SessionInfo {
     missionId: 'mission',
     missionTitle: 'テキスト統計ユーティリティの追加',
     planner: 'opus',
-    worker: 'gpt-5.3-codex',
+    worker: 'gpt-5.4',
   };
 }
 
@@ -36,7 +36,6 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         id: 'm1',
         title: 'Core',
         status: 'in_progress',
-        order: 1,
         features: [
           { id: 'm1-f1', description: 'parser', status: 'in_progress', attempts: 1 },
         ],
@@ -57,20 +56,20 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         status: 'running',
         durationLabel: '0m 15s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [{ timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-marker-v1' }],
       },
     ],
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
+      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
       research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
     tokenUsage: {
       total: { input: 100, output: 50, cached: 20, cost: 0.01 },
       byRole: {
-        worker: { model: 'gpt-5.3-codex', input: 100, output: 50, cached: 20, cost: 0.01 },
+        worker: { model: 'gpt-5.4', input: 100, output: 50, cached: 20, cost: 0.01 },
       },
     },
   };
@@ -228,6 +227,7 @@ function createHarness() {
   const onResume = jest.fn();
   const onSteer = jest.fn();
   const onCycleModel = jest.fn();
+  const onSetActiveFeatureModel = jest.fn();
   const ui = createRuntimeUI(
     'tui',
     output as unknown as NodeJS.WriteStream,
@@ -241,6 +241,7 @@ function createHarness() {
     onResume,
     onSteer,
     onCycleModel,
+    onSetActiveFeatureModel,
     screen: () => screen.snapshot(),
   };
 }
@@ -280,7 +281,7 @@ describe('ui/tui runtime screen contract', () => {
         status: 'running',
         durationLabel: '0m 16s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [{ timestamp: '2026-02-28T09:00:12.000Z', actor: 'worker', kind: 'INFO', message: 'worker-marker-v2' }],
       }],
     }));
@@ -374,6 +375,27 @@ describe('ui/tui runtime screen contract', () => {
     expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'validator');
 
     h.ui.stop();
+  });
+
+  it('routes C/A/U keys to feature model selection only in features/task view', () => {
+    const h = createHarness();
+    h.ui.start(createSession(), {
+      onSetActiveFeatureModel: h.onSetActiveFeatureModel,
+    });
+    h.ui.updateState(createState());
+
+    h.input.write('F');
+    h.input.write('C');
+    h.input.write('A');
+    h.input.write('U');
+    h.input.write('M');
+    h.input.write('C');
+    h.ui.stop();
+
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(1, 'codex');
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(2, 'claude');
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(3, null);
+    expect(h.onSetActiveFeatureModel).toHaveBeenCalledTimes(3);
   });
 
   it('supports scrolling in TASK view (including pending input)', () => {

@@ -686,14 +686,14 @@ describe('Orchestrator v0.8', () => {
       modelRouter: { getModel: (role: 'validator') => string };
     }).modelRouter;
 
-    expect(router.getModel('validator')).toBe('gpt-5.3-codex');
+    expect(router.getModel('validator')).toBe('gpt-5.4');
     await orchestrator.cycleModel('validator');
     expect(router.getModel('validator')).toBe('opus');
     await orchestrator.cycleModel('validator');
     expect(router.getModel('validator')).toBe('sonnet');
   });
 
-  it('executes worker with opus after pre-approval model switch', async () => {
+  it('keeps TASK fixed model even after pre-approval worker model switch', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-worker-opus-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
@@ -737,7 +737,7 @@ describe('Orchestrator v0.8', () => {
 
     const workerInputs: Array<{ featureModel?: string }> = [];
     jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
-      workerInputs.push({ featureModel: input.feature.model });
+      workerInputs.push({ featureModel: input.feature.effectiveModel ?? input.feature.requestedModel });
       return {
         type: 'success',
         report: {
@@ -790,11 +790,106 @@ describe('Orchestrator v0.8', () => {
     const result = await orchestrator.run();
 
     expect(result.success).toBe(true);
-    expect(workerInputs).toEqual([{ featureModel: 'claude' }]);
+    expect(workerInputs).toEqual([{ featureModel: 'codex' }]);
     expect(states.some((state) => state.workerModel === 'opus')).toBe(true);
     expect(
-      states.some((state) => state.workerRuns.some((run) => run.engine === 'claude' && run.model === 'opus'))
+      states.some((state) => state.workerRuns.some((run) => run.engine === 'codex' && run.model === 'gpt-5.4'))
     ).toBe(true);
+  });
+
+  it('auto-resolves undefined feature model without stopping and persists default source', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-worker-default-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Worker default model mission\n\nResolve undefined model.', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'worker-default',
+      goal: 'Resolve undefined feature model',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['resolvedModel gets persisted'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Single feature execution',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement feature',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+
+    const workerInputs: Array<{ featureModel?: string }> = [];
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
+      workerInputs.push({ featureModel: input.feature.effectiveModel ?? input.feature.requestedModel });
+      return {
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: input.milestone.id,
+          featureId: input.feature.id,
+          status: 'SUCCESS',
+          summary: 'done',
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    await orchestrator.cycleModel('worker');
+    const result = await orchestrator.run();
+    const mission = JSON.parse(readFileSync(missionPath, 'utf-8')) as {
+      milestones: Array<{ features: Array<Record<string, unknown>> }>;
+    };
+    const feature = mission.milestones[0]?.features[0] ?? {};
+
+    expect(result.success).toBe(true);
+    expect(workerInputs).toEqual([{ featureModel: 'claude' }]);
+    expect(feature.model).toBeUndefined();
+    expect(feature.requestedModel).toBeUndefined();
+    expect(feature.effectiveModel).toBe('claude');
   });
 
   it('does not create checkpoint commit after successful feature when git-strategy is disabled', async () => {
@@ -961,10 +1056,9 @@ describe('Orchestrator v0.8', () => {
     expect(result.reason).toBe('max_iterations');
 
     const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
-      milestones: Array<{ features: Array<{ status: string; lastReportSummary?: string }> }>;
+      milestones: Array<{ features: Array<{ status: string }> }>;
     };
     expect(mission.milestones[0]?.features[0]?.status).toBe('failed');
-    expect(mission.milestones[0]?.features[0]?.lastReportSummary).toContain('git-committer');
   });
 
   it('continues git-strategy flow when worker commits feature changes', async () => {

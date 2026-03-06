@@ -28,23 +28,18 @@ export interface CheckItem {
 }
 
 export interface MissionPlan {
-  version: 2;
+  version: 3;
   mission: {
     id?: string;
     goal: string;
     constraints: string[];
     successCriteria: string[];
-    prdFile?: string;
   };
   state: MissionState;
   milestones: Milestone[];
-  createdAt: string;
-  lastTransitionAt: string;
   activeMilestoneId: string | null;
   activeFeatureId: string | null;
   totalIterations: number;
-  approvedAt?: string;
-  approvalMethod?: 'auto' | 'interactive';
 }
 
 export interface Milestone {
@@ -54,7 +49,6 @@ export interface Milestone {
   features: Feature[];
   validationContract: ValidationContract;
   status: MilestoneStatus;
-  order: number;
 }
 
 export interface Feature {
@@ -62,10 +56,24 @@ export interface Feature {
   description: string;
   checks?: CheckItem[];
   status: FeatureStatus;
-  model?: 'claude' | 'codex';
-  briefing?: string;
+  requestedModel?: 'claude' | 'codex';
+  effectiveModel?: 'claude' | 'codex';
   attempts: number;
+}
+
+interface CreateMissionFeatureInput extends Omit<Feature, 'requestedModel' | 'effectiveModel'> {
+  requestedModel?: 'claude' | 'codex';
+  effectiveModel?: 'claude' | 'codex';
+  model?: 'claude' | 'codex';
+  resolvedModel?: 'claude' | 'codex';
+  resolvedModelSource?: 'user' | 'default';
+  briefing?: string;
   lastReportSummary?: string;
+}
+
+interface CreateMissionMilestoneInput extends Omit<Milestone, 'features'> {
+  features: CreateMissionFeatureInput[];
+  order?: number;
 }
 
 const ALLOWED_TRANSITIONS: Record<MissionState, MissionState[]> = {
@@ -89,13 +97,14 @@ export async function loadMissionPlan(path: string): Promise<MissionPlan> {
 
   const raw = await readFile(path, 'utf-8');
   const parsed = JSON.parse(raw) as unknown;
-  validateMissionPlan(parsed);
-  return normalizeMissionPlan(parsed);
+  const normalized = normalizeMissionPlan(parsed);
+  validateMissionPlan(normalized);
+  return normalized;
 }
 
 export async function saveMissionPlan(path: string, plan: MissionPlan): Promise<void> {
-  validateMissionPlan(plan);
   const normalized = normalizeMissionPlan(plan);
+  validateMissionPlan(normalized);
   await writeFile(path, `${JSON.stringify(normalized, null, 2)}\n`, 'utf-8');
 }
 
@@ -105,57 +114,40 @@ export function createMissionPlan(input: {
   constraints?: string[];
   successCriteria?: string[];
   prdFile?: string;
-  milestones?: Milestone[];
+  milestones?: CreateMissionMilestoneInput[];
   approvalMethod?: 'auto' | 'interactive';
   state?: MissionState;
 }): MissionPlan {
-  const now = new Date().toISOString();
   const milestones = normalizeMilestones(input.milestones ?? []);
 
   return normalizeMissionPlan({
-    version: 2,
+    version: 3,
     mission: {
       id: input.missionId,
       goal: input.goal.trim(),
       constraints: (input.constraints ?? []).map((item) => item.trim()).filter(Boolean),
       successCriteria: (input.successCriteria ?? []).map((item) => item.trim()).filter(Boolean),
-      prdFile: input.prdFile,
     },
     state: input.state ?? 'planning',
     milestones,
-    createdAt: now,
-    lastTransitionAt: now,
     activeMilestoneId: null,
     activeFeatureId: null,
     totalIterations: 0,
-    approvalMethod: input.approvalMethod,
-    approvedAt: undefined,
   });
 }
 
 export function transitionMissionState(
   plan: MissionPlan,
-  nextState: MissionState,
-  options: { approvedAt?: string; approvalMethod?: 'auto' | 'interactive' } = {}
+  nextState: MissionState
 ): MissionPlan {
   const allowed = ALLOWED_TRANSITIONS[plan.state];
   if (!allowed.includes(nextState)) {
     throw new Error(`Invalid mission state transition: ${plan.state} -> ${nextState}`);
   }
-
-  const now = new Date().toISOString();
-  const updated: MissionPlan = {
+  return normalizeMissionPlan({
     ...plan,
     state: nextState,
-    lastTransitionAt: now,
-  };
-
-  if (nextState === 'running' && !updated.approvedAt) {
-    updated.approvedAt = options.approvedAt ?? now;
-    updated.approvalMethod = options.approvalMethod ?? updated.approvalMethod;
-  }
-
-  return normalizeMissionPlan(updated);
+  });
 }
 
 export function incrementMissionIterations(plan: MissionPlan): MissionPlan {
@@ -192,8 +184,7 @@ export function getActiveFeature(plan: MissionPlan): Feature | null {
 }
 
 export function getNextPendingMilestone(plan: MissionPlan): Milestone | null {
-  const milestones = [...plan.milestones].sort((a, b) => a.order - b.order);
-  return milestones.find((milestone) => milestone.status === 'pending' || milestone.status === 'in_progress') ?? null;
+  return plan.milestones.find((milestone) => milestone.status === 'pending' || milestone.status === 'in_progress') ?? null;
 }
 
 export function getNextPendingFeature(milestone: Milestone): Feature | null {
@@ -243,7 +234,7 @@ export function updateFeatureStatus(
   milestoneId: string,
   featureId: string,
   status: FeatureStatus,
-  options: { incrementAttempts?: boolean; lastReportSummary?: string; briefing?: string } = {}
+  options: { incrementAttempts?: boolean } = {}
 ): MissionPlan {
   return {
     ...plan,
@@ -263,8 +254,35 @@ export function updateFeatureStatus(
             ...feature,
             status,
             attempts,
-            lastReportSummary: options.lastReportSummary ?? feature.lastReportSummary,
-            briefing: options.briefing ?? feature.briefing,
+          };
+        }),
+      };
+    }),
+  };
+}
+
+export function updateFeatureModels(
+  plan: MissionPlan,
+  milestoneId: string,
+  featureId: string,
+  modelState: { requestedModel?: 'claude' | 'codex' | null; effectiveModel?: 'claude' | 'codex' | null }
+): MissionPlan {
+  return {
+    ...plan,
+    milestones: plan.milestones.map((milestone) => {
+      if (milestone.id !== milestoneId) {
+        return milestone;
+      }
+      return {
+        ...milestone,
+        features: milestone.features.map((feature) => {
+          if (feature.id !== featureId) {
+            return feature;
+          }
+          return {
+            ...feature,
+            requestedModel: modelState.requestedModel ?? undefined,
+            effectiveModel: modelState.effectiveModel ?? undefined,
           };
         }),
       };
@@ -303,15 +321,41 @@ export function appendFeaturesToMilestone(
   };
 }
 
-function normalizeMissionPlan(plan: MissionPlan): MissionPlan {
-  const milestones = normalizeMilestones(plan.milestones);
+function normalizeMissionPlan(plan: unknown): MissionPlan {
+  if (Array.isArray(plan)) {
+    throw new Error([
+      'TASK.json の形式が不正です: legacy task array は v0.8 でサポートされません（hard cutover）。',
+      '期待形式: {"version":3,"mission":{...},"milestones":[...]}',
+      '対応方法: TASK.json を MissionPlan v3 に置き換えてください。',
+    ].join('\n'));
+  }
 
-  let activeMilestoneId = plan.activeMilestoneId;
+  if (typeof plan !== 'object' || plan === null) {
+    throw new Error(
+      'TASK.json の形式が不正です。Melos v0.8 では MissionPlan オブジェクトのみ対応しています。'
+    );
+  }
+
+  const candidate = plan as Record<string, unknown>;
+  const version = candidate.version;
+  if (version !== 2 && version !== 3) {
+    const received = version === undefined ? 'undefined' : JSON.stringify(version);
+    throw new Error([
+      `TASK.json の形式が不正です: top-level "version" は 2 または 3 である必要があります（received=${received}）。`,
+      '期待形式: {"version":3,"mission":{...},"milestones":[...]}',
+      '対応方法: TASK.json を MissionPlan v3 に置き換えてください。',
+    ].join('\n'));
+  }
+
+  const rawMission = asRecord(candidate.mission);
+  const milestones = normalizeMilestones(Array.isArray(candidate.milestones) ? candidate.milestones : []);
+
+  let activeMilestoneId = asTrimmedString(candidate.activeMilestoneId) || null;
   if (activeMilestoneId && !milestones.some((milestone) => milestone.id === activeMilestoneId)) {
     activeMilestoneId = null;
   }
 
-  let activeFeatureId = plan.activeFeatureId;
+  let activeFeatureId = asTrimmedString(candidate.activeFeatureId) || null;
   if (activeMilestoneId) {
     const milestone = milestones.find((item) => item.id === activeMilestoneId);
     if (!milestone || !milestone.features.some((feature) => feature.id === activeFeatureId)) {
@@ -322,60 +366,81 @@ function normalizeMissionPlan(plan: MissionPlan): MissionPlan {
   }
 
   return {
-    ...plan,
+    version: 3,
     mission: {
-      ...plan.mission,
-      goal: asTrimmedString(plan.mission.goal) || 'Untitled mission',
-      constraints: normalizeStringList(plan.mission.constraints),
-      successCriteria: normalizeStringList(plan.mission.successCriteria),
-      prdFile: asTrimmedString(plan.mission.prdFile) || undefined,
-      id: asTrimmedString(plan.mission.id) || undefined,
+      goal: asTrimmedString(rawMission.goal) || 'Untitled mission',
+      constraints: normalizeStringList(rawMission.constraints),
+      successCriteria: normalizeStringList(rawMission.successCriteria),
+      id: asTrimmedString(rawMission.id) || undefined,
     },
+    state: normalizeMissionState(candidate.state),
     milestones,
-    totalIterations: Math.max(0, Math.floor(plan.totalIterations)),
+    totalIterations: normalizeNonNegativeInteger(candidate.totalIterations),
     activeMilestoneId,
     activeFeatureId,
   };
 }
 
-function normalizeMilestones(milestones: Milestone[]): Milestone[] {
-  return [...milestones]
-    .map((milestone, index) => normalizeMilestone(milestone, index))
-    .sort((a, b) => a.order - b.order);
+function normalizeMilestones(milestones: unknown[]): Milestone[] {
+  return milestones.map((milestone, index) => normalizeMilestone(milestone, index));
 }
 
-function normalizeMilestone(milestone: Milestone, index: number): Milestone {
-  const order = Number.isFinite(milestone.order) ? Math.floor(milestone.order) : index + 1;
-  const normalizedId = asTrimmedString(milestone.id) || `m${index + 1}`;
+function normalizeMilestone(milestone: unknown, index: number): Milestone {
+  const rawMilestone = asRecord(milestone);
+  const normalizedId = asTrimmedString(rawMilestone.id) || `m${index + 1}`;
   return {
     id: normalizedId,
-    title: asTrimmedString(milestone.title) || `Milestone ${index + 1}`,
-    description: asTrimmedString(milestone.description) || 'No description provided',
-    features: milestone.features.map((feature, featureIndex) =>
-      normalizeFeature(feature, `${normalizedId}-f${featureIndex + 1}`)
-    ),
-    validationContract: normalizeValidationContract(milestone.validationContract),
-    status: milestone.status,
-    order,
+    title: asTrimmedString(rawMilestone.title) || `Milestone ${index + 1}`,
+    description: asTrimmedString(rawMilestone.description) || 'No description provided',
+    features: normalizeFeatureList(rawMilestone.features, normalizedId),
+    validationContract: normalizeValidationContract(rawMilestone.validationContract as Partial<ValidationContract> | null | undefined),
+    status: normalizeMilestoneStatus(rawMilestone.status),
   };
 }
 
-function normalizeFeature(feature: Feature, fallbackId?: string): Feature {
-  const normalizedId = asTrimmedString(feature.id) || fallbackId || 'feature-1';
+function normalizeFeatureList(features: unknown, milestoneId: string): Feature[] {
+  if (!Array.isArray(features)) {
+    return [];
+  }
+  return features.map((feature, featureIndex) =>
+    normalizeFeature(feature, `${milestoneId}-f${featureIndex + 1}`)
+  );
+}
+
+function normalizeFeature(feature: unknown, fallbackId?: string): Feature {
+  const rawFeature = asRecord(feature);
+  const normalizedId = asTrimmedString(rawFeature.id) || fallbackId || 'feature-1';
+  const requestedModel = normalizeFeatureModel(rawFeature.requestedModel)
+    ?? normalizeFeatureModel(rawFeature.model);
+  const effectiveModel = normalizeFeatureModel(rawFeature.effectiveModel)
+    ?? (requestedModel ? undefined : normalizeFeatureModel(rawFeature.resolvedModel));
   return {
     id: normalizedId,
-    description: asTrimmedString(feature.description) || 'No description provided',
-    checks: feature.checks?.map((check) => ({
-      text: check.text,
-      type: check.type,
-      passed: check.passed,
-    })),
-    status: feature.status,
-    model: feature.model,
-    briefing: asTrimmedString(feature.briefing) || undefined,
-    attempts: Math.max(0, Math.floor(feature.attempts)),
-    lastReportSummary: asTrimmedString(feature.lastReportSummary) || undefined,
+    description: asTrimmedString(rawFeature.description) || 'No description provided',
+    checks: normalizeFeatureChecks(rawFeature.checks),
+    status: normalizeFeatureStatus(rawFeature.status),
+    requestedModel,
+    effectiveModel,
+    attempts: normalizeNonNegativeInteger(rawFeature.attempts),
   };
+}
+
+function normalizeFeatureChecks(value: unknown): CheckItem[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const checks = value
+    .filter((check) => typeof check === 'object' && check !== null)
+    .map((check) => {
+      const record = check as Record<string, unknown>;
+      return {
+        text: asTrimmedString(record.text),
+        type: asTrimmedString(record.type) || undefined,
+        passed: typeof record.passed === 'boolean' ? record.passed : undefined,
+      };
+    })
+    .filter((check) => check.text.length > 0);
+  return checks.length > 0 ? checks : undefined;
 }
 
 function asTrimmedString(value: unknown): string {
@@ -391,30 +456,41 @@ function normalizeStringList(values: unknown): string[] {
     .filter((value) => value.length > 0);
 }
 
+function normalizeFeatureModel(value: unknown): 'claude' | 'codex' | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'claude' || normalized === 'codex') {
+    return normalized;
+  }
+  return undefined;
+}
+
 function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {
   if (typeof plan !== 'object' || plan === null) {
     throw new Error(
-      'TASK.json の形式が不正です。Melos v0.8 では MissionPlan v2 オブジェクトのみ対応しています。'
+      'TASK.json の形式が不正です。Melos v0.8 では MissionPlan v3 オブジェクトのみ対応しています。'
     );
   }
 
   if (Array.isArray(plan)) {
     throw new Error([
       'TASK.json の形式が不正です: legacy task array は v0.8 でサポートされません（hard cutover）。',
-      '期待形式: {"version":2,"mission":{...},"milestones":[...]}',
-      '対応方法: TASK.json を MissionPlan v2 に置き換えてください。',
+      '期待形式: {"version":3,"mission":{...},"milestones":[...]}',
+      '対応方法: TASK.json を MissionPlan v3 に置き換えてください。',
     ].join('\n'));
   }
 
   const candidate = plan as Record<string, unknown>;
-  if (candidate.version !== 2) {
+  if (candidate.version !== 3) {
     const received = candidate.version === undefined
       ? 'undefined'
       : JSON.stringify(candidate.version);
     throw new Error([
-      `TASK.json の形式が不正です: top-level "version" は 2 である必要があります（received=${received}）。`,
-      '期待形式: {"version":2,"mission":{...},"milestones":[...]}',
-      '対応方法: TASK.json を MissionPlan v2 に置き換えてください。',
+      `TASK.json の形式が不正です: top-level "version" は 3 である必要があります（received=${received}）。`,
+      '期待形式: {"version":3,"mission":{...},"milestones":[...]}',
+      '対応方法: TASK.json を MissionPlan v3 に置き換えてください。',
     ].join('\n'));
   }
 
@@ -453,4 +529,58 @@ function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {
       featureIds.add(feature.id);
     }
   }
+}
+
+function normalizeMissionState(value: unknown): MissionState {
+  switch (value) {
+    case 'planning':
+    case 'awaiting_approval':
+    case 'running':
+    case 'paused':
+    case 'completed':
+    case 'failed':
+    case 'aborted':
+      return value;
+    default:
+      return 'planning';
+  }
+}
+
+function normalizeMilestoneStatus(value: unknown): MilestoneStatus {
+  switch (value) {
+    case 'pending':
+    case 'in_progress':
+    case 'validating':
+    case 'done':
+    case 'failed':
+    case 'skipped':
+      return value;
+    default:
+      return 'pending';
+  }
+}
+
+function normalizeFeatureStatus(value: unknown): FeatureStatus {
+  switch (value) {
+    case 'pending':
+    case 'in_progress':
+    case 'done':
+    case 'failed':
+    case 'skipped':
+      return value;
+    default:
+      return 'pending';
+  }
+}
+
+function normalizeNonNegativeInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : 0;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
