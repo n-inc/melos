@@ -535,6 +535,9 @@ export function createRuntimeUI(
     clearKeyStreamFlushTimer();
     if (inputResumed && typeof input.pause === 'function') {
       input.pause();
+      if (typeof input.unref === 'function') {
+        input.unref();
+      }
       inputResumed = false;
     }
     if (rawModeEnabled && input.isTTY && typeof input.setRawMode === 'function') {
