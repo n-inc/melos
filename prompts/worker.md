@@ -19,6 +19,7 @@
 4. 失敗時は原因を `discoveredFeatures` と `summary` へ明記する
 5. `currentBranch` / `baseBranch` が渡された場合、feature 実装完了時に必ずコミットを作成する
 6. コミット作成時は `git-committer` スキルの手順に従う（規約準拠の commit message を使う）
+   - スキル参照先: `.claude/skills/git-committer/SKILL.md`
 7. commit message は `type(scope): subject` 形式を守り、`...` などの省略表記を使わない
 8. 本文を書く場合は「変更理由（why）」を簡潔に記載し、差分羅列だけで終わらせない
 

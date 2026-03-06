@@ -1,11 +1,12 @@
 import { writeFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import {
   AppServerEngine,
   type AppServerEngineOptions,
 } from '../engines/app-server.js';
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
+import { loadPromptFromPath } from '../prompts/index.js';
 import {
   CLAUDE_LATEST_ALIAS,
   CODEX_LATEST_ALIAS,
@@ -54,7 +55,7 @@ export class WorkerAgent implements Agent {
   }
 
   async run(input: WorkerInput): Promise<WorkerResult> {
-    const prompt = this.buildPrompt(input);
+    const prompt = await this.buildPrompt(input);
     const executeWithClaude = this.shouldExecuteWithClaude(input);
     const streamTranscript: string[] = [];
     this.activeEngine = executeWithClaude ? 'claude' : 'codex';
@@ -160,7 +161,8 @@ export class WorkerAgent implements Agent {
     return accepted ? 'accepted' : 'unavailable';
   }
 
-  private buildPrompt(input: WorkerInput): string {
+  private async buildPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
     const featureChecks = input.feature.checks?.map((check) => `- ${check.text}`).join('\n') || '- none';
     const validationCommands = [
       ...input.milestone.validationContract.staticChecks,
@@ -171,30 +173,45 @@ export class WorkerAgent implements Agent {
       .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
       .join('\n');
 
-    return [
-      'You are a senior implementation worker.',
-      'Implement exactly one mission feature and output a JSON report.',
-      'Hard cutover mode: do not implement backward compatibility.',
+    const sections = [
+      promptTemplate.trim(),
       '',
-      `Mission Goal: ${input.missionPlan.mission.goal}`,
-      `Milestone: ${input.milestone.id} ${input.milestone.title}`,
-      `Feature: ${input.feature.id} ${input.feature.description}`,
-      `Branch: ${input.currentBranch ?? '(not set)'}`,
-      `Base Branch: ${input.baseBranch ?? '(not set)'}`,
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Feature: ${input.feature.id} ${input.feature.description}`,
+      `- Current branch: ${input.currentBranch ?? '(not set)'}`,
+      `- Base branch: ${input.baseBranch ?? '(not set)'}`,
       '',
-      'Feature checks:',
+      '## Feature Checks',
       featureChecks,
       '',
-      'Manager briefing:',
+      '## Manager Briefing',
       input.briefing?.trim() || '(none)',
       '',
-      'PRD:',
+      '## PRD',
       input.prd?.trim() || '(PRD not found)',
       '',
-      'Milestone validation commands:',
+      '## Milestone Validation Commands',
       validationCommands || '(none)',
+    ];
+
+    if (input.currentBranch && input.baseBranch) {
+      sections.push(
+        '',
+        '## Commit Workflow',
+        `- Use the git-committer skill at: ${this.resolveGitCommitterSkillPath()}`,
+        '- Before committing, inspect: `git status --porcelain`, `git log --oneline -20`, `git diff --staged`',
+        '- Create the commit only after implementation and validation are complete for this feature branch',
+        '- Use `type(scope): subject` for the commit subject',
+        '- Do not use `...` or other abbreviated placeholders in the commit message',
+        '- If you add a commit body, briefly explain why the change is needed'
+      );
+    }
+
+    sections.push(
       '',
-      'Output JSON schema:',
+      '## Output JSON Schema',
       JSON.stringify({
         status: 'SUCCESS',
         summary: 'what was done',
@@ -213,8 +230,21 @@ export class WorkerAgent implements Agent {
         tokenUsage: { input: 0, output: 0, cached: 0 },
       }, null, 2),
       '',
-      'Return only one fenced json block.',
-    ].join('\n');
+      'Return only one fenced json block.'
+    );
+
+    return sections.join('\n');
+  }
+
+  private resolveWorkerPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'worker.md');
+  }
+
+  private resolveGitCommitterSkillPath(): string {
+    return join(this.config.cwd, '.claude', 'skills', 'git-committer', 'SKILL.md');
   }
 
   private parseWorkReport(
