@@ -262,11 +262,7 @@ export class WorkerAgent implements Agent {
           report.checks = parsed.checks;
         }
         if (Array.isArray(parsed.discoveredFeatures)) {
-          report.discoveredFeatures = parsed.discoveredFeatures.map((item) => ({
-            description: item.description,
-            priority: item.priority,
-            rationale: item.rationale,
-          }));
+          report.discoveredFeatures = normalizeDiscoveredFeatures(parsed.discoveredFeatures);
         }
         if (Array.isArray(parsed.learnings)) {
           report.learnings = parsed.learnings.filter((item): item is string => typeof item === 'string');
@@ -367,7 +363,7 @@ export class WorkerAgent implements Agent {
   }
 
   private shouldExecuteWithClaude(input: WorkerInput): boolean {
-    return input.feature.effectiveModel === 'claude' || input.feature.requestedModel === 'claude';
+    return input.feature.model === 'claude';
   }
 }
 
@@ -387,4 +383,36 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function normalizeDiscoveredFeatures(value: unknown): WorkerFeatureReport['discoveredFeatures'] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (typeof item === 'string') {
+      const description = item.trim();
+      return description.length > 0
+        ? [{ description, priority: 'medium' as const }]
+        : [];
+    }
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return [];
+    }
+
+    const description = typeof item.description === 'string' ? item.description.trim() : '';
+    if (description.length === 0) {
+      return [];
+    }
+
+    const priority = item.priority === 'high' || item.priority === 'medium' || item.priority === 'low'
+      ? item.priority
+      : 'medium';
+    const rationale = typeof item.rationale === 'string' && item.rationale.trim().length > 0
+      ? item.rationale.trim()
+      : undefined;
+
+    return [{ description, priority, rationale }];
+  });
 }

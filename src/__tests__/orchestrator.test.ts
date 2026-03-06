@@ -5,7 +5,7 @@ import { execSync } from 'node:child_process';
 import { jest } from '@jest/globals';
 
 import { Orchestrator } from '../orchestrator.js';
-import { ManagerAgent } from '../agents/manager.js';
+import { ManagerAgent, MissionPlanningError } from '../agents/manager.js';
 import { WorkerAgent } from '../agents/worker.js';
 import { createMissionPlan } from '../state/mission.js';
 import type { MissionControlState } from '../ui/tui-views.js';
@@ -261,7 +261,10 @@ describe('Orchestrator v0.8', () => {
 
     const anySnapshot = snapshots.find((state) => state.prdPreviewLines && state.taskPreviewLines);
     expect(anySnapshot?.prdPreviewLines).toEqual(expect.arrayContaining(['line-1', 'line-2', 'line-3']));
-    expect(anySnapshot?.taskPreviewLines).toEqual(expect.arrayContaining(['# TASK generation in progress']));
+    expect(anySnapshot?.taskPreviewLines).toEqual(expect.arrayContaining([
+      '# TASK generation in progress',
+      'TASK.json has not been created yet.',
+    ]));
 
     const plannedSnapshot = snapshots.find((state) =>
       state.taskPreviewLines?.some((line) => line.includes('Milestones / Features'))
@@ -271,6 +274,48 @@ describe('Orchestrator v0.8', () => {
 
     const progressMessages = snapshots.flatMap((state) => state.progressLog.map((entry) => entry.message));
     expect(progressMessages.some((message) => message.includes('[READ] PRD.md'))).toBe(true);
+  });
+
+  it('does not create TASK.json when planning fails before a plan is generated', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-planning-failure-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Broken planning mission', 'utf-8');
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockRejectedValue(
+      new MissionPlanningError({
+        reason: 'planner engine execution failed',
+        detail: 'Process exited with code 1 | output: selected model issue',
+        outputPreview: 'selected model issue',
+      })
+    );
+
+    const snapshots: MissionControlState[] = [];
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 2,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      onStatusUpdate: async (state) => {
+        snapshots.push(state);
+      },
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(false);
+    expect(result.reason).toBe('failed');
+    expect(result.error).toContain('selected model issue');
+    expect(existsSync(missionPath)).toBe(false);
+    expect(snapshots.some((state) => state.taskPreviewLines?.includes('TASK.json has not been created yet.') === true)).toBe(true);
   });
 
   it('creates follow-up feature on validation failure and recovers', async () => {
@@ -693,6 +738,37 @@ describe('Orchestrator v0.8', () => {
     expect(router.getModel('validator')).toBe('sonnet');
   });
 
+  it('defaults all roles to gpt-5.4 when models are not specified', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-default-models-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Default model mission\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 1,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: true,
+      resume: false,
+    });
+
+    const router = (orchestrator as unknown as {
+      modelRouter: { getModel: (role: 'planner' | 'worker' | 'validator' | 'research') => string };
+    }).modelRouter;
+
+    expect(router.getModel('planner')).toBe('gpt-5.4');
+    expect(router.getModel('worker')).toBe('gpt-5.4');
+    expect(router.getModel('validator')).toBe('gpt-5.4');
+    expect(router.getModel('research')).toBe('gpt-5.4');
+  });
+
   it('keeps TASK fixed model even after pre-approval worker model switch', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-worker-opus-'));
     const melosDir = join(cwd, '.melos');
@@ -737,7 +813,7 @@ describe('Orchestrator v0.8', () => {
 
     const workerInputs: Array<{ featureModel?: string }> = [];
     jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
-      workerInputs.push({ featureModel: input.feature.effectiveModel ?? input.feature.requestedModel });
+      workerInputs.push({ featureModel: input.feature.model });
       return {
         type: 'success',
         report: {
@@ -797,7 +873,7 @@ describe('Orchestrator v0.8', () => {
     ).toBe(true);
   });
 
-  it('auto-resolves undefined feature model without stopping and persists default source', async () => {
+  it('auto-resolves undefined feature model without stopping and persists model', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-worker-default-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
@@ -810,7 +886,7 @@ describe('Orchestrator v0.8', () => {
       missionId: 'worker-default',
       goal: 'Resolve undefined feature model',
       constraints: ['No backward compatibility'],
-      successCriteria: ['resolvedModel gets persisted'],
+      successCriteria: ['model gets persisted'],
       milestones: [
         {
           id: 'm1',
@@ -840,7 +916,7 @@ describe('Orchestrator v0.8', () => {
 
     const workerInputs: Array<{ featureModel?: string }> = [];
     jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
-      workerInputs.push({ featureModel: input.feature.effectiveModel ?? input.feature.requestedModel });
+      workerInputs.push({ featureModel: input.feature.model });
       return {
         type: 'success',
         report: {
@@ -887,9 +963,9 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.success).toBe(true);
     expect(workerInputs).toEqual([{ featureModel: 'claude' }]);
-    expect(feature.model).toBeUndefined();
+    expect(feature.model).toBe('claude');
     expect(feature.requestedModel).toBeUndefined();
-    expect(feature.effectiveModel).toBe('claude');
+    expect(feature.effectiveModel).toBeUndefined();
   });
 
   it('does not create checkpoint commit after successful feature when git-strategy is disabled', async () => {

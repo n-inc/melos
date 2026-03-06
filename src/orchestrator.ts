@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ManagerAgent, type ManagerAgentConfig } from './agents/manager.js';
+import { ManagerAgent, MissionPlanningError, type ManagerAgentConfig } from './agents/manager.js';
 import { WorkerAgent, type WorkerAgentConfig } from './agents/worker.js';
 import type { ManagerInput, WorkerFeatureReport, WorkerInput, WorkerResult } from './agents/types.js';
 import {
@@ -21,7 +21,7 @@ import {
   setActiveMilestone,
   setActiveFeature,
   updateFeatureStatus,
-  updateFeatureModels,
+  updateFeatureModel,
   updateMilestoneStatus,
   appendFeaturesToMilestone,
   incrementMissionIterations,
@@ -138,6 +138,7 @@ export class Orchestrator {
   private pendingPrompt: string | null = null;
   private activityLabel = '';
   private statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private fatalFailureReason: string | null = null;
   private managerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: OrchestratorConfig) {
@@ -145,10 +146,10 @@ export class Orchestrator {
 
     this.modelRouter = new ModelRouter({
       assignments: {
-        planner: config.plannerModel ?? 'opus',
+        planner: config.plannerModel ?? 'gpt-5.4',
         worker: config.workerModel ?? 'gpt-5.4',
         validator: config.validatorModel ?? 'gpt-5.4',
-        research: config.researchModel ?? 'opus',
+        research: config.researchModel ?? 'gpt-5.4',
       },
       escalationPolicy: {
         enabled: true,
@@ -232,6 +233,15 @@ export class Orchestrator {
 
     try {
       while (!this.aborted) {
+        if (this.fatalFailureReason) {
+          return {
+            success: false,
+            reason: 'failed',
+            completedIterations: this.state.missionPlan?.totalIterations ?? 0,
+            error: this.fatalFailureReason,
+          };
+        }
+
         const missionPlan = this.state.missionPlan;
         if (!missionPlan) {
           await this.runPlanningPhase();
@@ -291,8 +301,9 @@ export class Orchestrator {
 
       return {
         success: false,
-        reason: 'aborted',
+        reason: this.fatalFailureReason ? 'failed' : 'aborted',
         completedIterations: this.state.missionPlan?.totalIterations ?? 0,
+        error: this.fatalFailureReason ?? undefined,
       };
     } finally {
       this.watchdog.stop();
@@ -459,13 +470,11 @@ export class Orchestrator {
       return;
     }
 
-    this.state.missionPlan = updateFeatureModels(
+    this.state.missionPlan = updateFeatureModel(
       missionPlan,
       activeMilestoneId,
       activeFeatureId,
       model
-        ? { requestedModel: model, effectiveModel: model }
-        : { requestedModel: null, effectiveModel: null }
     );
     this.kernelState.missionPlan = this.state.missionPlan;
 
@@ -542,6 +551,7 @@ export class Orchestrator {
         missionId: this.resolveMissionId(),
         prd: this.state.prd,
         interactiveGoal: this.config.interactivePlanning ? current?.mission.goal : undefined,
+        fallbackOnFailure: false,
         onAppServerEvent: (method, params) => {
           const detail = formatAgentEventDetail(method, params);
           if (!detail) {
@@ -553,6 +563,26 @@ export class Orchestrator {
           });
         },
       });
+    } catch (error) {
+      if (error instanceof MissionPlanningError) {
+        this.activityLabel = `Planning failed: ${truncateMessage(error.detail, 180)}`;
+        this.emitEvent('manager_error', 'manager', {
+          phase: 'planning',
+          message: `planning failed: ${error.detail}`,
+          reason: error.reason,
+          detail: error.detail,
+          outputPreview: error.outputPreview ?? null,
+        });
+        this.emitEvent('mission_failed', 'orchestrator', {
+          reason: error.reason,
+          detail: error.detail,
+        });
+        this.fatalFailureReason = error.detail;
+        this.aborted = true;
+        await this.emitStatusUpdate();
+        return;
+      }
+      throw error;
     } finally {
       this.stopManagerHeartbeat();
     }
@@ -712,7 +742,7 @@ export class Orchestrator {
       action: 'dispatch_feature',
       milestoneId: updatedMilestone.id,
       featureId: updatedFeature.id,
-      model: dispatchModelState.effectiveModel,
+      model: dispatchModelState.model,
       modelSource: dispatchModelState.source,
     });
 
@@ -758,7 +788,7 @@ export class Orchestrator {
         description: discovered.description,
         status: 'pending' as const,
         attempts: 0,
-        requestedModel: discovered.priority === 'high' ? 'codex' : dispatchModelState.effectiveModel,
+        model: discovered.priority === 'high' ? 'codex' : dispatchModelState.model,
       }));
       missionPlan = appendFeaturesToMilestone(missionPlan, updatedMilestone.id, followups);
       this.emitEvent('task_added', 'orchestrator', {
@@ -982,14 +1012,12 @@ export class Orchestrator {
       ?.features.find((item) => item.id === feature.id) ?? feature;
 
     let modelState = resolveFeatureModelState(runtimeFeature, defaultWorkerEngine);
-    if (!runtimeFeature.requestedModel && !runtimeFeature.effectiveModel) {
-      missionPlan = updateFeatureModels(
+    if (!runtimeFeature.model) {
+      missionPlan = updateFeatureModel(
         missionPlan,
         milestone.id,
         feature.id,
-        {
-          effectiveModel: modelState.effectiveModel,
-        }
+        modelState.model
       );
       this.state.missionPlan = missionPlan;
       this.kernelState.missionPlan = missionPlan;
@@ -1004,15 +1032,15 @@ export class Orchestrator {
         action: 'feature_model_selected',
         milestoneId: milestone.id,
         featureId: feature.id,
-        model: modelState.effectiveModel,
+        model: modelState.model,
         source: 'default',
       });
     }
 
-    const runtimeModel = resolveRuntimeModelForEngine(modelState.effectiveModel, selectedWorkerModel);
+    const runtimeModel = resolveRuntimeModelForEngine(modelState.model, selectedWorkerModel);
     const executionFeature: Feature = {
       ...runtimeFeature,
-      effectiveModel: modelState.effectiveModel,
+      model: modelState.model,
     };
     this.worker.setRuntimeModel(runtimeModel);
 
@@ -1051,7 +1079,7 @@ export class Orchestrator {
       milestoneId: milestone.id,
       featureId: feature.id,
       branch: branchName,
-      engine: modelState.effectiveModel,
+      engine: modelState.model,
       model: runtimeModel,
       modelSource: modelState.source,
     });
@@ -1087,7 +1115,7 @@ export class Orchestrator {
       return {
         result,
         execution: {
-          engine: modelState.effectiveModel,
+          engine: modelState.model,
           runtimeModel,
           source: modelState.source,
         },
@@ -1117,7 +1145,7 @@ export class Orchestrator {
 
     let result = await this.worker.run(workerInput);
     this.watchdog.touch();
-    if (modelState.effectiveModel === 'codex') {
+    if (modelState.model === 'codex') {
       const activeThreadId = this.worker.getActiveThreadId();
       if (activeThreadId) {
         const missionId = this.requireMissionPlan().mission.id ?? this.resolveMissionId();
@@ -1159,7 +1187,7 @@ export class Orchestrator {
     return {
       result,
       execution: {
-        engine: modelState.effectiveModel,
+        engine: modelState.model,
         runtimeModel,
         source: modelState.source,
       },
@@ -1226,7 +1254,7 @@ export class Orchestrator {
             description: `Resolve merge conflict for ${branchName}`,
             status: 'pending',
             attempts: 0,
-            requestedModel: 'codex',
+            model: 'codex',
           }]);
         }
         this.state.gitStrategy = this.state.gitStrategy
@@ -1586,8 +1614,7 @@ export class Orchestrator {
           description: feature.description,
           status: feature.status,
           attempts: feature.attempts,
-          requestedModel: feature.requestedModel,
-          effectiveModel: modelState.effectiveModel,
+          model: modelState.model,
           modelStateSource: modelState.source,
         };
       }),
@@ -1833,7 +1860,7 @@ function buildTaskPreviewLines(
       const modelState = resolveFeatureModelState(feature, defaultWorkerEngine);
       const badge = toFeatureModelBadge(feature, modelState.source);
       lines.push(
-        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] [${badge}:${modelState.effectiveModel}] attempts=${feature.attempts} ${feature.description}`
+        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] [${badge}:${modelState.model}] attempts=${feature.attempts} ${feature.description}`
       );
     }
     const validationChecks = [
@@ -1867,16 +1894,17 @@ function buildTaskPlanningLines(): string[] {
   return [
     '# TASK generation in progress',
     '',
+    'TASK.json has not been created yet.',
     'Manager is reading PRD.md and generating milestones/features/validation contracts.',
     'No default placeholder task is shown during planning.',
     'TASK.json preview will appear here once the mission plan is generated.',
   ];
 }
 
-type FeatureModelSource = 'requested' | 'effective' | 'default';
+type FeatureModelSource = 'explicit' | 'default';
 
 interface FeatureModelState {
-  effectiveModel: 'claude' | 'codex';
+  model: 'claude' | 'codex';
   source: FeatureModelSource;
 }
 
@@ -1885,25 +1913,18 @@ function normalizeFeatureEngine(engine: 'claude' | 'codex'): 'claude' | 'codex' 
 }
 
 function resolveFeatureModelState(
-  feature: Pick<Feature, 'requestedModel' | 'effectiveModel'>,
+  feature: Pick<Feature, 'model'>,
   defaultEngine: 'claude' | 'codex'
 ): FeatureModelState {
-  if (feature.requestedModel === 'claude' || feature.requestedModel === 'codex') {
+  if (feature.model === 'claude' || feature.model === 'codex') {
     return {
-      effectiveModel: feature.requestedModel,
-      source: 'requested',
-    };
-  }
-
-  if (feature.effectiveModel === 'claude' || feature.effectiveModel === 'codex') {
-    return {
-      effectiveModel: feature.effectiveModel,
-      source: 'effective',
+      model: feature.model,
+      source: 'explicit',
     };
   }
 
   return {
-    effectiveModel: defaultEngine,
+    model: defaultEngine,
     source: 'default',
   };
 }
@@ -1920,16 +1941,10 @@ function resolveRuntimeModelForEngine(
 }
 
 function toFeatureModelBadge(
-  feature: Pick<Feature, 'requestedModel' | 'effectiveModel'>,
+  feature: Pick<Feature, 'model'>,
   source: FeatureModelSource
-): 'R' | 'D' | 'U' {
-  if (feature.requestedModel) {
-    return 'R';
-  }
-  if (source === 'effective') {
-    return 'D';
-  }
-  return 'U';
+): 'E' | 'D' {
+  return feature.model || source === 'explicit' ? 'E' : 'D';
 }
 
 function asFeatureCheckbox(status: Feature['status']): string {
@@ -2083,8 +2098,12 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   if (safeMethodLower === 'manager/fallback') {
     const reason = extractString(params, 'reason');
     const detail = extractString(params, 'detail');
+    const outputPreview = extractString(params, 'outputPreview');
     if (reason && detail) {
       return `[FALLBACK] ${reason} (${truncateMessage(detail, 120)})`;
+    }
+    if (reason && outputPreview) {
+      return `[FALLBACK] ${reason} (${truncateMessage(outputPreview, 120)})`;
     }
     if (reason) {
       return `[FALLBACK] ${reason}`;

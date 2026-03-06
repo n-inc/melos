@@ -23,9 +23,8 @@ export interface MissionFeatureView {
   description: string;
   status: FeatureStatus;
   attempts: number;
-  requestedModel?: 'claude' | 'codex';
-  effectiveModel?: 'claude' | 'codex';
-  modelStateSource?: 'requested' | 'effective' | 'default';
+  model?: 'claude' | 'codex';
+  modelStateSource?: 'explicit' | 'default';
 }
 
 export interface MissionMilestoneView {

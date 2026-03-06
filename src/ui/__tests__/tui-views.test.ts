@@ -151,8 +151,8 @@ describe('ui/tui views', () => {
     expect(lines).toContain('m2 Login API');
     expect(lines).toContain('m2-f3 [U:-] Auth middleware');
     expect(lines).toContain('Active Feature: m2-f3 Auth middleware');
-    expect(lines).toContain('Requested Model: -');
-    expect(lines).toContain('Effective Model: - (source=default)');
+    expect(lines).toContain('Model: -');
+    expect(lines).toContain('Model Source: default');
   });
 
   it('renders workers view table and logs', () => {

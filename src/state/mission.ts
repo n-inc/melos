@@ -56,15 +56,14 @@ export interface Feature {
   description: string;
   checks?: CheckItem[];
   status: FeatureStatus;
-  requestedModel?: 'claude' | 'codex';
-  effectiveModel?: 'claude' | 'codex';
+  model?: 'claude' | 'codex';
   attempts: number;
 }
 
-interface CreateMissionFeatureInput extends Omit<Feature, 'requestedModel' | 'effectiveModel'> {
+interface CreateMissionFeatureInput extends Omit<Feature, 'model'> {
+  model?: 'claude' | 'codex';
   requestedModel?: 'claude' | 'codex';
   effectiveModel?: 'claude' | 'codex';
-  model?: 'claude' | 'codex';
   resolvedModel?: 'claude' | 'codex';
   resolvedModelSource?: 'user' | 'default';
   briefing?: string;
@@ -261,11 +260,11 @@ export function updateFeatureStatus(
   };
 }
 
-export function updateFeatureModels(
+export function updateFeatureModel(
   plan: MissionPlan,
   milestoneId: string,
   featureId: string,
-  modelState: { requestedModel?: 'claude' | 'codex' | null; effectiveModel?: 'claude' | 'codex' | null }
+  model: 'claude' | 'codex' | null
 ): MissionPlan {
   return {
     ...plan,
@@ -281,8 +280,7 @@ export function updateFeatureModels(
           }
           return {
             ...feature,
-            requestedModel: modelState.requestedModel ?? undefined,
-            effectiveModel: modelState.effectiveModel ?? undefined,
+            model: model ?? undefined,
           };
         }),
       };
@@ -410,17 +408,16 @@ function normalizeFeatureList(features: unknown, milestoneId: string): Feature[]
 function normalizeFeature(feature: unknown, fallbackId?: string): Feature {
   const rawFeature = asRecord(feature);
   const normalizedId = asTrimmedString(rawFeature.id) || fallbackId || 'feature-1';
-  const requestedModel = normalizeFeatureModel(rawFeature.requestedModel)
-    ?? normalizeFeatureModel(rawFeature.model);
-  const effectiveModel = normalizeFeatureModel(rawFeature.effectiveModel)
-    ?? (requestedModel ? undefined : normalizeFeatureModel(rawFeature.resolvedModel));
+  const model = normalizeFeatureModel(rawFeature.model)
+    ?? normalizeFeatureModel(rawFeature.requestedModel)
+    ?? normalizeFeatureModel(rawFeature.effectiveModel)
+    ?? normalizeFeatureModel(rawFeature.resolvedModel);
   return {
     id: normalizedId,
     description: asTrimmedString(rawFeature.description) || 'No description provided',
     checks: normalizeFeatureChecks(rawFeature.checks),
     status: normalizeFeatureStatus(rawFeature.status),
-    requestedModel,
-    effectiveModel,
+    model,
     attempts: normalizeNonNegativeInteger(rawFeature.attempts),
   };
 }

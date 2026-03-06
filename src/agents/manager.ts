@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join, relative } from 'node:path';
+import { open, readdir, readFile } from 'node:fs/promises';
+import { dirname, extname, join, relative } from 'node:path';
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
 import {
   AppServerEngine,
@@ -34,8 +34,26 @@ export interface ManagerAgentConfig {
   resumeThreadId?: string;
 }
 
+export class MissionPlanningError extends Error {
+  readonly reason: string;
+  readonly detail: string;
+  readonly outputPreview?: string;
+
+  constructor(params: { reason: string; detail: string; outputPreview?: string }) {
+    super(params.detail);
+    this.name = 'MissionPlanningError';
+    this.reason = params.reason;
+    this.detail = params.detail;
+    this.outputPreview = params.outputPreview;
+  }
+}
+
 const CODEX_MODEL_PATTERN = /codex/i;
 const CODEBASE_CONTEXT_MAX_LINES = 32;
+const PLANNING_PROMPT_MAX_CHARS = 220_000;
+const PLANNING_CONTEXT_SECTION_MAX_CHARS = 80_000;
+const PLANNING_REVIEWED_FILES_MAX_COUNT = 160;
+const PLANNING_REVIEWED_FILES_MAX_CHARS = 12_000;
 const PLANNING_CONFIG_FILES = [
   'package.json',
   'tsconfig.json',
@@ -71,6 +89,52 @@ const IGNORED_DIRECTORIES = new Set([
   '.next',
   '.turbo',
   '.cache',
+]);
+const BINARY_FILE_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.avif',
+  '.ico',
+  '.bmp',
+  '.tiff',
+  '.mp4',
+  '.m4v',
+  '.mov',
+  '.avi',
+  '.webm',
+  '.mkv',
+  '.m4s',
+  '.mp3',
+  '.wav',
+  '.ogg',
+  '.flac',
+  '.aac',
+  '.pdf',
+  '.zip',
+  '.gz',
+  '.tgz',
+  '.tar',
+  '.7z',
+  '.rar',
+  '.dmg',
+  '.ttf',
+  '.otf',
+  '.woff',
+  '.woff2',
+  '.eot',
+  '.gem',
+  '.jar',
+  '.wasm',
+  '.psd',
+  '.sketch',
+  '.ai',
+  '.eps',
+  '.sqlite',
+  '.db',
+  '.bin',
 ]);
 
 interface MissionPlanningOutput {
@@ -137,6 +201,7 @@ export class ManagerAgent implements Agent {
     missionId: string;
     prd: string | null;
     interactiveGoal?: string;
+    fallbackOnFailure?: boolean;
     approvalMethod?: 'auto' | 'interactive';
     prdFile?: string;
     onAgentMessageDelta?: (chunk: string) => void;
@@ -179,18 +244,43 @@ export class ManagerAgent implements Agent {
     );
 
     if (!result.success) {
+      const outputPreview = summarizePlannerOutput(result.output);
+      if (input.fallbackOnFailure === false) {
+        throw new MissionPlanningError({
+          reason: 'planner engine execution failed',
+          detail: buildPlannerFailureDetail(
+            result.error ?? `exitCode=${result.exitCode}`,
+            outputPreview
+          ),
+          outputPreview,
+        });
+      }
       input.onAppServerEvent?.('manager/fallback', {
         reason: 'planner engine execution failed',
-        detail: result.error ?? `exitCode=${result.exitCode}`,
+        detail: buildPlannerFailureDetail(
+          result.error ?? `exitCode=${result.exitCode}`,
+          outputPreview
+        ),
+        error: result.error ?? `exitCode=${result.exitCode}`,
+        outputPreview,
       });
       return this.fallbackMissionPlan(input, preferredLanguage);
     }
 
     const planning = this.parsePlanningOutput(result.output);
     if (!planning) {
+      const outputPreview = summarizePlannerOutput(result.output);
+      if (input.fallbackOnFailure === false) {
+        throw new MissionPlanningError({
+          reason: 'planner output parse failed',
+          detail: outputPreview ?? 'planner output parse failed',
+          outputPreview,
+        });
+      }
       input.onAppServerEvent?.('manager/fallback', {
         reason: 'planner output parse failed',
-        detail: truncateMessage(result.output.replace(/\s+/g, ' ').trim(), 240),
+        detail: outputPreview,
+        outputPreview,
       });
       return this.fallbackMissionPlan(input, preferredLanguage);
     }
@@ -384,7 +474,7 @@ export class ManagerAgent implements Agent {
         id: `m${milestoneIndex + 1}-f${featureIndex + 1}`,
         description: featureDescription,
         status: 'pending' as const,
-        requestedModel: inferFeatureModel(featureDescription),
+        model: inferFeatureModel(featureDescription),
         attempts: 0,
       })),
     }));
@@ -451,7 +541,7 @@ export class ManagerAgent implements Agent {
         description: normalizeFeatureDescription(feature.description),
         checks: feature.checks?.map((check) => ({ text: check.text, type: check.type, passed: false })),
         status: 'pending' as const,
-        requestedModel: feature.model ?? inferFeatureModel(feature.description),
+        model: feature.model ?? inferFeatureModel(feature.description),
         attempts: 0,
       })),
     }));
@@ -474,7 +564,13 @@ export class ManagerAgent implements Agent {
     reviewedFiles: string[] = []
   ): string {
     const languageLabel = preferredLanguage === 'ja' ? 'Japanese' : 'English';
-    return [
+    const reviewedFilesBlock = formatPlanningReviewedFiles(reviewedFiles);
+    const repositoryContextBlock = truncatePlanningText(
+      codebaseContext?.trim() || '(no repository context available)',
+      PLANNING_CONTEXT_SECTION_MAX_CHARS,
+      'Repository Context'
+    );
+    const promptPrefix = [
       'You are an expert technical planner.',
       'Create a MissionPlan JSON for a coding mission.',
       'Hard cutover mode: do not include backward compatibility tasks.',
@@ -487,7 +583,7 @@ export class ManagerAgent implements Agent {
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","requestedModel":"codex"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -500,17 +596,22 @@ export class ManagerAgent implements Agent {
       '- Feature IDs must follow mX-fY',
       '',
       'Files already reviewed by system and required for planning coverage:',
-      reviewedFiles.length > 0 ? reviewedFiles.join('\n') : '(none)',
+      reviewedFilesBlock,
       '',
       'User stated goal:',
       interactiveGoal?.trim() || '(not provided)',
       '',
       'Repository Context (coverage-oriented, pre-read by system):',
-      codebaseContext?.trim() || '(no repository context available)',
+      repositoryContextBlock,
       '',
       'PRD content:',
-      prd?.trim() || '(PRD not found)',
     ].join('\n');
+    const prdBlock = truncatePlanningText(
+      prd?.trim() || '(PRD not found)',
+      Math.max(0, PLANNING_PROMPT_MAX_CHARS - promptPrefix.length - 1),
+      'PRD content'
+    );
+    return `${promptPrefix}\n${prdBlock}`;
   }
 
   private parsePlanningOutput(output: string): MissionPlanningOutput | null {
@@ -867,7 +968,7 @@ function normalizePlanningFeature(
     ?? toNonEmptyString(feature.title)
     ?? toNonEmptyString(feature.task)
     ?? 'No description provided';
-  const model = toNonEmptyString(feature.requestedModel) ?? toNonEmptyString(feature.model);
+  const model = toNonEmptyString(feature.model) ?? toNonEmptyString(feature.requestedModel);
   return {
     id: toNonEmptyString(feature.id) ?? undefined,
     description,
@@ -1005,35 +1106,56 @@ async function buildPlanningCodebaseContext(
 
   const packageSummary = await buildPackageSummary(cwd);
   const allFiles = await collectRepositoryFiles(cwd);
+  const planningSource = `${interactiveGoal ?? ''}\n${prd ?? ''}`;
   const reviewedFiles = await selectPlanningCoverageFiles(
     cwd,
     allFiles,
-    extractPlanningKeywords(`${interactiveGoal ?? ''}\n${prd ?? ''}`)
+    extractPlanningKeywords(planningSource),
+    extractPlanningPathReferences(planningSource)
   );
-  const snippets = await Promise.all(
-    reviewedFiles.map(async (relativePath) => {
-      const snippet = await readPlanningSnippet(join(cwd, relativePath));
-      return snippet
-        ? [`FILE: ${relativePath}`, snippet].join('\n')
-        : null;
-    })
-  );
+  const limitedCoverage = limitPlanningReviewedFiles(reviewedFiles);
 
   const lines = [
     `Repository root entries: ${topLevelNames.length > 0 ? topLevelNames.join(', ') : '(none)'}`,
-    `Coverage-required files: ${reviewedFiles.length > 0 ? reviewedFiles.join(', ') : '(none detected)'}`,
+    `Coverage-required files: ${limitedCoverage.reviewedFiles.length > 0 ? limitedCoverage.reviewedFiles.join(', ') : '(none detected)'}`,
     packageSummary,
   ];
+  if (limitedCoverage.omittedCount > 0) {
+    lines.push(`Planning coverage trimmed: ${limitedCoverage.omittedCount} files omitted due to prompt budget.`);
+  }
 
-  const normalizedSnippets = snippets.filter((snippet): snippet is string => snippet !== null);
-  if (normalizedSnippets.length > 0) {
+  const snippets: string[] = [];
+  let omittedSnippets = 0;
+  for (let index = 0; index < limitedCoverage.reviewedFiles.length; index += 1) {
+    const relativePath = limitedCoverage.reviewedFiles[index];
+    const snippet = await readPlanningSnippet(join(cwd, relativePath));
+    if (!snippet) {
+      continue;
+    }
+
+    const entry = [`FILE: ${relativePath}`, snippet].join('\n');
+    const candidateSummary = [
+      ...lines,
+      ...(snippets.length > 0 ? ['', 'Reviewed file snippets:', ...snippets, entry] : ['', 'Reviewed file snippets:', entry]),
+    ].join('\n');
+    if (candidateSummary.length > PLANNING_CONTEXT_SECTION_MAX_CHARS) {
+      omittedSnippets = limitedCoverage.reviewedFiles.length - index;
+      break;
+    }
+    snippets.push(entry);
+  }
+
+  if (omittedSnippets > 0) {
+    lines.push(`Reviewed file snippets trimmed: ${omittedSnippets} files omitted due to prompt budget.`);
+  }
+  if (snippets.length > 0) {
     lines.push('', 'Reviewed file snippets:');
-    lines.push(...normalizedSnippets);
+    lines.push(...snippets);
   }
 
   return {
     summary: lines.join('\n'),
-    reviewedFiles,
+    reviewedFiles: limitedCoverage.reviewedFiles,
   };
 }
 
@@ -1080,8 +1202,10 @@ async function buildPackageSummary(cwd: string): Promise<string> {
 async function selectPlanningCoverageFiles(
   cwd: string,
   allFiles: string[],
-  keywords: string[]
+  keywords: string[],
+  referencedPaths: string[] = []
 ): Promise<string[]> {
+  const sortedFiles = [...allFiles].sort((left, right) => left.localeCompare(right));
   const fileIndex = new Set(allFiles);
   const required = new Set<string>();
   const frontier: string[] = [];
@@ -1093,24 +1217,34 @@ async function selectPlanningCoverageFiles(
     }
   }
 
-  for (const file of allFiles) {
+  for (const file of sortedFiles) {
     const normalized = relative(cwd, file).replace(/\\/g, '/').toLowerCase();
     if (PLANNING_ENTRYPOINT_PATTERNS.some((pattern) => normalized.startsWith(pattern))) {
       addCoverageFile(required, frontier, file);
     }
   }
 
-  const keywordAnchors = allFiles.filter((file) => {
-    const normalized = relative(cwd, file).replace(/\\/g, '/').toLowerCase();
-    return keywords.some((keyword) => normalized.includes(keyword));
-  });
+  for (const referencedPath of referencedPaths) {
+    const absolutePath = join(cwd, referencedPath);
+    if (fileIndex.has(absolutePath)) {
+      addCoverageFile(required, frontier, absolutePath);
+    }
+  }
+
+  const shouldUseKeywordAnchors = referencedPaths.length === 0;
+  const keywordAnchors = shouldUseKeywordAnchors
+    ? sortedFiles.filter((file) => {
+      const normalized = relative(cwd, file).replace(/\\/g, '/').toLowerCase();
+      return keywords.some((keyword) => normalized.includes(keyword));
+    })
+    : [];
 
   for (const file of keywordAnchors) {
     addCoverageFile(required, frontier, file);
   }
 
   if (required.size === 0) {
-    for (const file of allFiles) {
+    for (const file of sortedFiles) {
       const normalized = relative(cwd, file).replace(/\\/g, '/').toLowerCase();
       if (normalized.startsWith('src/') || normalized.startsWith('app/') || normalized.startsWith('pages/')) {
         addCoverageFile(required, frontier, file);
@@ -1134,9 +1268,7 @@ async function selectPlanningCoverageFiles(
     }
   }
 
-  return Array.from(required)
-    .map((file) => relative(cwd, file).replace(/\\/g, '/'))
-    .sort((left, right) => left.localeCompare(right));
+  return Array.from(required).map((file) => relative(cwd, file).replace(/\\/g, '/'));
 }
 
 function addCoverageFile(required: Set<string>, frontier: string[], file: string): void {
@@ -1240,6 +1372,9 @@ async function collectRepositoryFiles(cwd: string): Promise<string[]> {
         }
         continue;
       }
+      if (!(await isLikelyTextFile(absolutePath))) {
+        continue;
+      }
       results.push(absolutePath);
     }
   }
@@ -1276,8 +1411,86 @@ function extractPlanningKeywords(source: string): string[] {
   return Array.from(tokens).slice(0, 20);
 }
 
+function extractPlanningPathReferences(source: string): string[] {
+  const references = new Set<string>();
+  const matches = source.matchAll(/[`'"]?([A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+)[`'"]?/g);
+
+  for (const match of matches) {
+    const candidate = match[1]?.trim();
+    if (!candidate) {
+      continue;
+    }
+    if (candidate.startsWith('/')) {
+      continue;
+    }
+    if (!candidate.includes('.')) {
+      continue;
+    }
+    references.add(candidate.replace(/^\.?\//, ''));
+  }
+
+  return Array.from(references);
+}
+
+function limitPlanningReviewedFiles(files: string[]): { reviewedFiles: string[]; omittedCount: number } {
+  const reviewedFiles: string[] = [];
+  let totalChars = 0;
+
+  for (const file of files) {
+    const nextChars = totalChars + file.length + 1;
+    if (
+      reviewedFiles.length > 0
+      && (reviewedFiles.length >= PLANNING_REVIEWED_FILES_MAX_COUNT || nextChars > PLANNING_REVIEWED_FILES_MAX_CHARS)
+    ) {
+      break;
+    }
+    reviewedFiles.push(file);
+    totalChars = nextChars;
+  }
+
+  return {
+    reviewedFiles,
+    omittedCount: Math.max(0, files.length - reviewedFiles.length),
+  };
+}
+
+function formatPlanningReviewedFiles(files: string[]): string {
+  return files.length > 0 ? files.join('\n') : '(none)';
+}
+
+function truncatePlanningText(text: string, maxChars: number, label: string): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  const suffix = `\n...[${label} truncated due to planner prompt budget]`;
+  if (maxChars <= suffix.length) {
+    return suffix.trimStart();
+  }
+
+  return `${text.slice(0, maxChars - suffix.length).trimEnd()}${suffix}`;
+}
+
+function summarizePlannerOutput(output: string): string | undefined {
+  const compact = output.replace(/\s+/g, ' ').trim();
+  if (compact.length === 0) {
+    return undefined;
+  }
+  return truncateMessage(compact, 240);
+}
+
+function buildPlannerFailureDetail(error: string, outputPreview?: string): string {
+  if (!outputPreview) {
+    return error;
+  }
+  return `${error} | output: ${outputPreview}`;
+}
+
 async function readPlanningSnippet(path: string): Promise<string | null> {
   try {
+    if (!(await isLikelyTextFile(path))) {
+      return null;
+    }
     const content = await readFile(path, 'utf-8');
     const lines = content
       .split(/\r?\n/)
@@ -1287,6 +1500,43 @@ async function readPlanningSnippet(path: string): Promise<string | null> {
     return snippet.length > 0 ? snippet : null;
   } catch {
     return null;
+  }
+}
+
+async function isLikelyTextFile(path: string): Promise<boolean> {
+  const extension = extname(path).toLowerCase();
+  if (BINARY_FILE_EXTENSIONS.has(extension)) {
+    return false;
+  }
+
+  let handle;
+  try {
+    handle = await open(path, 'r');
+    const sample = Buffer.alloc(4096);
+    const { bytesRead } = await handle.read(sample, 0, sample.length, 0);
+    if (bytesRead === 0) {
+      return true;
+    }
+
+    let suspiciousBytes = 0;
+    for (let index = 0; index < bytesRead; index += 1) {
+      const byte = sample[index];
+      if (byte === 0) {
+        return false;
+      }
+      const isControl = byte < 32 && byte !== 9 && byte !== 10 && byte !== 13;
+      if (isControl) {
+        suspiciousBytes += 1;
+      }
+    }
+
+    return suspiciousBytes / bytesRead < 0.1;
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => {
+      // ignore close errors and treat sniff result as authoritative
+    });
   }
 }
 

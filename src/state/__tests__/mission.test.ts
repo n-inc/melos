@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -10,6 +10,7 @@ import {
   getNextPendingFeature,
   getNextPendingMilestone,
   loadMissionPlan,
+  saveMissionPlan,
   transitionMissionState,
   updateFeatureStatus,
   updateMilestoneStatus,
@@ -118,11 +119,12 @@ describe('state/mission', () => {
     });
 
     plan = appendFeaturesToMilestone(plan, 'm1', [
-      { id: 'm1-f2', description: 'follow-up', status: 'pending', attempts: 0, requestedModel: 'codex' },
+      { id: 'm1-f2', description: 'follow-up', status: 'pending', attempts: 0, model: 'codex' },
     ]);
 
     expect(plan.milestones[0].features).toHaveLength(2);
     expect(plan.milestones[0].features[1]?.id).toBe('m1-f2');
+    expect(plan.milestones[0].features[1]?.model).toBe('codex');
   });
 
   it('rejects legacy TASK array (hard cutover: MissionPlan v3 only)', async () => {
@@ -190,7 +192,7 @@ describe('state/mission', () => {
     expect(loaded.milestones[0]?.features[0]?.description).toBe('No description provided');
   });
 
-  it('migrates legacy model fields into requestedModel/effectiveModel for v3', async () => {
+  it('migrates legacy model fields into model for v3', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'melos-mission-resolved-model-'));
     const taskPath = join(dir, 'TASK.json');
     writeFileSync(taskPath, JSON.stringify({
@@ -247,11 +249,39 @@ describe('state/mission', () => {
 
     const loaded = await loadMissionPlan(taskPath);
     expect(loaded.version).toBe(3);
-    expect(loaded.milestones[0]?.features[0]?.requestedModel).toBeUndefined();
-    expect(loaded.milestones[0]?.features[0]?.effectiveModel).toBe('claude');
-    expect(loaded.milestones[0]?.features[1]?.requestedModel).toBe('codex');
-    expect(loaded.milestones[0]?.features[1]?.effectiveModel).toBeUndefined();
-    expect(loaded.milestones[0]?.features[2]?.requestedModel).toBeUndefined();
-    expect(loaded.milestones[0]?.features[2]?.effectiveModel).toBe('codex');
+    expect(loaded.milestones[0]?.features[0]?.model).toBe('claude');
+    expect(loaded.milestones[0]?.features[1]?.model).toBe('codex');
+    expect(loaded.milestones[0]?.features[2]?.model).toBe('codex');
+  });
+
+  it('writes only model when mission plan is saved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-model-save-'));
+    const taskPath = join(dir, 'TASK.json');
+    const plan = createMissionPlan({
+      goal: 'Save mission plan',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'feature', status: 'pending', attempts: 0, model: 'claude' },
+          ],
+        },
+      ],
+    });
+
+    await saveMissionPlan(taskPath, plan);
+
+    const saved = JSON.parse(readFileSync(taskPath, 'utf-8')) as {
+      milestones: Array<{ features: Array<Record<string, unknown>> }>;
+    };
+    const feature = saved.milestones[0]?.features[0] ?? {};
+    expect(feature.model).toBe('claude');
+    expect(feature.requestedModel).toBeUndefined();
+    expect(feature.effectiveModel).toBeUndefined();
   });
 });
