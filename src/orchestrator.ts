@@ -533,6 +533,18 @@ export class Orchestrator {
 
   private async runPlanningPhase(): Promise<void> {
     const current = this.state.missionPlan;
+    const planningStream = createBufferedProgressEmitter((line) => {
+      this.emitEvent('manager_decision', 'manager', {
+        phase: 'planning',
+        message: `planning: ${line}`,
+      });
+    });
+    const planningCommandStream = createBufferedProgressEmitter((line) => {
+      this.emitEvent('manager_decision', 'manager', {
+        phase: 'planning',
+        message: `planning: [CMD] ${line}`,
+      });
+    });
 
     this.activityLabel = `Planning mission with ${this.modelRouter.getModel('planner')}...`;
     this.emitEvent('manager_started', 'manager', {
@@ -552,6 +564,12 @@ export class Orchestrator {
         prd: this.state.prd,
         interactiveGoal: this.config.interactivePlanning ? current?.mission.goal : undefined,
         fallbackOnFailure: false,
+        onAgentMessageDelta: (chunk) => {
+          planningStream.push(chunk);
+        },
+        onCommandOutputDelta: (chunk) => {
+          planningCommandStream.push(chunk);
+        },
         onAppServerEvent: (method, params) => {
           const detail = formatAgentEventDetail(method, params);
           if (!detail) {
@@ -584,6 +602,8 @@ export class Orchestrator {
       }
       throw error;
     } finally {
+      planningStream.flush();
+      planningCommandStream.flush();
       this.stopManagerHeartbeat();
     }
 
@@ -2001,6 +2021,42 @@ function truncateMessage(value: string, maxLength: number): string {
     return value;
   }
   return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function createBufferedProgressEmitter(
+  emitLine: (line: string) => void,
+  maxLength = 180
+): {
+  push: (chunk: string) => void;
+  flush: () => void;
+} {
+  let buffer = '';
+
+  const emitBufferedLine = (line: string): void => {
+    const normalized = line.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').trim();
+    if (!normalized) {
+      return;
+    }
+    emitLine(truncateMessage(normalized, maxLength));
+  };
+
+  return {
+    push(chunk: string): void {
+      if (!chunk) {
+        return;
+      }
+      buffer += chunk.replace(/\r/g, '\n');
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        emitBufferedLine(line);
+      }
+    },
+    flush(): void {
+      emitBufferedLine(buffer);
+      buffer = '';
+    },
+  };
 }
 
 function truncateLines(lines: string[], maxLines: number): string[] {

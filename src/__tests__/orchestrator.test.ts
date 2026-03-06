@@ -229,6 +229,9 @@ describe('Orchestrator v0.8', () => {
     });
 
     jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockImplementation(async (input) => {
+      input.onAgentMessageDelta?.('Inspecting repository coverage...\n');
+      input.onAgentMessageDelta?.('Building mission plan');
+      input.onCommandOutputDelta?.('npm query planning-context\n');
       input.onAppServerEvent?.('item/started', {
         item: {
           type: 'FileRead',
@@ -274,6 +277,9 @@ describe('Orchestrator v0.8', () => {
 
     const progressMessages = snapshots.flatMap((state) => state.progressLog.map((entry) => entry.message));
     expect(progressMessages.some((message) => message.includes('[READ] PRD.md'))).toBe(true);
+    expect(progressMessages.some((message) => message.includes('planning: Inspecting repository coverage...'))).toBe(true);
+    expect(progressMessages.some((message) => message.includes('planning: Building mission plan'))).toBe(true);
+    expect(progressMessages.some((message) => message.includes('planning: [CMD] npm query planning-context'))).toBe(true);
   });
 
   it('does not create TASK.json when planning fails before a plan is generated', async () => {
