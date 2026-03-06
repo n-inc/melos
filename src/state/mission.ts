@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import type { ValidationContract } from './validation.js';
 import { normalizeValidationContract } from './validation.js';
+import { normalizeModelName } from '../models/registry.js';
 
 export type MissionState =
   | 'planning'
@@ -56,15 +57,15 @@ export interface Feature {
   description: string;
   checks?: CheckItem[];
   status: FeatureStatus;
-  model?: 'claude' | 'codex';
+  model?: string;
   attempts: number;
 }
 
 interface CreateMissionFeatureInput extends Omit<Feature, 'model'> {
-  model?: 'claude' | 'codex';
-  requestedModel?: 'claude' | 'codex';
-  effectiveModel?: 'claude' | 'codex';
-  resolvedModel?: 'claude' | 'codex';
+  model?: string;
+  requestedModel?: string;
+  effectiveModel?: string;
+  resolvedModel?: string;
   resolvedModelSource?: 'user' | 'default';
   briefing?: string;
   lastReportSummary?: string;
@@ -264,7 +265,7 @@ export function updateFeatureModel(
   plan: MissionPlan,
   milestoneId: string,
   featureId: string,
-  model: 'claude' | 'codex' | null
+  model: string | null
 ): MissionPlan {
   return {
     ...plan,
@@ -453,15 +454,8 @@ function normalizeStringList(values: unknown): string[] {
     .filter((value) => value.length > 0);
 }
 
-function normalizeFeatureModel(value: unknown): 'claude' | 'codex' | undefined {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-  const normalized = value.trim().toLowerCase();
-  if (normalized === 'claude' || normalized === 'codex') {
-    return normalized;
-  }
-  return undefined;
+function normalizeFeatureModel(value: unknown): string | undefined {
+  return normalizeModelName(typeof value === 'string' ? value : undefined);
 }
 
 function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {

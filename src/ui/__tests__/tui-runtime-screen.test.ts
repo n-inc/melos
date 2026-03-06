@@ -392,8 +392,8 @@ describe('ui/tui runtime screen contract', () => {
     h.input.write('C');
     h.ui.stop();
 
-    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(1, 'codex');
-    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(2, 'claude');
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(1, 'codex-latest');
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(2, 'claude-latest');
     expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(3, null);
     expect(h.onSetActiveFeatureModel).toHaveBeenCalledTimes(3);
   });

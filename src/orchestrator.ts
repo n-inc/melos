@@ -63,7 +63,19 @@ import { loadSnapshot, saveSnapshot } from './state/snapshot.js';
 import { Watchdog } from './state/watchdog.js';
 import { TokenTracker } from './state/token-tracker.js';
 import type { LogActor } from './state/log-entry.js';
-import { ModelRouter, isCodexModel, type ModelRole } from './models/router.js';
+import { ModelRouter, type ModelRole } from './models/router.js';
+import {
+  CLAUDE_LATEST_ALIAS,
+  CODEX_LATEST_ALIAS,
+  getModelRotation,
+  isCodexFamily,
+  normalizeModelName,
+  resolveDisplayModel,
+  resolveModel,
+  resolveModelEngine,
+  resolveRuntimeModel,
+  type ModelEngine,
+} from './models/registry.js';
 import type { MissionControlState, MissionMilestoneView, WorkerRunView } from './ui/tui-views.js';
 
 export interface OrchestratorConfig {
@@ -113,11 +125,7 @@ interface RuntimeState {
   startedAt: Date;
 }
 
-const MODEL_ROTATION: string[] = ['gpt-5.4', 'opus', 'sonnet', 'haiku'];
-const DEFAULT_ENGINE_MODEL: Record<'codex' | 'claude', string> = {
-  codex: 'gpt-5.4',
-  claude: 'opus',
-};
+const MODEL_ROTATION: string[] = getModelRotation();
 
 export class Orchestrator {
   private readonly config: OrchestratorConfig;
@@ -146,17 +154,17 @@ export class Orchestrator {
 
     this.modelRouter = new ModelRouter({
       assignments: {
-        planner: config.plannerModel ?? 'gpt-5.4',
-        worker: config.workerModel ?? 'gpt-5.4',
-        validator: config.validatorModel ?? 'gpt-5.4',
-        research: config.researchModel ?? 'gpt-5.4',
+        planner: normalizeModelName(config.plannerModel) ?? CODEX_LATEST_ALIAS,
+        worker: normalizeModelName(config.workerModel) ?? CODEX_LATEST_ALIAS,
+        validator: normalizeModelName(config.validatorModel) ?? CODEX_LATEST_ALIAS,
+        research: normalizeModelName(config.researchModel) ?? CODEX_LATEST_ALIAS,
       },
       escalationPolicy: {
         enabled: true,
         maxEscalations: 2,
         chain: {
           haiku: 'sonnet',
-          sonnet: 'opus',
+          sonnet: CLAUDE_LATEST_ALIAS,
         },
       },
     });
@@ -408,7 +416,7 @@ export class Orchestrator {
 
   async cycleModel(role: ModelRole): Promise<void> {
     const current = this.modelRouter.getModel(role);
-    const normalized = current.toLowerCase();
+    const normalized = normalizeModelName(current) ?? current.toLowerCase();
     const index = MODEL_ROTATION.findIndex((candidate) => candidate === normalized);
     const nextModel = index >= 0
       ? MODEL_ROTATION[(index + 1) % MODEL_ROTATION.length]
@@ -424,12 +432,12 @@ export class Orchestrator {
       action: 'model_changed',
       role,
       model: nextModel,
-      message: `model for ${role} changed to ${nextModel}`,
+      message: `model for ${role} changed to ${resolveDisplayModel(nextModel)}`,
     });
     await this.emitStatusUpdate();
   }
 
-  async setActiveFeatureModel(model: 'codex' | 'claude' | null): Promise<void> {
+  async setActiveFeatureModel(model: string | null): Promise<void> {
     const missionPlan = this.state.missionPlan;
     if (!missionPlan) {
       return;
@@ -470,11 +478,12 @@ export class Orchestrator {
       return;
     }
 
+    const normalizedModel = normalizeModelName(model);
     this.state.missionPlan = updateFeatureModel(
       missionPlan,
       activeMilestoneId,
       activeFeatureId,
-      model
+      normalizedModel ?? null
     );
     this.kernelState.missionPlan = this.state.missionPlan;
 
@@ -482,8 +491,8 @@ export class Orchestrator {
       action: 'feature_model_selected',
       milestoneId: activeMilestoneId,
       featureId: activeFeatureId,
-      model: model ?? null,
-      source: model ? 'user' : 'unset',
+      model: normalizedModel ?? null,
+      source: normalizedModel ? 'user' : 'unset',
     });
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
@@ -756,13 +765,13 @@ export class Orchestrator {
     });
     const dispatchModelState = resolveFeatureModelState(
       updatedFeature,
-      normalizeFeatureEngine(this.modelRouter.resolveEngine(this.modelRouter.getModel('worker')))
+      normalizeModelName(this.modelRouter.getModel('worker')) ?? CODEX_LATEST_ALIAS
     );
     this.emitEvent('manager_decision', 'manager', {
       action: 'dispatch_feature',
       milestoneId: updatedMilestone.id,
       featureId: updatedFeature.id,
-      model: dispatchModelState.model,
+      model: resolveDisplayModel(dispatchModelState.model),
       modelSource: dispatchModelState.source,
     });
 
@@ -774,14 +783,15 @@ export class Orchestrator {
     if (result.report.tokenUsage) {
       this.tokenTracker.record({
         role: 'worker',
-        model: execution.runtimeModel,
+        model: execution.displayModel,
+        pricingModel: execution.pricingModel,
         input: result.report.tokenUsage.input,
         output: result.report.tokenUsage.output,
         cached: result.report.tokenUsage.cached,
       });
       this.emitEvent('token_usage', 'worker', {
         role: 'worker',
-        model: execution.runtimeModel,
+        model: execution.displayModel,
         ...result.report.tokenUsage,
       });
     }
@@ -808,7 +818,7 @@ export class Orchestrator {
         description: discovered.description,
         status: 'pending' as const,
         attempts: 0,
-        model: discovered.priority === 'high' ? 'codex' : dispatchModelState.model,
+        model: discovered.priority === 'high' ? CODEX_LATEST_ALIAS : dispatchModelState.model,
       }));
       missionPlan = appendFeaturesToMilestone(missionPlan, updatedMilestone.id, followups);
       this.emitEvent('task_added', 'orchestrator', {
@@ -994,7 +1004,7 @@ export class Orchestrator {
       description: draft.description,
       status: 'pending',
       attempts: 0,
-      model: draft.model ?? 'codex',
+      model: draft.model ?? CODEX_LATEST_ALIAS,
     }));
 
     missionPlan = appendFeaturesToMilestone(missionPlan, milestoneId, followUpFeatures);
@@ -1019,19 +1029,20 @@ export class Orchestrator {
   ): Promise<{
     result: WorkerResult;
     execution: {
-      engine: 'codex' | 'claude';
+      engine: ModelEngine;
       runtimeModel: string;
+      pricingModel: string;
+      displayModel: string;
       source: FeatureModelSource;
     };
   }> {
-    const selectedWorkerModel = this.modelRouter.getModel('worker');
-    const defaultWorkerEngine = normalizeFeatureEngine(this.modelRouter.resolveEngine(selectedWorkerModel));
+    const selectedWorkerModel = normalizeModelName(this.modelRouter.getModel('worker')) ?? CODEX_LATEST_ALIAS;
     let missionPlan = this.requireMissionPlan();
     let runtimeFeature = missionPlan.milestones
       .find((item) => item.id === milestone.id)
       ?.features.find((item) => item.id === feature.id) ?? feature;
 
-    let modelState = resolveFeatureModelState(runtimeFeature, defaultWorkerEngine);
+    let modelState = resolveFeatureModelState(runtimeFeature, selectedWorkerModel);
     if (!runtimeFeature.model) {
       missionPlan = updateFeatureModel(
         missionPlan,
@@ -1047,22 +1058,23 @@ export class Orchestrator {
       runtimeFeature = missionPlan.milestones
         .find((item) => item.id === milestone.id)
         ?.features.find((item) => item.id === feature.id) ?? runtimeFeature;
-      modelState = resolveFeatureModelState(runtimeFeature, defaultWorkerEngine);
+      modelState = resolveFeatureModelState(runtimeFeature, selectedWorkerModel);
       this.emitEvent('manager_decision', 'orchestrator', {
         action: 'feature_model_selected',
         milestoneId: milestone.id,
         featureId: feature.id,
-        model: modelState.model,
+        model: resolveDisplayModel(modelState.model),
         source: 'default',
       });
     }
 
-    const runtimeModel = resolveRuntimeModelForEngine(modelState.model, selectedWorkerModel);
+    const resolvedExecutionModel = resolveModel(modelState.model, selectedWorkerModel);
+    const runtimeModel = resolvedExecutionModel.runtimeModel;
     const executionFeature: Feature = {
       ...runtimeFeature,
       model: modelState.model,
     };
-    this.worker.setRuntimeModel(runtimeModel);
+    this.worker.setRuntimeModel(modelState.model);
 
     let branchName: string | null = null;
     let baseBranch: string | undefined;
@@ -1099,8 +1111,8 @@ export class Orchestrator {
       milestoneId: milestone.id,
       featureId: feature.id,
       branch: branchName,
-      engine: modelState.model,
-      model: runtimeModel,
+      engine: resolvedExecutionModel.engine,
+      model: resolvedExecutionModel.displayModel,
       modelSource: modelState.source,
     });
 
@@ -1135,8 +1147,10 @@ export class Orchestrator {
       return {
         result,
         execution: {
-          engine: modelState.model,
+          engine: resolvedExecutionModel.engine,
           runtimeModel,
+          pricingModel: resolvedExecutionModel.pricingKey,
+          displayModel: resolvedExecutionModel.displayModel,
           source: modelState.source,
         },
       };
@@ -1165,7 +1179,7 @@ export class Orchestrator {
 
     let result = await this.worker.run(workerInput);
     this.watchdog.touch();
-    if (modelState.model === 'codex') {
+    if (resolvedExecutionModel.engine === 'codex') {
       const activeThreadId = this.worker.getActiveThreadId();
       if (activeThreadId) {
         const missionId = this.requireMissionPlan().mission.id ?? this.resolveMissionId();
@@ -1207,8 +1221,10 @@ export class Orchestrator {
     return {
       result,
       execution: {
-        engine: modelState.model,
+        engine: resolvedExecutionModel.engine,
         runtimeModel,
+        pricingModel: resolvedExecutionModel.pricingKey,
+        displayModel: resolvedExecutionModel.displayModel,
         source: modelState.source,
       },
     };
@@ -1274,7 +1290,7 @@ export class Orchestrator {
             description: `Resolve merge conflict for ${branchName}`,
             status: 'pending',
             attempts: 0,
-            model: 'codex',
+            model: CODEX_LATEST_ALIAS,
           }]);
         }
         this.state.gitStrategy = this.state.gitStrategy
@@ -1573,7 +1589,7 @@ export class Orchestrator {
 
   private buildMissionControlState(missionPlan: MissionPlan | null): MissionControlState {
     const assignments = this.modelRouter.getAssignments();
-    const defaultWorkerEngine = normalizeFeatureEngine(assignments.worker.engine);
+    const defaultWorkerModel = normalizeModelName(assignments.worker.model) ?? CODEX_LATEST_ALIAS;
     const elapsedLabel = formatElapsed(this.state.startedAt);
     const activeBranch = this.state.gitStrategy?.activeBranch
       ?? (getCurrentBranch(this.config.cwd) || null);
@@ -1628,7 +1644,7 @@ export class Orchestrator {
       title: milestone.title,
       status: milestone.status,
       features: milestone.features.map((feature) => {
-        const modelState = resolveFeatureModelState(feature, defaultWorkerEngine);
+        const modelState = resolveFeatureModelState(feature, defaultWorkerModel);
         return {
           id: feature.id,
           description: feature.description,
@@ -1655,7 +1671,7 @@ export class Orchestrator {
       missionTitle: missionPlan.mission.goal,
       missionState: missionPlan.state,
       prdPreviewLines: buildPrdPreviewLines(this.state.prd),
-      taskPreviewLines: buildTaskPreviewLines(missionPlan, defaultWorkerEngine),
+      taskPreviewLines: buildTaskPreviewLines(missionPlan, defaultWorkerModel),
       activity,
       elapsedLabel,
       progressLabel,
@@ -1861,7 +1877,7 @@ function buildPrdPreviewLines(prd: string | null): string[] {
 
 function buildTaskPreviewLines(
   missionPlan: MissionPlan,
-  defaultWorkerEngine: 'claude' | 'codex'
+  defaultWorkerModel: string
 ): string[] {
   const lines: string[] = [];
   lines.push('# Structured TASK View');
@@ -1877,10 +1893,10 @@ function buildTaskPreviewLines(
     lines.push(`${asMilestoneCheckbox(milestone.status)} ${milestone.id} ${milestone.title} [${milestone.status}]`);
     for (const feature of milestone.features) {
       const activeMark = missionPlan.activeFeatureId === feature.id ? '>' : ' ';
-      const modelState = resolveFeatureModelState(feature, defaultWorkerEngine);
+      const modelState = resolveFeatureModelState(feature, defaultWorkerModel);
       const badge = toFeatureModelBadge(feature, modelState.source);
       lines.push(
-        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] [${badge}:${modelState.model}] attempts=${feature.attempts} ${feature.description}`
+        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] [${badge}:${resolveDisplayModel(modelState.model)}] attempts=${feature.attempts} ${feature.description}`
       );
     }
     const validationChecks = [
@@ -1924,40 +1940,29 @@ function buildTaskPlanningLines(): string[] {
 type FeatureModelSource = 'explicit' | 'default';
 
 interface FeatureModelState {
-  model: 'claude' | 'codex';
+  model: string;
+  engine: ModelEngine;
   source: FeatureModelSource;
-}
-
-function normalizeFeatureEngine(engine: 'claude' | 'codex'): 'claude' | 'codex' {
-  return engine === 'claude' ? 'claude' : 'codex';
 }
 
 function resolveFeatureModelState(
   feature: Pick<Feature, 'model'>,
-  defaultEngine: 'claude' | 'codex'
+  defaultModel: string
 ): FeatureModelState {
-  if (feature.model === 'claude' || feature.model === 'codex') {
+  const explicitModel = normalizeModelName(feature.model);
+  if (explicitModel) {
     return {
-      model: feature.model,
+      model: explicitModel,
+      engine: resolveModelEngine(explicitModel),
       source: 'explicit',
     };
   }
 
   return {
-    model: defaultEngine,
+    model: normalizeModelName(defaultModel) ?? CODEX_LATEST_ALIAS,
+    engine: resolveModelEngine(defaultModel),
     source: 'default',
   };
-}
-
-function resolveRuntimeModelForEngine(
-  engine: 'claude' | 'codex',
-  selectedWorkerModel: string
-): string {
-  const selectedEngine = isCodexModel(selectedWorkerModel) ? 'codex' : 'claude';
-  if (selectedEngine === engine) {
-    return selectedWorkerModel;
-  }
-  return DEFAULT_ENGINE_MODEL[engine];
 }
 
 function toFeatureModelBadge(

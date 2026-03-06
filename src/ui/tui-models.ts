@@ -1,5 +1,6 @@
 import type { MissionControlState, TUIView, ViewPort } from './tui-views.js';
 import { drawBox, drawTable } from './tui-layout.js';
+import { resolveDisplayModel } from '../models/registry.js';
 
 export const modelsView: TUIView = {
   id: 'models',
@@ -8,7 +9,7 @@ export const modelsView: TUIView = {
     const rows = roles.map((assignment) => [
       assignment.role,
       assignment.engine,
-      assignment.model,
+      resolveDisplayModel(assignment.model),
       assignment.effort,
     ]);
 

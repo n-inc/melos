@@ -1,5 +1,6 @@
 import type { MissionControlState, TUIView, ViewPort } from './tui-views.js';
 import { drawBox, splitColumns } from './tui-layout.js';
+import { resolveDisplayModel } from '../models/registry.js';
 
 function statusIcon(status: string): string {
   switch (status) {
@@ -24,7 +25,7 @@ export const featuresView: TUIView = {
       left.push(`${statusIcon(milestone.status)} ${milestone.id} ${milestone.title}`);
       for (const feature of milestone.features) {
         const modelBadge = feature.model
-          ? `${feature.modelStateSource === 'default' ? 'D' : 'E'}:${feature.model}`
+          ? `${feature.modelStateSource === 'default' ? 'D' : 'E'}:${resolveDisplayModel(feature.model)}`
           : 'U:-';
         left.push(`  ${statusIcon(feature.status)} ${feature.id} [${modelBadge}] ${feature.description}`);
       }
@@ -50,7 +51,7 @@ export const featuresView: TUIView = {
       'Details',
       `Active Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
       `Active Feature: ${activeFeature ? `${activeFeature.id} ${activeFeature.description}` : '-'}`,
-      `Model: ${activeFeature?.model ?? '-'}`,
+      `Model: ${activeFeature?.model ? resolveDisplayModel(activeFeature.model) : '-'}`,
       `Model Source: ${activeFeature?.modelStateSource ?? 'default'}`,
       `Mission State: ${state.missionState}`,
       `Activity: ${state.activity}`,
@@ -61,7 +62,7 @@ export const featuresView: TUIView = {
       ...recentLogLines,
       '',
       'Model badges: E=explicit, D=defaulted, U=unset',
-      'Feature model keys: C=codex A=claude U=unset(active feature)',
+      'Feature model keys: C=gpt-5.4 [Latest] A=claude-opus-4.6 [Latest] U=unset(active feature)',
       '',
       'Hint: Worker execution log is in Workers view (W).',
     ];

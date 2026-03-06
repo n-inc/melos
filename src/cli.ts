@@ -24,6 +24,7 @@ import { loadSnapshot } from './state/snapshot.js';
 import type { MissionEvent } from './state/events.js';
 import type { MissionKernelState } from './state/event-reducer.js';
 import { createRuntimeUI, resolveRuntimeUIMode, type SessionInfo, type TerminalCapabilities } from './ui/tui.js';
+import { CODEX_LATEST_ALIAS, normalizeModelName } from './models/registry.js';
 
 export interface CLIOptions {
   maxIterations?: number;
@@ -994,13 +995,13 @@ function resolveModels(options: CLIOptions, config: MelosConfig): {
   validator: string;
   research: string;
 } {
-  const fallback = options.model ?? 'gpt-5.4';
+  const fallback = normalizeModelName(options.model) ?? CODEX_LATEST_ALIAS;
 
   return {
-    planner: options.plannerModel ?? config.models?.planner ?? fallback,
-    worker: options.workerModel ?? config.models?.worker ?? fallback,
-    validator: options.validatorModel ?? config.models?.validator ?? fallback,
-    research: options.researchModel ?? config.models?.research ?? fallback,
+    planner: normalizeModelName(options.plannerModel ?? config.models?.planner) ?? fallback,
+    worker: normalizeModelName(options.workerModel ?? config.models?.worker) ?? fallback,
+    validator: normalizeModelName(options.validatorModel ?? config.models?.validator) ?? fallback,
+    research: normalizeModelName(options.researchModel ?? config.models?.research) ?? fallback,
   };
 }
 

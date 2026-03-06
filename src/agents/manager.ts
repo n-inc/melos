@@ -16,7 +16,14 @@ import {
   createEmptyValidationContract,
 } from '../state/validation.js';
 import type { CheckType } from '../state/validation.js';
-import { isCodexModel } from '../models/router.js';
+import {
+  CLAUDE_LATEST_ALIAS,
+  CODEX_LATEST_ALIAS,
+  isClaudeFamily,
+  isCodexFamily,
+  normalizeModelName,
+  resolveRuntimeModel,
+} from '../models/registry.js';
 import type {
   Agent,
   AgentMode,
@@ -154,7 +161,7 @@ interface MissionPlanningOutput {
     features: Array<{
       id?: string;
       description: string;
-      model?: 'claude' | 'codex';
+      model?: string;
       checks?: Array<{ text: string; type?: string }>;
     }>;
   }>;
@@ -348,7 +355,7 @@ export class ManagerAgent implements Agent {
       JSON.stringify(failedChecks, null, 2),
       '',
       'Schema:',
-      '[{"description":"...","priority":"high|medium|low","rationale":"...","model":"claude|codex"}]',
+      '[{"description":"...","priority":"high|medium|low","rationale":"...","model":"codex-latest|claude-latest|explicit-model"}]',
     ].join('\n');
 
     const result = await this.executeWithConfiguredEngine(prompt, 'high', {
@@ -380,7 +387,12 @@ export class ManagerAgent implements Agent {
         description,
         priority: priority === 'high' || priority === 'low' ? priority : 'medium',
         rationale: String((candidate as { rationale?: unknown }).rationale ?? '').trim() || undefined,
-        model: (candidate as { model?: unknown }).model === 'claude' ? 'claude' : 'codex',
+        model: resolveFeatureModel(
+          typeof (candidate as { model?: unknown }).model === 'string'
+            ? (candidate as { model?: string }).model
+            : undefined,
+          description
+        ),
       });
     }
 
@@ -583,7 +595,7 @@ export class ManagerAgent implements Agent {
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -594,8 +606,8 @@ export class ManagerAgent implements Agent {
       '- If scope is too large, fold details into phase descriptions and keep executable features compact.',
       '- Each milestone requires validationContract with executable commands where possible',
       '- Feature IDs must follow mX-fY',
-      '- Default feature model is codex (worker runtime default: gpt-5.4)',
-      '- Use model "claude" only for UI creation, UI fixes, styling, layout, or visual design work',
+      '- Default feature model is codex-latest',
+      '- Use model "claude-latest" only for UI creation, UI fixes, styling, layout, or visual design work',
       '',
       'Files already reviewed by system and required for planning coverage:',
       reviewedFilesBlock,
@@ -653,7 +665,7 @@ export class ManagerAgent implements Agent {
         ?? `Fix validation failure: ${failure.checkId}`,
       priority: index === 0 ? 'high' : 'medium',
       rationale: failure.failure?.rootCause,
-      model: 'codex',
+      model: CODEX_LATEST_ALIAS,
     }));
   }
 
@@ -677,7 +689,7 @@ export class ManagerAgent implements Agent {
       const engineOptions: AppServerEngineOptions = {
         cwd: this.config.cwd,
         timeout: timeoutMs,
-        model: this.config.model,
+        model: resolveRuntimeModel(this.config.model, CODEX_LATEST_ALIAS),
         reasoningEffort: this.mapEffortForCodex(effort),
         execMode: true,
         suppressTerminalOutput: this.config.suppressTerminalOutput === true,
@@ -695,7 +707,7 @@ export class ManagerAgent implements Agent {
     const engineOptions: ClaudeEngineOptions = {
       cwd: this.config.cwd,
       timeout: timeoutMs,
-      model: this.config.model,
+      model: resolveRuntimeModel(this.config.model, CLAUDE_LATEST_ALIAS),
       effort,
       skipPermissions: true,
       printMode: true,
@@ -712,7 +724,7 @@ export class ManagerAgent implements Agent {
     if (typeof model !== 'string' || model.trim().length === 0) {
       return true;
     }
-    return isCodexModel(model);
+    return isCodexFamily(model);
   }
 
   private mapEffortForCodex(
@@ -738,21 +750,21 @@ function normalizeCheckType(
   return fallback;
 }
 
-function inferFeatureModel(description: string): 'claude' | 'codex' {
+function inferFeatureModel(description: string): string {
   if (isUiFocusedFeature(description)) {
-    return 'claude';
+    return CLAUDE_LATEST_ALIAS;
   }
-  return 'codex';
+  return CODEX_LATEST_ALIAS;
 }
 
 function resolveFeatureModel(
-  model: 'claude' | 'codex' | undefined,
+  model: string | undefined,
   description: string
-): 'claude' | 'codex' {
+): string {
   if (isUiFocusedFeature(description)) {
-    return 'claude';
+    return CLAUDE_LATEST_ALIAS;
   }
-  return model ?? 'codex';
+  return normalizeModelName(model) ?? CODEX_LATEST_ALIAS;
 }
 
 function isUiFocusedFeature(description: string): boolean {
@@ -1072,7 +1084,7 @@ function normalizePlanningFeature(
   return {
     id: toNonEmptyString(feature.id) ?? undefined,
     description,
-    model: model === 'claude' ? 'claude' : 'codex',
+    model: normalizeModelName(model) ?? CODEX_LATEST_ALIAS,
     checks: normalizePlanningFeatureChecks(feature.checks),
   };
 }
@@ -1121,7 +1133,7 @@ function mergePlanningFeatureChunk(
   const checks = chunk.flatMap((feature) => feature.checks ?? []);
   return {
     description,
-    model: chunk.some((feature) => feature.model === 'claude') ? 'claude' : 'codex',
+    model: chunk.some((feature) => isClaudeFamily(feature.model)) ? CLAUDE_LATEST_ALIAS : CODEX_LATEST_ALIAS,
     checks: checks.length > 0 ? checks.slice(0, 10) : undefined,
   };
 }

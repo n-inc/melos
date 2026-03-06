@@ -1,4 +1,5 @@
 import type { ExecutionMode } from '../state/progress.js';
+import { resolveDisplayModel } from '../models/registry.js';
 
 /**
  * ANSI カラーコード
@@ -321,12 +322,9 @@ export function printIterationHeader(
     lines.push(boxLine(`  ${Colors.DIM}モード${Colors.NC}    ${modeName}`));
   }
 
-  // エンジン表示を構築
-  // codex エンジンの場合、Claude専用モデル名は表示しない（実際には使われないため）
-  const CLAUDE_ONLY_MODELS = ['haiku', 'sonnet', 'opus'];
   let engineDisplay = engine;
-  if (model && !(engine === 'codex' && CLAUDE_ONLY_MODELS.includes(model))) {
-    engineDisplay += ` (${model})`;
+  if (model) {
+    engineDisplay += ` (${resolveDisplayModel(model)})`;
   }
 
   lines.push(

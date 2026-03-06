@@ -35,7 +35,7 @@ export interface RuntimeUIControls {
   onResume?: () => void;
   onSteer?: (instruction: string) => void;
   onCycleModel?: (role: ModelRole) => void;
-  onSetActiveFeatureModel?: (model: 'codex' | 'claude' | null) => void;
+  onSetActiveFeatureModel?: (model: string | null) => void;
 }
 
 export interface RuntimeUI {
@@ -209,10 +209,10 @@ export function createRuntimeUI(
 
     switch (actionType) {
       case 'set_feature_model_codex':
-        controls.onSetActiveFeatureModel?.('codex');
+        controls.onSetActiveFeatureModel?.('codex-latest');
         return true;
       case 'set_feature_model_claude':
-        controls.onSetActiveFeatureModel?.('claude');
+        controls.onSetActiveFeatureModel?.('claude-latest');
         return true;
       case 'clear_feature_model':
         controls.onSetActiveFeatureModel?.(null);
@@ -675,11 +675,11 @@ function buildFrame(
       : options.view === 'models'
         ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker 3 Validator 4 Research`
         : options.view === 'task'
-          ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=Codex A=Claude U=Auto  ↑↓/PgUp/PgDn/Home/End Scroll`
+          ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=gpt-5.4[Latest] A=claude-opus-4.6[Latest] U=Auto  ↑↓/PgUp/PgDn/Home/End Scroll`
           : options.view === 'prd'
             ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  Enter=More`
             : options.view === 'features'
-              ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=Codex A=Claude U=Auto  P Pause  R Resume  Ctrl+G Steer`
+              ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=gpt-5.4[Latest] A=claude-opus-4.6[Latest] U=Auto  P Pause  R Resume  Ctrl+G Steer`
           : options.view === 'workers'
             ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  L Focus  P Pause  R Resume  Ctrl+G Steer`
             : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,

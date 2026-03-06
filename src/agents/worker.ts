@@ -6,7 +6,13 @@ import {
   type AppServerEngineOptions,
 } from '../engines/app-server.js';
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
-import { isCodexModel } from '../models/router.js';
+import {
+  CLAUDE_LATEST_ALIAS,
+  CODEX_LATEST_ALIAS,
+  isClaudeFamily,
+  isCodexFamily,
+  resolveRuntimeModel,
+} from '../models/registry.js';
 import type {
   Agent,
   AgentMode,
@@ -15,8 +21,6 @@ import type {
   WorkerInput,
   WorkerResult,
 } from './types.js';
-
-const DEFAULT_CLAUDE_MODEL = 'opus';
 
 export interface WorkerAgentConfig {
   cwd: string;
@@ -128,8 +132,11 @@ export class WorkerAgent implements Agent {
   }
 
   setRuntimeModel(model: string): void {
+    if (isClaudeFamily(model)) {
+      this.config.claudeModel = model;
+      return;
+    }
     this.config.model = model;
-    this.config.claudeModel = model;
   }
 
   getActiveThreadId(): string | null {
@@ -326,7 +333,7 @@ export class WorkerAgent implements Agent {
 
     return {
       cwd: this.config.cwd,
-      model: this.config.model,
+      model: resolveRuntimeModel(this.config.model, CODEX_LATEST_ALIAS),
       reasoningEffort: this.config.reasoningEffort || 'high',
       execMode: true,
       suppressTerminalOutput: this.config.suppressTerminalOutput === true,
@@ -353,18 +360,14 @@ export class WorkerAgent implements Agent {
   }
 
   private resolveClaudeModel(): string | undefined {
-    const candidate = this.config.claudeModel;
-    if (!candidate || candidate.trim().length === 0) {
-      return DEFAULT_CLAUDE_MODEL;
+    if (!isClaudeFamily(this.config.claudeModel) && isCodexFamily(this.config.claudeModel)) {
+      return resolveRuntimeModel(CLAUDE_LATEST_ALIAS, CLAUDE_LATEST_ALIAS);
     }
-    if (isCodexModel(candidate)) {
-      return DEFAULT_CLAUDE_MODEL;
-    }
-    return candidate;
+    return resolveRuntimeModel(this.config.claudeModel, CLAUDE_LATEST_ALIAS);
   }
 
   private shouldExecuteWithClaude(input: WorkerInput): boolean {
-    return input.feature.model === 'claude';
+    return isClaudeFamily(input.feature.model);
   }
 }
 

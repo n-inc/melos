@@ -737,14 +737,14 @@ describe('Orchestrator v0.8', () => {
       modelRouter: { getModel: (role: 'validator') => string };
     }).modelRouter;
 
-    expect(router.getModel('validator')).toBe('gpt-5.4');
+    expect(router.getModel('validator')).toBe('codex-latest');
     await orchestrator.cycleModel('validator');
-    expect(router.getModel('validator')).toBe('opus');
+    expect(router.getModel('validator')).toBe('claude-latest');
     await orchestrator.cycleModel('validator');
     expect(router.getModel('validator')).toBe('sonnet');
   });
 
-  it('defaults all roles to gpt-5.4 when models are not specified', () => {
+  it('defaults all roles to codex-latest when models are not specified', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-default-models-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
@@ -769,10 +769,10 @@ describe('Orchestrator v0.8', () => {
       modelRouter: { getModel: (role: 'planner' | 'worker' | 'validator' | 'research') => string };
     }).modelRouter;
 
-    expect(router.getModel('planner')).toBe('gpt-5.4');
-    expect(router.getModel('worker')).toBe('gpt-5.4');
-    expect(router.getModel('validator')).toBe('gpt-5.4');
-    expect(router.getModel('research')).toBe('gpt-5.4');
+    expect(router.getModel('planner')).toBe('codex-latest');
+    expect(router.getModel('worker')).toBe('codex-latest');
+    expect(router.getModel('validator')).toBe('codex-latest');
+    expect(router.getModel('research')).toBe('codex-latest');
   });
 
   it('keeps TASK fixed model even after pre-approval worker model switch', async () => {
@@ -872,10 +872,10 @@ describe('Orchestrator v0.8', () => {
     const result = await orchestrator.run();
 
     expect(result.success).toBe(true);
-    expect(workerInputs).toEqual([{ featureModel: 'codex' }]);
-    expect(states.some((state) => state.workerModel === 'opus')).toBe(true);
+    expect(workerInputs).toEqual([{ featureModel: 'codex-latest' }]);
+    expect(states.some((state) => state.workerModel === 'claude-latest')).toBe(true);
     expect(
-      states.some((state) => state.workerRuns.some((run) => run.engine === 'codex' && run.model === 'gpt-5.4'))
+      states.some((state) => state.workerRuns.some((run) => run.engine === 'codex' && run.model === 'gpt-5.4 [Latest]'))
     ).toBe(true);
   });
 
@@ -968,8 +968,8 @@ describe('Orchestrator v0.8', () => {
     const feature = mission.milestones[0]?.features[0] ?? {};
 
     expect(result.success).toBe(true);
-    expect(workerInputs).toEqual([{ featureModel: 'claude' }]);
-    expect(feature.model).toBe('claude');
+    expect(workerInputs).toEqual([{ featureModel: 'claude-latest' }]);
+    expect(feature.model).toBe('claude-latest');
     expect(feature.requestedModel).toBeUndefined();
     expect(feature.effectiveModel).toBeUndefined();
   });

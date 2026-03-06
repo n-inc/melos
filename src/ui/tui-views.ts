@@ -23,7 +23,7 @@ export interface MissionFeatureView {
   description: string;
   status: FeatureStatus;
   attempts: number;
-  model?: 'claude' | 'codex';
+  model?: string;
   modelStateSource?: 'explicit' | 'default';
 }
 

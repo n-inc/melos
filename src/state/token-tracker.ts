@@ -1,4 +1,5 @@
 import { MODEL_PRICING, type ModelPricing } from '../models/pricing.js';
+import { resolveModel } from '../models/registry.js';
 
 export interface TokenUsage {
   input: number;
@@ -10,6 +11,7 @@ export interface TokenUsage {
 export interface TokenUsageEntry {
   role: string;
   model: string;
+  pricingModel?: string;
   input: number;
   output: number;
   cached?: number;
@@ -21,27 +23,29 @@ export interface TokenUsageSnapshot {
 }
 
 export class TokenTracker {
-  private byRole = new Map<string, TokenUsage & { model: string }>();
+  private byRole = new Map<string, TokenUsage & { model: string; pricingModel: string }>();
 
   record(entry: TokenUsageEntry): void {
     const previous = this.byRole.get(entry.role) ?? {
       model: entry.model,
+      pricingModel: entry.pricingModel ?? resolveModel(entry.model).pricingKey,
       input: 0,
       output: 0,
       cached: 0,
       cost: 0,
     };
 
-    const next: TokenUsage & { model: string } = {
+    const next: TokenUsage & { model: string; pricingModel: string } = {
       ...previous,
       model: entry.model,
+      pricingModel: entry.pricingModel ?? previous.pricingModel,
       input: previous.input + Math.max(0, Math.floor(entry.input)),
       output: previous.output + Math.max(0, Math.floor(entry.output)),
       cached: previous.cached + Math.max(0, Math.floor(entry.cached ?? 0)),
       cost: 0,
     };
 
-    next.cost = estimateCost(next.model, next.input, next.output);
+    next.cost = estimateCost(next.pricingModel, next.input, next.output);
     this.byRole.set(entry.role, next);
   }
 
@@ -58,7 +62,18 @@ export class TokenTracker {
   }
 
   getByRole(): Record<string, TokenUsage & { model: string }> {
-    return Object.fromEntries(this.byRole.entries());
+    return Object.fromEntries(
+      Array.from(this.byRole.entries(), ([role, usage]) => [
+        role,
+        {
+          model: usage.model,
+          input: usage.input,
+          output: usage.output,
+          cached: usage.cached,
+          cost: usage.cost,
+        },
+      ])
+    );
   }
 
   getEstimatedCost(): number {

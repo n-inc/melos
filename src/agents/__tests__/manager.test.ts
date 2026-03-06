@@ -535,8 +535,8 @@ describe('ManagerAgent', () => {
     const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
     expect(prompt).toContain('Prefer 2-3 milestones (phases)');
     expect(prompt).toContain('For large implementations, keep phase count compact but allow sufficient features');
-    expect(prompt).toContain('Default feature model is codex (worker runtime default: gpt-5.4)');
-    expect(prompt).toContain('Use model "claude" only for UI creation, UI fixes, styling, layout, or visual design work');
+    expect(prompt).toContain('Default feature model is codex-latest');
+    expect(prompt).toContain('Use model "claude-latest" only for UI creation, UI fixes, styling, layout, or visual design work');
   });
 
   it('forces claude for Japanese UI repair tasks even when planner returns codex', async () => {
@@ -578,7 +578,7 @@ describe('ManagerAgent', () => {
       prd: '# LP refresh',
     });
 
-    expect(plan.milestones[0]?.features[0]?.model).toBe('claude');
+    expect(plan.milestones[0]?.features[0]?.model).toBe('claude-latest');
   });
 
   it('embeds repository context and asks planner to inspect related files before planning', async () => {

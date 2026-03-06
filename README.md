@@ -107,10 +107,10 @@ npx melos cancel
 {
   "maxIterations": 400,
   "models": {
-    "planner": "opus",
-    "worker": "gpt-5.4",
-    "validator": "gpt-5.4",
-    "research": "opus"
+    "planner": "codex-latest",
+    "worker": "codex-latest",
+    "validator": "codex-latest",
+    "research": "claude-latest"
   },
   "git": {
     "enabled": true,

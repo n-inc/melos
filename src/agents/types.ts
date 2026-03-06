@@ -90,7 +90,7 @@ export interface FollowUpFeatureDraft {
   description: string;
   priority: 'high' | 'medium' | 'low';
   rationale?: string;
-  model?: 'claude' | 'codex';
+  model?: string;
 }
 
 export interface Agent {

@@ -1,3 +1,5 @@
+import { isCodexFamily, resolveModelEffort, resolveModelEngine } from './registry.js';
+
 export type ModelRole = 'planner' | 'worker' | 'validator' | 'research';
 
 export interface ModelAssignment {
@@ -17,14 +19,7 @@ export interface ModelRouterConfig {
 }
 
 export function isCodexModel(model: string | undefined | null): boolean {
-  if (typeof model !== 'string') {
-    return false;
-  }
-  const normalized = model.trim().toLowerCase();
-  if (normalized.length === 0) {
-    return false;
-  }
-  return normalized.includes('codex') || normalized === 'gpt-5.4';
+  return isCodexFamily(model);
 }
 
 export class ModelRouter {
@@ -76,27 +71,11 @@ export class ModelRouter {
   }
 
   resolveEngine(model: string): 'claude' | 'codex' {
-    if (isCodexModel(model)) {
-      return 'codex';
-    }
-    return 'claude';
+    return resolveModelEngine(model);
   }
 
   resolveEffort(model: string): string {
-    const normalized = model.toLowerCase();
-    if (isCodexModel(model)) {
-      return 'high';
-    }
-    if (normalized === 'opus') {
-      return 'max';
-    }
-    if (normalized === 'sonnet') {
-      return 'high';
-    }
-    if (normalized === 'haiku') {
-      return 'low';
-    }
-    return 'medium';
+    return resolveModelEffort(model);
   }
 
   getAssignments(): Record<ModelRole, ModelAssignment> {

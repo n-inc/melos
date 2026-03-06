@@ -124,7 +124,7 @@ describe('state/mission', () => {
 
     expect(plan.milestones[0].features).toHaveLength(2);
     expect(plan.milestones[0].features[1]?.id).toBe('m1-f2');
-    expect(plan.milestones[0].features[1]?.model).toBe('codex');
+    expect(plan.milestones[0].features[1]?.model).toBe('codex-latest');
   });
 
   it('rejects legacy TASK array (hard cutover: MissionPlan v3 only)', async () => {
@@ -249,9 +249,9 @@ describe('state/mission', () => {
 
     const loaded = await loadMissionPlan(taskPath);
     expect(loaded.version).toBe(3);
-    expect(loaded.milestones[0]?.features[0]?.model).toBe('claude');
-    expect(loaded.milestones[0]?.features[1]?.model).toBe('codex');
-    expect(loaded.milestones[0]?.features[2]?.model).toBe('codex');
+    expect(loaded.milestones[0]?.features[0]?.model).toBe('claude-latest');
+    expect(loaded.milestones[0]?.features[1]?.model).toBe('codex-latest');
+    expect(loaded.milestones[0]?.features[2]?.model).toBe('codex-latest');
   });
 
   it('writes only model when mission plan is saved', async () => {
@@ -280,7 +280,7 @@ describe('state/mission', () => {
       milestones: Array<{ features: Array<Record<string, unknown>> }>;
     };
     const feature = saved.milestones[0]?.features[0] ?? {};
-    expect(feature.model).toBe('claude');
+    expect(feature.model).toBe('claude-latest');
     expect(feature.requestedModel).toBeUndefined();
     expect(feature.effectiveModel).toBeUndefined();
   });
