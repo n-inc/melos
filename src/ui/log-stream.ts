@@ -253,9 +253,6 @@ function isLowPriorityInfoEntry(entry: FormattedLogEntry): boolean {
   if (entry.message.startsWith('File does not exist.')) {
     return true;
   }
-  if (/^Manager is preparing briefing .* \(\d+s elapsed\)$/.test(entry.message)) {
-    return true;
-  }
   if (entry.message.startsWith('> ')) {
     return true;
   }
@@ -294,9 +291,6 @@ function createExplorationSummaryEntry(entries: FormattedLogEntry[]): FormattedL
   for (const file of summary.missingFiles) {
     noteParts.push(`${file} missing`);
   }
-  if (summary.heartbeatCount > 0) {
-    noteParts.push(formatCount(summary.heartbeatCount, 'progress heartbeat'));
-  }
   if (summary.lowPriorityInfoCount > 0) {
     noteParts.push(formatCount(summary.lowPriorityInfoCount, 'low-priority info'));
   }
@@ -318,7 +312,6 @@ function summarizeExploration(entries: FormattedLogEntry[]): {
   reads: string[];
   searches: string[];
   omittedOutputs: number;
-  heartbeatCount: number;
   missingFiles: string[];
   lowPriorityInfoCount: number;
 } {
@@ -326,7 +319,6 @@ function summarizeExploration(entries: FormattedLogEntry[]): {
   const searches: string[] = [];
   const missingFiles: string[] = [];
   let omittedOutputs = 0;
-  let heartbeatCount = 0;
   let lowPriorityInfoCount = 0;
   let lastRead: string | null = null;
 
@@ -363,10 +355,6 @@ function summarizeExploration(entries: FormattedLogEntry[]): {
       }
       continue;
     }
-    if (/^Manager is preparing briefing .* \(\d+s elapsed\)$/.test(entry.message)) {
-      heartbeatCount += 1;
-      continue;
-    }
     if (entry.message.startsWith('No matches found')) {
       continue;
     }
@@ -383,7 +371,6 @@ function summarizeExploration(entries: FormattedLogEntry[]): {
     reads,
     searches,
     omittedOutputs,
-    heartbeatCount,
     missingFiles,
     lowPriorityInfoCount,
   };

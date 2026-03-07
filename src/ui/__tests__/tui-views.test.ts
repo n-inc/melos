@@ -146,34 +146,6 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Model Source: default');
   });
 
-  it('hides repetitive manager heartbeat lines in overview when richer events exist', () => {
-    const state = createState();
-    state.progressLog = [
-      { timestamp: '2026-02-28T12:00:00.000Z', message: 'Manager started feature briefing for m1-f1' },
-      { timestamp: '2026-02-28T12:00:05.000Z', message: 'Manager is preparing briefing for m1-f1 (5s elapsed)' },
-      { timestamp: '2026-02-28T12:00:07.000Z', message: '[READ] /repo/TASK.json' },
-      { timestamp: '2026-02-28T12:00:10.000Z', message: 'Manager is preparing briefing for m1-f1 (10s elapsed)' },
-    ];
-
-    const lines = overviewView.render({ width: 100, height: 24 }, state).join('\n');
-
-    expect(lines).toContain('[READ] /repo/TASK.json');
-    expect(lines).not.toContain('10s elapsed');
-  });
-
-  it('shows a single heartbeat in features view when no richer event exists yet', () => {
-    const state = createState();
-    state.progressLog = [
-      { timestamp: '2026-02-28T12:00:05.000Z', message: 'Manager is preparing briefing for m1-f1 (5s elapsed)' },
-      { timestamp: '2026-02-28T12:00:10.000Z', message: 'Manager is preparing briefing for m1-f1 (10s elapsed)' },
-    ];
-
-    const lines = featuresView.render({ width: 140, height: 24 }, state).join('\n');
-
-    expect(lines).toContain('12:00:10 Manager is preparing briefing for m1-f1');
-    expect(lines).not.toContain('5s elapsed');
-  });
-
   it('renders workers view table and logs', () => {
     const lines = workersView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('NOW RUNNING');

@@ -64,13 +64,6 @@ describe('ui/log-stream exploration summaries', () => {
         message: 'File does not exist. Note: your current working directory is /repo.',
       },
       {
-        seq: 53,
-        timestamp: '2026-03-03T10:27:41.000Z',
-        actor: 'manager',
-        kind: 'INFO',
-        message: 'Manager is preparing briefing for m1-f1 (5s elapsed)',
-      },
-      {
         seq: 54,
         timestamp: '2026-03-03T10:27:42.000Z',
         actor: 'manager',
@@ -101,20 +94,20 @@ describe('ui/log-stream exploration summaries', () => {
     expect(lines).toContain('#0045 10:27:33 MANAGER    [EXPLORED] 5 files, 3 searches, 1 omitted output');
     expect(lines).toContain('  │ Read: HANDOFF.md, TASK.json, PROGRESS.md, README.md, PRD.md');
     expect(lines).toContain('  │ Search: studentPageContent, students.lp.e2e, [...slug]');
-    expect(lines).toContain('  │ Notes: PRD.md missing, 1 progress heartbeat');
+    expect(lines).toContain('  │ Notes: PRD.md missing');
     expect(lines).not.toContain('120: studentPageContent.ts');
     expect(lines).toContain('#0055 10:27:43 MANAGER    [BASH] npm test -- src/ui/__tests__/tui-views.test.ts --runInBand');
     expect(lines).toContain('#0056 10:27:44 MANAGER    [WARN] [worker] m1-f1: manual verification is still required');
   });
 
-  it('drops heartbeat-only low-priority groups instead of rendering empty summaries', () => {
+  it('drops low-priority info-only groups instead of rendering empty summaries', () => {
     const lines = formatLogStreamLines([
       {
         seq: 1,
         timestamp: '2026-03-03T10:27:33.000Z',
         actor: 'manager',
         kind: 'INFO',
-        message: 'Manager is preparing briefing for m1-f1 (5s elapsed)',
+        message: 'No matches found',
       },
       {
         seq: 2,
