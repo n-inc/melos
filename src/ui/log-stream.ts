@@ -128,7 +128,8 @@ export function summarizeLowPriorityLogEntries(
 
   for (const entry of entries) {
     const normalizedEntry = toFormattedLogEntry(entry);
-    if (!isLowPriorityLogEntry(normalizedEntry)) {
+    const absorbIntoExploration = shouldAbsorbExplorationCompletion(normalizedEntry, buffer);
+    if (!absorbIntoExploration && !isLowPriorityLogEntry(normalizedEntry)) {
       flush();
       summarized.push(normalizedEntry);
       continue;
@@ -142,6 +143,22 @@ export function summarizeLowPriorityLogEntries(
 
   flush();
   return summarized;
+}
+
+function shouldAbsorbExplorationCompletion(
+  entry: FormattedLogEntry,
+  buffer: FormattedLogEntry[]
+): boolean {
+  if (buffer.length === 0) {
+    return false;
+  }
+  if (entry.actor !== buffer[0]?.actor) {
+    return false;
+  }
+  if (entry.kind.trim().toUpperCase() !== 'DONE') {
+    return false;
+  }
+  return /^exit=0 \d+ms$/.test(entry.message);
 }
 
 export function actorName(actor: LogActor): string {

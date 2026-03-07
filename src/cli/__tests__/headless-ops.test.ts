@@ -388,13 +388,21 @@ describe('cli headless operations', () => {
         {
           seq: 4,
           type: 'manager_decision',
+          timestamp: '2026-03-03T00:00:04.500Z',
+          iteration: 0,
+          agent: 'manager',
+          payload: { message: '[DONE] exit=0 52ms' },
+        },
+        {
+          seq: 5,
+          type: 'manager_decision',
           timestamp: '2026-03-03T00:00:05.000Z',
           iteration: 0,
           agent: 'manager',
           payload: { message: '[INFO] verbose tool output omitted (3797 chars)' },
         },
         {
-          seq: 5,
+          seq: 6,
           type: 'command_executed',
           timestamp: '2026-03-03T00:00:06.000Z',
           iteration: 1,
@@ -416,11 +424,12 @@ describe('cli headless operations', () => {
       summarizeExploration: true,
     });
 
-    expect(logs.entries).toHaveLength(5);
+    expect(logs.entries).toHaveLength(6);
     expect(plainLines).toContain('#0001 00:00:01 MANAGER    [EXPLORED] 1 file, 3 searches, 1 omitted output');
     expect(plainLines).toContain('  │ Read: AGENTS.md');
     expect(plainLines).toContain('  │ Search: studentPageContent, students.lp.e2e, [...slug]');
-    expect(plainLines).toContain('#0005 00:00:06 WORKER     [BASH] npm test');
+    expect(plainLines).not.toContain('exit=0 52ms');
+    expect(plainLines).toContain('#0006 00:00:06 WORKER     [BASH] npm test');
   });
 
   it('returns empty logs payload when events.jsonl is missing', async () => {

@@ -46,6 +46,13 @@ describe('ui/log-stream exploration summaries', () => {
         message: 'rg -n "studentPageContent|students\\.lp\\.e2e|\\[\\.\\.\\.slug\\]" src tests pages',
       },
       {
+        seq: 50.5,
+        timestamp: '2026-03-03T10:27:38.500Z',
+        actor: 'manager',
+        kind: 'DONE',
+        message: 'exit=0 52ms',
+      },
+      {
         seq: 51,
         timestamp: '2026-03-03T10:27:39.000Z',
         actor: 'manager',
@@ -95,6 +102,7 @@ describe('ui/log-stream exploration summaries', () => {
     expect(lines).toContain('  │ Read: HANDOFF.md, TASK.json, PROGRESS.md, README.md, PRD.md');
     expect(lines).toContain('  │ Search: studentPageContent, students.lp.e2e, [...slug]');
     expect(lines).toContain('  │ Notes: PRD.md missing');
+    expect(lines).not.toContain('exit=0 52ms');
     expect(lines).not.toContain('120: studentPageContent.ts');
     expect(lines).toContain('#0055 10:27:43 MANAGER    [BASH] npm test -- src/ui/__tests__/tui-views.test.ts --runInBand');
     expect(lines).toContain('#0056 10:27:44 MANAGER    [WARN] [worker] m1-f1: manual verification is still required');
