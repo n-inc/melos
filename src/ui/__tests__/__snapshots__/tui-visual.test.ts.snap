@@ -12,16 +12,16 @@ exports[`ui/tui visual snapshots awaiting approval frame snapshot (input require
 ║ State      awaiting_approval                            │ ○ m2 Validation                      … ║
 ║ Activity   Running m1-f2...                             │  ○ m2-f1 Run validations             … ║
 ║ Progress   2/4 (50%)                                    │                                      … ║
-║ Branch     melos/mission/m1-f2                          │ RECENT EVENTS                        … ║
+║ Branch     melos/mission/m1-f2                          │ QA CHECKS                            … ║
+║                                                         │ Summary: 0/1 passed, 0 failed, 1 pend… ║
+║ Expected Behavior                                       │ ○ m1-qa-overview Capture before scree… ║
+║   Implement parser and CLI options                      │                                      … ║
+║                                                         │ RECENT EVENTS                        … ║
 ║                                                         │ Approval pending (press y to start)  … ║
-║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
-║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
+║                                                         │ 09:00:00 mission run started         … ║
+║                                                         │ 09:00:05 Planning mission...         … ║
 ║                                                         │ 09:00:10 worker #1 started           … ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
-
-
-
-
 
 
 
@@ -77,16 +77,16 @@ exports[`ui/tui visual snapshots narrow terminal snapshot (80x24) 1`] = `
 ║ Milestone  m1 Core                          │ ○ m2 Validation              … ║
 ║ State      running                          │  ○ m2-f1 Run validations     … ║
 ║ Activity   Running m1-f2...                 │                              … ║
-║ Progress   2/4 (50%)                        │ RECENT EVENTS                … ║
-║ Branch     melos/mission/m1-f2              │ Detailed logs are available i… ║
+║ Progress   2/4 (50%)                        │ QA CHECKS                    … ║
+║ Branch     melos/mission/m1-f2              │ Summary: 0/1 passed, 0 failed… ║
+║                                             │ ○ m1-qa-overview Capture befo… ║
+║ Expected Behavior                           │                              … ║
+║   Implement parser and CLI options          │ RECENT EVENTS                … ║
+║                                             │ Detailed logs are available i… ║
 ║                                             │ 09:00:00 mission run started … ║
-║ Expected Behavior                           │ 09:00:05 Planning mission... … ║
-║   Implement parser and CLI options          │ 09:00:10 worker #1 started   … ║
+║                                             │ 09:00:05 Planning mission... … ║
+║                                             │ 09:00:10 worker #1 started   … ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
-
-
-
-
 
 
 Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc …
@@ -105,16 +105,16 @@ exports[`ui/tui visual snapshots overview frame snapshot 1`] = `
 ║ State      running                                      │ ○ m2 Validation                      … ║
 ║ Activity   Running m1-f2...                             │  ○ m2-f1 Run validations             … ║
 ║ Progress   2/4 (50%)                                    │                                      … ║
-║ Branch     melos/mission/m1-f2                          │ RECENT EVENTS                        … ║
+║ Branch     melos/mission/m1-f2                          │ QA CHECKS                            … ║
+║                                                         │ Summary: 0/1 passed, 0 failed, 1 pend… ║
+║ Expected Behavior                                       │ ○ m1-qa-overview Capture before scree… ║
+║   Implement parser and CLI options                      │                                      … ║
+║                                                         │ RECENT EVENTS                        … ║
 ║                                                         │ Detailed logs are available in Logs v… ║
-║ Expected Behavior                                       │ 09:00:00 mission run started         … ║
-║   Implement parser and CLI options                      │ 09:00:05 Planning mission...         … ║
+║                                                         │ 09:00:00 mission run started         … ║
+║                                                         │ 09:00:05 Planning mission...         … ║
 ║                                                         │ 09:00:10 worker #1 started           … ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════════════╝
-
-
-
-
 
 
 

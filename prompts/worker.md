@@ -19,7 +19,7 @@
 2. feature のスコープ外は実装しない
 3. 後方互換レイヤーを作らない
 4. テスト・lint・typecheck を意識して実装する
-5. 失敗時は原因を `discoveredFeatures` と `summary` へ明記する
+5. 失敗時は原因を `summary` へ明記する
 6. `implementation` / `review_remediation` feature で `currentBranch` / `baseBranch` が渡された場合にだけ、完了時にコミットを作成する
 7. コミット作成時は `git-committer` スキルの手順に従う（規約準拠の commit message を使う）
    - スキル参照先: `.claude/skills/git-committer/SKILL.md`

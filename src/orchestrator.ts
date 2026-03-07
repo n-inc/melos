@@ -1355,7 +1355,6 @@ export class Orchestrator {
           typecheckPassed: false,
         },
         checks: [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -2895,6 +2894,14 @@ export class Orchestrator {
           modelStateSource: modelState.source,
         };
       }),
+      qaChecks: (milestone.validationContract.qaChecks ?? []).map((check) => ({
+        id: check.id,
+        description: check.description,
+        passed: check.passed,
+        failureCount: check.failureCount,
+        requiredRunner: check.requiredRunner,
+        requiredArtifacts: check.requiredArtifacts,
+      })),
     }));
 
     const totalFeatures = missionPlan.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);

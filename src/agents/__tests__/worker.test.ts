@@ -107,7 +107,6 @@ describe('WorkerAgent', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: ['learn'],
           requestsHelp: false,
         })}\n\`\`\``,
@@ -131,7 +130,7 @@ describe('WorkerAgent', () => {
     const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
       .mockResolvedValue({
         success: true,
-        output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+        output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"learnings":[],"requestsHelp":false}\n```',
         exitCode: 0,
       });
 
@@ -157,7 +156,7 @@ describe('WorkerAgent', () => {
     const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
       .mockResolvedValue({
         success: true,
-        output: '```json\n{"status":"SUCCESS","summary":"qa done","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":false,"typecheckPassed":false},"checks":[{"checkId":"m1-qa-1","passed":true,"runner":"playwright-interactive","screenshotPath":"artifacts/screenshots/hero.png"}],"warnings":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+        output: '```json\n{"status":"SUCCESS","summary":"qa done","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":false,"typecheckPassed":false},"checks":[{"checkId":"m1-qa-1","passed":true,"runner":"playwright-interactive","screenshotPath":"artifacts/screenshots/hero.png"}],"warnings":[],"learnings":[],"requestsHelp":false}\n```',
         exitCode: 0,
       });
 
@@ -235,7 +234,7 @@ describe('WorkerAgent', () => {
       claudeEngine: { execute: (...args: unknown[]) => Promise<unknown> };
     }).claudeEngine, 'execute').mockResolvedValue({
       success: true,
-      output: '```json\n{"status":"SUCCESS","summary":"pr updated","warnings":[],"filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"pullRequest":{"number":12,"url":"https://github.com/example/repo/pull/12","title":"feat: update","baseBranch":"main","headBranch":"melos/mission-test/mission","draft":false,"action":"updated"},"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+      output: '```json\n{"status":"SUCCESS","summary":"pr updated","warnings":[],"filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"pullRequest":{"number":12,"url":"https://github.com/example/repo/pull/12","title":"feat: update","baseBranch":"main","headBranch":"melos/mission-test/mission","draft":false,"action":"updated"},"learnings":[],"requestsHelp":false}\n```',
       exitCode: 0,
     });
 
@@ -302,7 +301,6 @@ describe('WorkerAgent', () => {
           lastExternalActivityAt: '2026-03-07T09:00:00.000Z',
           quietUntil: '2026-03-07T09:30:00.000Z',
         },
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
       })}\n\`\`\``,
@@ -346,7 +344,7 @@ describe('WorkerAgent', () => {
       const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
         .mockResolvedValue({
           success: true,
-          output: '```json\n{"status":"SUCCESS","summary":"ok","warnings":[],"filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+          output: '```json\n{"status":"SUCCESS","summary":"ok","warnings":[],"filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"learnings":[],"requestsHelp":false}\n```',
           exitCode: 0,
         });
 
@@ -388,7 +386,7 @@ describe('WorkerAgent', () => {
       const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
         .mockResolvedValue({
           success: true,
-          output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+          output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"learnings":[],"requestsHelp":false}\n```',
           exitCode: 0,
         });
 
@@ -428,7 +426,7 @@ describe('WorkerAgent', () => {
     const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
       .mockResolvedValue({
         success: true,
-        output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+        output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"learnings":[],"requestsHelp":false}\n```',
         exitCode: 0,
       });
 
@@ -488,7 +486,7 @@ describe('WorkerAgent', () => {
     const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
       .mockResolvedValue({
         success: true,
-        output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+        output: '```json\n{"status":"SUCCESS","summary":"ok","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"learnings":[],"requestsHelp":false}\n```',
         exitCode: 0,
       });
 
@@ -549,7 +547,6 @@ describe('WorkerAgent', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
         })}\n\`\`\``,
@@ -638,7 +635,6 @@ describe('WorkerAgent', () => {
               passed: true,
             },
           ],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
         })}\n\`\`\``,
@@ -667,79 +663,6 @@ describe('WorkerAgent', () => {
         screenshotPath: 'artifacts/screenshots/browser.png',
         videoUrl: 'https://example.com/session.webm',
       },
-    ]);
-  });
-
-  it('normalizes discoveredFeatures when worker returns string entries', async () => {
-    const agent = new WorkerAgent({
-      cwd: process.cwd(),
-      promptsDir: 'prompts',
-      model: 'gpt-5.4',
-    });
-    jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
-      .mockResolvedValue({
-        success: true,
-        output: `\`\`\`json\n${JSON.stringify({
-          status: 'SUCCESS',
-          summary: 'ok',
-          warnings: [],
-          filesChanged: [],
-          validation: {
-            testsRun: false,
-            testsPassed: 0,
-            testsFailed: 0,
-            lintPassed: true,
-            typecheckPassed: true,
-          },
-          checks: [],
-          discoveredFeatures: [
-            'Add FAQ copy for students',
-            { description: 'Tune hero message match', priority: 'high', rationale: 'Improve CTR' },
-            '',
-          ],
-          learnings: [],
-          requestsHelp: false,
-        })}\n\`\`\``,
-        exitCode: 0,
-      });
-
-    const plan = createMissionPlan({
-      goal: 'Sample goal',
-      milestones: [
-        {
-          id: 'm1',
-          title: 'M1',
-          description: 'desc',
-          order: 1,
-          status: 'pending',
-          validationContract: {
-            staticChecks: [],
-            testSuites: [],
-          },
-          features: [
-            {
-              id: 'm1-f1',
-              description: 'feature',
-              status: 'pending',
-              attempts: 0,
-              model: 'codex',
-            },
-          ],
-        },
-      ],
-    });
-
-    const result = await agent.run({
-      iteration: 1,
-      missionPlan: plan,
-      milestone: plan.milestones[0],
-      feature: plan.milestones[0].features[0],
-      prd: '# PRD',
-    });
-
-    expect(result.report.discoveredFeatures).toEqual([
-      { description: 'Add FAQ copy for students', priority: 'medium' },
-      { description: 'Tune hero message match', priority: 'high', rationale: 'Improve CTR' },
     ]);
   });
 

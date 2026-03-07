@@ -349,7 +349,6 @@ export class WorkerAgent implements Agent {
           draft: false,
           action: 'created',
         },
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
       }, null, 2),
@@ -411,7 +410,6 @@ export class WorkerAgent implements Agent {
           lastExternalActivityAt: '2026-03-07T09:00:00.000Z',
           quietUntil: '2026-03-07T09:30:00.000Z',
         },
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
       }, null, 2),
@@ -504,7 +502,6 @@ export class WorkerAgent implements Agent {
         },
         checks: [],
         warnings: ['describe any fallback, unverified scope, or required user follow-up'],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
       }, null, 2),
@@ -586,7 +583,6 @@ export class WorkerAgent implements Agent {
           },
         ],
         warnings: ['describe any fallback or caveat that affected the QA run'],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
       }, null, 2),
@@ -694,7 +690,6 @@ export class WorkerAgent implements Agent {
         typecheckPassed: false,
       },
       checks: [],
-      discoveredFeatures: [],
       learnings: [],
       requestsHelp: false,
       createdAt: new Date().toISOString(),
@@ -759,9 +754,6 @@ export class WorkerAgent implements Agent {
             findings,
             artifacts,
           };
-        }
-        if (Array.isArray(parsed.discoveredFeatures)) {
-          report.discoveredFeatures = normalizeDiscoveredFeatures(parsed.discoveredFeatures);
         }
         if (Array.isArray(parsed.learnings)) {
           report.learnings = parsed.learnings.filter((item): item is string => typeof item === 'string');
@@ -1096,36 +1088,4 @@ function normalizeWarnings(value: unknown): string[] {
     .filter((item): item is string => typeof item === 'string')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
-}
-
-function normalizeDiscoveredFeatures(value: unknown): WorkerFeatureReport['discoveredFeatures'] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.flatMap((item) => {
-    if (typeof item === 'string') {
-      const description = item.trim();
-      return description.length > 0
-        ? [{ description, priority: 'medium' as const }]
-        : [];
-    }
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      return [];
-    }
-
-    const description = typeof item.description === 'string' ? item.description.trim() : '';
-    if (description.length === 0) {
-      return [];
-    }
-
-    const priority = item.priority === 'high' || item.priority === 'medium' || item.priority === 'low'
-      ? item.priority
-      : 'medium';
-    const rationale = typeof item.rationale === 'string' && item.rationale.trim().length > 0
-      ? item.rationale.trim()
-      : undefined;
-
-    return [{ description, priority, rationale }];
-  });
 }

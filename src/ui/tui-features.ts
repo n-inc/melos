@@ -18,6 +18,16 @@ function statusIcon(status: string): string {
   }
 }
 
+function qaStatusIcon(passed: boolean, failureCount: number): string {
+  if (passed) {
+    return '✓';
+  }
+  if (failureCount > 0) {
+    return '✗';
+  }
+  return '○';
+}
+
 export const featuresView: TUIView = {
   id: 'features',
   render(viewport: ViewPort, state: MissionControlState): string[] {
@@ -35,6 +45,10 @@ export const featuresView: TUIView = {
 
     const activeMilestone = state.milestones.find((milestone) => milestone.id === state.activeMilestoneId) ?? null;
     const activeFeature = activeMilestone?.features.find((feature) => feature.id === state.activeFeatureId) ?? null;
+    const activeQaChecks = activeMilestone?.qaChecks ?? [];
+    const qaPassed = activeQaChecks.filter((check) => check.passed).length;
+    const qaFailed = activeQaChecks.filter((check) => !check.passed && check.failureCount > 0).length;
+    const qaPending = activeQaChecks.length - qaPassed - qaFailed;
     const recentLogLines = selectRecentProgressEntries(state.progressLog, 6)
       .map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
     if (recentLogLines.length === 0) {
@@ -47,15 +61,30 @@ export const featuresView: TUIView = {
         ? 'Log mode: worker stream in Workers view (W)'
         : 'Log mode: mission event history';
 
+    const qaLines = activeQaChecks.length > 0
+      ? activeQaChecks.flatMap((check) => {
+        const runner = check.requiredRunner ?? '-';
+        const artifacts = check.requiredArtifacts?.join('/') ?? '-';
+        return [
+          `${qaStatusIcon(check.passed, check.failureCount)} ${check.id} ${check.description}`,
+          `   runner=${runner} artifacts=${artifacts}`,
+        ];
+      })
+      : ['-'];
+
     const right = [
       'Details',
       `Active Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
       `Active Feature: ${activeFeature ? `${activeFeature.id} ${activeFeature.description}` : '-'}`,
       `Model: ${activeFeature?.model ? resolveDisplayModel(activeFeature.model) : '-'}`,
       `Model Source: ${activeFeature?.modelStateSource ?? 'default'}`,
+      `QA Summary: ${activeQaChecks.length > 0 ? `${qaPassed}/${activeQaChecks.length} passed, ${qaFailed} failed, ${qaPending} pending` : '-'}`,
       `Mission State: ${state.missionState}`,
       `Activity: ${state.activity}`,
       `Progress: ${state.progressLabel}`,
+      '',
+      'QA Checks',
+      ...qaLines,
       '',
       'Recent Log (events)',
       logModeLine,

@@ -26,11 +26,21 @@ export interface MissionFeatureView {
   modelStateSource?: 'explicit' | 'default';
 }
 
+export interface MissionQaCheckView {
+  id: string;
+  description: string;
+  passed: boolean;
+  failureCount: number;
+  requiredRunner?: string;
+  requiredArtifacts?: string[];
+}
+
 export interface MissionMilestoneView {
   id: string;
   title: string;
   status: MilestoneStatus;
   features: MissionFeatureView[];
+  qaChecks?: MissionQaCheckView[];
 }
 
 export interface MissionControlState {

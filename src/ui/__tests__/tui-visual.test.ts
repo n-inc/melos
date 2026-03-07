@@ -38,6 +38,16 @@ function createState(): MissionControlState {
           { id: 'm1-f1', description: 'Read files', status: 'done', attempts: 1 },
           { id: 'm1-f2', description: 'Implement parser and CLI options', status: 'in_progress', attempts: 2 },
         ],
+        qaChecks: [
+          {
+            id: 'm1-qa-overview',
+            description: 'Capture before screenshot to artifacts/screenshots/m1-qa-overview-before.png before the first repo-tracked file edit, then capture after screenshot to artifacts/screenshots/m1-qa-overview-after.png for the updated parser panel.',
+            passed: false,
+            failureCount: 0,
+            requiredRunner: 'playwright-interactive',
+            requiredArtifacts: ['screenshot'],
+          },
+        ],
       },
       {
         id: 'm2',

@@ -44,6 +44,16 @@ function createState(): MissionControlState {
           { id: 'm2-f3', description: 'Auth middleware', status: 'in_progress', attempts: 2 },
           { id: 'm2-f4', description: 'Token refresh', status: 'pending', attempts: 0 },
         ],
+        qaChecks: [
+          {
+            id: 'm2-qa-auth',
+            description: 'Capture before screenshot to artifacts/screenshots/m2-qa-auth-before.png before the first repo-tracked file edit, then capture after screenshot to artifacts/screenshots/m2-qa-auth-after.png after the auth middleware UI state is updated.',
+            passed: false,
+            failureCount: 0,
+            requiredRunner: 'playwright-interactive',
+            requiredArtifacts: ['screenshot'],
+          },
+        ],
       },
     ],
     progressLog: [
@@ -83,6 +93,8 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Overview');
     expect(lines).toContain('MISSION SUMMARY');
     expect(lines).toContain('FEATURES');
+    expect(lines).toContain('QA CHECKS');
+    expect(lines).toContain('m2-qa-auth');
     expect(lines).toContain('RECENT EVENTS');
     expect(lines).not.toContain('Active Worker');
     expect(lines).not.toContain('Execute npm test -- auth');
@@ -144,6 +156,9 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Active Feature: m2-f3 Auth middleware');
     expect(lines).toContain('Model: -');
     expect(lines).toContain('Model Source: default');
+    expect(lines).toContain('QA Summary: 0/1 passed');
+    expect(lines).toContain('m2-qa-auth');
+    expect(lines).toContain('runner=playwright-interactive');
   });
 
   it('renders workers view table and logs', () => {

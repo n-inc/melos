@@ -28,11 +28,22 @@ function wrapByCharCount(text: string, maxChars: number): string[] {
   return out;
 }
 
+function qaStatusIcon(passed: boolean, failureCount: number): string {
+  if (passed) {
+    return '✓';
+  }
+  if (failureCount > 0) {
+    return '✗';
+  }
+  return '○';
+}
+
 export const overviewView: TUIView = {
   id: 'overview',
   render(viewport: ViewPort, state: MissionControlState): string[] {
     const activeMilestone = state.milestones.find((milestone) => milestone.id === state.activeMilestoneId) ?? null;
     const activeFeature = activeMilestone?.features.find((feature) => feature.id === state.activeFeatureId) ?? null;
+    const activeQaChecks = activeMilestone?.qaChecks ?? [];
     const activeFeatureLabel = activeFeature
       ? `${activeFeature.id} ${activeFeature.description}`
       : '-';
@@ -82,6 +93,19 @@ export const overviewView: TUIView = {
       progressLines.push(state.activity || 'No events yet');
     }
 
+    const qaPassed = activeQaChecks.filter((check) => check.passed).length;
+    const qaFailed = activeQaChecks.filter((check) => !check.passed && check.failureCount > 0).length;
+    const qaPending = activeQaChecks.length - qaPassed - qaFailed;
+    const qaLines = activeQaChecks.length > 0
+      ? [
+        'QA CHECKS',
+        `Summary: ${qaPassed}/${activeQaChecks.length} passed, ${qaFailed} failed, ${qaPending} pending`,
+        ...activeQaChecks.slice(0, 3).map((check) => `${qaStatusIcon(check.passed, check.failureCount)} ${check.id} ${check.description}`),
+        ...(activeQaChecks.length > 3 ? [`... +${activeQaChecks.length - 3} more`] : []),
+        '',
+      ]
+      : [];
+
     const logModeLine = state.missionState === 'awaiting_approval'
       ? 'Approval pending (press y to start)'
       : state.missionState === 'running'
@@ -92,6 +116,7 @@ export const overviewView: TUIView = {
       'FEATURES',
       ...(featureLines.length > 0 ? featureLines : ['-']),
       '',
+      ...qaLines,
       'RECENT EVENTS',
       logModeLine,
       ...progressLines,

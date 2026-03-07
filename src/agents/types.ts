@@ -47,11 +47,6 @@ export interface WorkerFeatureReport {
     findings: ReviewFinding[];
     artifacts: ReviewArtifact[];
   };
-  discoveredFeatures: Array<{
-    description: string;
-    priority: 'high' | 'medium' | 'low';
-    rationale?: string;
-  }>;
   learnings: string[];
   requestsHelp: boolean;
   createdAt: string;

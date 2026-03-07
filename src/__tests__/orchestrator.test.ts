@@ -75,7 +75,6 @@ describe('Orchestrator v0.8', () => {
           typecheckPassed: true,
         },
         checks: [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -268,7 +267,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -302,7 +300,6 @@ describe('Orchestrator v0.8', () => {
               { kind: 'screenshot', path: 'artifacts/screenshots/home.png', label: 'Home' },
             ],
           },
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -334,7 +331,6 @@ describe('Orchestrator v0.8', () => {
             findings: [],
             artifacts: [],
           },
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -474,7 +470,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -516,7 +511,6 @@ describe('Orchestrator v0.8', () => {
             ],
             artifacts: [],
           },
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -540,7 +534,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -572,7 +565,6 @@ describe('Orchestrator v0.8', () => {
             findings: [],
             artifacts: [],
           },
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -604,7 +596,6 @@ describe('Orchestrator v0.8', () => {
             findings: [],
             artifacts: [],
           },
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -724,7 +715,6 @@ describe('Orchestrator v0.8', () => {
           typecheckPassed: true,
         },
         checks: [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -855,7 +845,6 @@ describe('Orchestrator v0.8', () => {
           typecheckPassed: true,
         },
         checks: [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -966,7 +955,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -990,7 +978,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -1092,7 +1079,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -1116,7 +1102,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -1255,7 +1240,6 @@ describe('Orchestrator v0.8', () => {
             },
           ]
           : [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -1382,7 +1366,6 @@ describe('Orchestrator v0.8', () => {
             },
           ]
           : [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -1507,7 +1490,6 @@ describe('Orchestrator v0.8', () => {
             },
           ]
           : [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -1621,7 +1603,6 @@ describe('Orchestrator v0.8', () => {
             },
           ]
           : [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -1744,7 +1725,6 @@ describe('Orchestrator v0.8', () => {
             },
           ]
           : [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -1853,7 +1833,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -1961,7 +1940,6 @@ describe('Orchestrator v0.8', () => {
           typecheckPassed: true,
         },
         checks: [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -2293,7 +2271,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -2322,100 +2299,6 @@ describe('Orchestrator v0.8', () => {
     expect(result.success).toBe(true);
     expect(result.reason).toBe('completed');
     expect(existsSync(passFlagPath)).toBe(true);
-  });
-
-  it('does not append TASK features from worker discoveredFeatures', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-worker-discovered-'));
-    const melosDir = join(cwd, '.melos');
-    mkdirSync(melosDir, { recursive: true });
-
-    const prdPath = join(cwd, 'PRD.md');
-    const missionPath = join(cwd, 'TASK.json');
-    writeFileSync(prdPath, '# Worker discovered features\n', 'utf-8');
-
-    const planned = createMissionPlan({
-      missionId: 'worker-discovered',
-      goal: 'Ignore worker discovered features for TASK growth',
-      constraints: ['No backward compatibility'],
-      successCriteria: ['Mission completes without appending follow-ups'],
-      milestones: [
-        {
-          id: 'm1',
-          title: 'Milestone 1',
-          description: 'Execute single feature',
-          order: 1,
-          status: 'pending',
-          validationContract: {
-            staticChecks: [],
-            testSuites: [],
-          },
-          features: [
-            {
-              id: 'm1-f1',
-              description: 'Initial feature',
-              status: 'pending',
-              attempts: 0,
-              model: 'codex',
-            },
-          ],
-        },
-      ],
-      state: 'planning',
-    });
-
-    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
-    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
-    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
-      type: 'success',
-      report: {
-        iteration: 1,
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
-        status: 'SUCCESS',
-        summary: 'done',
-        warnings: [],
-        filesChanged: [],
-        validation: {
-          testsRun: true,
-          testsPassed: 1,
-          testsFailed: 0,
-          lintPassed: true,
-          typecheckPassed: true,
-        },
-        checks: [],
-        discoveredFeatures: [
-          { description: 'This should stay in the report only', priority: 'high', rationale: 'Do not append' },
-        ],
-        learnings: [],
-        requestsHelp: false,
-        createdAt: new Date().toISOString(),
-      },
-    });
-
-    const orchestrator = new Orchestrator({
-      cwd,
-      maxIterations: 10,
-      prdFile: prdPath,
-      missionFile: missionPath,
-      melosDir,
-      autoApprove: true,
-      interactivePlanning: false,
-      dryRun: false,
-      resume: false,
-      execution: {
-        retryInitialDelayMs: 0,
-        retryMaxDelayMs: 0,
-      },
-    });
-
-    const result = await orchestrator.run();
-
-    expect(result.success).toBe(true);
-    const saved = JSON.parse(readFileSync(missionPath, 'utf-8')) as {
-      milestones: Array<{ features: Array<{ id: string; description: string }> }>;
-    };
-    expect(saved.milestones[0]?.features).toHaveLength(1);
-    expect(saved.milestones[0]?.features[0]?.id).toBe('m1-f1');
   });
 
   it('merges validation follow-up into existing unfinished feature by trackingKey', async () => {
@@ -2503,7 +2386,6 @@ describe('Orchestrator v0.8', () => {
               typecheckPassed: true,
             },
             checks: [],
-            discoveredFeatures: [],
             learnings: [],
             requestsHelp: false,
             createdAt: new Date().toISOString(),
@@ -2530,7 +2412,6 @@ describe('Orchestrator v0.8', () => {
               typecheckPassed: true,
             },
             checks: [],
-            discoveredFeatures: [],
             learnings: [],
             requestsHelp: false,
             createdAt: new Date().toISOString(),
@@ -2556,7 +2437,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -2846,7 +2726,6 @@ describe('Orchestrator v0.8', () => {
           typecheckPassed: true,
         },
         checks: [],
-        discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
@@ -2993,7 +2872,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -3097,7 +2975,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -3184,7 +3061,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -3272,7 +3148,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -3370,7 +3245,6 @@ describe('Orchestrator v0.8', () => {
             typecheckPassed: true,
           },
           checks: [],
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
@@ -3499,7 +3373,6 @@ describe('Orchestrator v0.8', () => {
               typecheckPassed: true,
             },
             checks: [],
-            discoveredFeatures: [],
             learnings: [],
             requestsHelp: false,
             createdAt: new Date().toISOString(),
@@ -3534,7 +3407,6 @@ describe('Orchestrator v0.8', () => {
               findings: [],
               artifacts: [],
             },
-            discoveredFeatures: [],
             learnings: [],
             requestsHelp: false,
             createdAt: new Date().toISOString(),
@@ -3571,7 +3443,6 @@ describe('Orchestrator v0.8', () => {
               action: 'created',
               updatedAt: new Date().toISOString(),
             },
-            discoveredFeatures: [],
             learnings: [],
             requestsHelp: false,
             createdAt: new Date().toISOString(),
@@ -3612,7 +3483,6 @@ describe('Orchestrator v0.8', () => {
             lastExternalActivityAt: '2026-03-07T00:00:00.000Z',
             quietUntil: '2026-03-07T00:30:00.000Z',
           },
-          discoveredFeatures: [],
           learnings: [],
           requestsHelp: false,
           createdAt: new Date().toISOString(),
