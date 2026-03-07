@@ -1,74 +1,101 @@
 ---
 name: melos-ci-fix-loop
-description: Melosを使用してCI失敗とPRコメントの修正を自動実行。CI修正、レビュー対応時に使用。
+description: PR 作成後の feedback と CI を監視し、actionable な指摘だけを修正して quiet window まで追従する。
 allowed-tools: Bash
 ---
 
 <objective>
-Melos CLIの `--ci-fix-only` モードを実行し、CI失敗とPRレビューコメントへの対応を自動化する。
-GitHub CLIを使用してCI状態とコメントを取得し、修正を繰り返す。
+現在の Melos worker 実行の中で GitHub PR の feedback と required checks を監視し、actionable な指摘だけを自律的に修正する。
+`gh pr view --json ...`、`gh api graphql`、`gh pr checks` を使って PR 状態を取得し、最後の push または最後の外部 feedback から 30 分静穏かつ required checks green になるまでループする。
 </objective>
 
 <quick_start>
 ```bash
-# 基本実行（5イテレーション）
-npx melos --ci-fix-only
+# PR 概要と reviews / comments を取得
+gh pr view --json number,url,title,body,headRefName,baseRefName,isDraft,updatedAt
+gh api graphql -f query='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { reviewThreads(first:100) { nodes { isResolved comments(first:100) { nodes { id author { login } body createdAt updatedAt path line state url } } } } reviews(first:100) { nodes { id author { login } body state submittedAt updatedAt url } } comments(first:100) { nodes { id author { login } body createdAt updatedAt url } } commits(last:1) { nodes { commit { committedDate statusCheckRollup { state } } } } } } }'
 
-# イテレーション数を指定
-npx melos --ci-fix-only --max-iterations 10
+# required checks を確認
+gh pr checks --required
 ```
 </quick_start>
 
 <workflow>
-<step number="1" name="execute">
-Bashツールを使用してMelosを実行する。
+<step number="1" name="preflight">
+以下を確認する。
 
 ```bash
-cd "$(git rev-parse --show-toplevel)" && npx melos --ci-fix-only --max-iterations 5
+gh --version
+gh auth status
+git remote get-url origin
+git branch --show-current
 ```
 
-長時間実行となるため、`run_in_background: true` で実行し、定期的に結果を確認する。
+`gh` 未導入、未認証、origin 不在、PR 不在なら `BLOCKED` として終了する。
 </step>
 
-<step number="2" name="monitor">
-実行中は進捗を監視する。
+<step number="2" name="collect-feedback">
+監視対象は「自分以外すべて」の feedback とする。
 
-```bash
-# 進捗ファイルを確認
-cat "$(git rev-parse --show-toplevel)/PROGRESS.md"
+- issue comment
+- review body
+- inline review comment
+- required checks
 
-# ステータスを確認
-cat "$(git rev-parse --show-toplevel)/STATUS.json"
-
-# CI状態を確認
-gh pr checks
-```
+reviewer / commenter / bot を区別せず、自分自身の comment だけ除外する。
 </step>
 
-<step number="3" name="complete">
-完了後、結果をユーザーに報告する。
+<step number="3" name="classify">
+各 feedback を `actionable` または `off-target` に分類する。
 
-- 実行されたイテレーション数
-- 修正されたCI失敗・PRコメント
-- 最終的なCI状態
+- `actionable`: 実際のバグ、CI failure、仕様逸脱、明確な改善要求
+- `off-target`: 仕様外要求、誤読、既に解決済み、根拠が薄い指摘
+
+`off-target` は修正しない。その理由を worker report の `warnings` に残す。
+</step>
+
+<step number="4" name="fix-and-push">
+`actionable` な feedback または failing CI がある場合は修正する。
+
+- 既存の branch / working tree をそのまま使う
+- 必要な検証を実行する
+- commit が必要なら `git-committer` スキルを使う
+- push が必要なら通常の `git push` を行う
+
+別の `melos` プロセスや `npx melos --ci-fix-only` は起動しない。
+</step>
+
+<step number="5" name="wait-for-quiet-window">
+次の条件を両方満たすまで監視を続ける。
+
+- required checks が green
+- 最後の push または最後の外部 feedback の遅い方から 30 分経過
+
+新しい push または外部 feedback が来たら 30 分タイマーをリセットする。
+</step>
+
+<step number="6" name="report">
+最終的に JSON report を返す。
+
+- `pullRequest`: 最新 PR 情報
+- `pullRequestFollowUp.handledFeedbackIds`: 今回対応済みと判断した feedback ID 一覧
+- `pullRequestFollowUp.lastExternalActivityAt`: 最後の外部活動時刻
+- `pullRequestFollowUp.quietUntil`: 現在の quiet window 期限
+- `warnings`: off-target 判定や未解消 caveat
 </step>
 </workflow>
 
-<options>
-| オプション | 説明 | デフォルト |
-|-----------|------|-----------|
-| `--max-iterations <n>` | 最大イテレーション数 | 5 |
-| `--engine <engine>` | エンジン選択（claude/codex） | claude |
-</options>
-
 <success_criteria>
-- CIが全てグリーンになる
-- PRコメントへの対応が完了
-- PROGRESS.mdに実行結果が記録される
+- actionable な feedback に対して必要な修正が反映されている
+- off-target な feedback は修正せず、理由が記録されている
+- required checks が green で、quiet window が満了している
+- worker report に `pullRequest` と `pullRequestFollowUp` が入っている
 </success_criteria>
 
 <constraints>
 - PRが存在する必要がある
 - GitHub CLIがインストール・認証済みであること
 - 長時間実行となる可能性がある
+- nested Melos 実行は禁止
+- ユーザー確認は原則不要。自身の判断で修正する
 </constraints>
