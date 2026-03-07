@@ -1,12 +1,13 @@
 import type { MissionPlan } from './mission.js';
 import type { MissionEvent } from './events.js';
 import type { GitStrategyState } from './git-strategy.js';
+import type { ReviewReport } from './review.js';
 import type { ValidationEvidenceMap } from './validation.js';
 import { normalizeLogMessage, type LogActor, type UnifiedLogEntry } from './log-entry.js';
 
 export interface WorkerRunState {
   id: number;
-  type: 'implement' | 'validate' | 'research';
+  type: 'implement' | 'validate' | 'review' | 'research';
   featureId?: string;
   milestoneId?: string;
   status: 'running' | 'done' | 'failed';
@@ -42,6 +43,7 @@ export interface MissionKernelState {
   gitStrategy: GitStrategyState | null;
   warnings?: RuntimeWarningRecord[];
   validationEvidence?: ValidationEvidenceMap;
+  latestReviewReport?: ReviewReport | null;
 }
 
 export function createInitialKernelState(): MissionKernelState {
@@ -57,6 +59,7 @@ export function createInitialKernelState(): MissionKernelState {
     gitStrategy: null,
     warnings: [],
     validationEvidence: {},
+    latestReviewReport: null,
   };
 }
 
@@ -223,6 +226,46 @@ export function reduceMissionEvent(
               : run.log,
           };
         }),
+      };
+    }
+
+    case 'review_started': {
+      const reviewType = asString(event.payload.reviewType) ?? 'review';
+      const generation = Number.isFinite(event.payload.generation)
+        ? Math.max(1, Math.floor(Number(event.payload.generation)))
+        : 1;
+      const message = `${reviewType} review g${generation} started`;
+      return appendUnifiedProgress(
+        state,
+        event.timestamp,
+        message,
+        'worker',
+        'STARTED',
+        event.seq
+      );
+    }
+
+    case 'review_result': {
+      const summary = asString(event.payload.summary) ?? 'review completed';
+      const report = event.payload.report as ReviewReport | undefined;
+      const passed = Boolean(event.payload.passed);
+      const blockingFindingCount = Number.isFinite(event.payload.blockingFindingCount)
+        ? Math.max(0, Math.floor(Number(event.payload.blockingFindingCount)))
+        : 0;
+      const suffix = passed
+        ? 'passed'
+        : `failed (${blockingFindingCount} blocking finding${blockingFindingCount === 1 ? '' : 's'})`;
+      const next = appendUnifiedProgress(
+        state,
+        event.timestamp,
+        `review_result: ${summary} [${suffix}]`,
+        'worker',
+        passed ? 'DONE' : 'WARN',
+        event.seq
+      );
+      return {
+        ...next,
+        latestReviewReport: report ?? next.latestReviewReport ?? null,
       };
     }
 
@@ -416,6 +459,9 @@ function appendWarning(
 function resolveActorFromEvent(event: MissionEvent): LogActor {
   if (event.type.startsWith('validation_')) {
     return 'validator';
+  }
+  if (event.type.startsWith('review_')) {
+    return 'worker';
   }
   if (event.type === 'warning_emitted') {
     return resolveActorFromWarningSource(

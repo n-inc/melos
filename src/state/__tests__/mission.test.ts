@@ -123,6 +123,7 @@ describe('state/mission', () => {
         id: 'm1-f2',
         description: 'follow-up',
         trackingKey: 'validation-jest-failure',
+        kind: 'implementation',
         status: 'pending',
         attempts: 0,
         model: 'codex',

@@ -1,5 +1,6 @@
 import type { MissionPlan, Milestone, Feature } from '../state/mission.js';
 import type { ValidationCheckResult, ValidationReport } from '../state/validation.js';
+import type { ReviewArtifact, ReviewFinding, ReviewType } from '../state/review.js';
 
 export type AgentMode = 'manager' | 'worker';
 
@@ -35,6 +36,14 @@ export interface WorkerFeatureReport {
     typecheckPassed: boolean;
   };
   checks: ValidationCheckResult[];
+  review?: {
+    reviewType: ReviewType;
+    generation: number;
+    passed: boolean;
+    summary: string;
+    findings: ReviewFinding[];
+    artifacts: ReviewArtifact[];
+  };
   discoveredFeatures: Array<{
     description: string;
     priority: 'high' | 'medium' | 'low';

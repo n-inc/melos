@@ -3,6 +3,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 import type { ValidationContract } from './validation.js';
 import { normalizeValidationContract } from './validation.js';
+import type { ProductReviewContract, ReviewType } from './review.js';
+import { normalizeProductReviewContract } from './review.js';
 import { normalizeModelName } from '../models/registry.js';
 
 export type MissionState =
@@ -15,6 +17,7 @@ export type MissionState =
   | 'aborted';
 
 export type FeatureStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped';
+export type FeatureKind = 'implementation' | 'review' | 'review_remediation';
 export type MilestoneStatus =
   | 'pending'
   | 'in_progress'
@@ -39,6 +42,7 @@ export interface MissionPlan {
   };
   state: MissionState;
   milestones: Milestone[];
+  productReviewContract?: ProductReviewContract;
   activeMilestoneId: string | null;
   activeFeatureId: string | null;
   totalIterations: number;
@@ -59,13 +63,19 @@ export interface Feature {
   trackingKey?: string;
   cwd?: string;
   checks?: CheckItem[];
+  kind: FeatureKind;
+  reviewType?: ReviewType;
+  reviewGeneration?: number;
   status: FeatureStatus;
   model?: string;
   attempts: number;
 }
 
-interface CreateMissionFeatureInput extends Omit<Feature, 'model'> {
+interface CreateMissionFeatureInput extends Omit<Feature, 'model' | 'kind' | 'reviewType' | 'reviewGeneration'> {
   model?: string;
+  kind?: FeatureKind;
+  reviewType?: ReviewType;
+  reviewGeneration?: number;
   requestedModel?: string;
   effectiveModel?: string;
   resolvedModel?: string;
@@ -118,6 +128,7 @@ export function createMissionPlan(input: {
   goal: string;
   constraints?: string[];
   successCriteria?: string[];
+  productReviewContract?: ProductReviewContract;
   prdFile?: string;
   milestones?: CreateMissionMilestoneInput[];
   approvalMethod?: 'auto' | 'interactive';
@@ -136,6 +147,7 @@ export function createMissionPlan(input: {
     },
     state: input.state ?? 'planning',
     milestones,
+    productReviewContract: input.productReviewContract,
     activeMilestoneId: null,
     activeFeatureId: null,
     totalIterations: 0,
@@ -383,6 +395,7 @@ function normalizeMissionPlan(plan: unknown, options?: { baseDir?: string }): Mi
     },
     state: normalizeMissionState(candidate.state),
     milestones,
+    productReviewContract: normalizeProductReviewContract(candidate.productReviewContract, options?.baseDir),
     totalIterations: normalizeNonNegativeInteger(candidate.totalIterations),
     activeMilestoneId,
     activeFeatureId,
@@ -420,6 +433,7 @@ function normalizeFeature(feature: unknown, fallbackId?: string, baseDir?: strin
   const normalizedId = asTrimmedString(rawFeature.id) || fallbackId || 'feature-1';
   const trackingKey = normalizeTrackingKey(rawFeature.trackingKey);
   const checks = normalizeFeatureChecks(rawFeature.checks);
+  const reviewType = normalizeReviewType(rawFeature.reviewType);
   const model = normalizeFeatureModel(rawFeature.model)
     ?? normalizeFeatureModel(rawFeature.requestedModel)
     ?? normalizeFeatureModel(rawFeature.effectiveModel)
@@ -434,6 +448,9 @@ function normalizeFeature(feature: unknown, fallbackId?: string, baseDir?: strin
     trackingKey,
     cwd: normalizeFeatureCwd(rawFeature.cwd, baseDir),
     checks,
+    kind: normalizeFeatureKind(rawFeature.kind, reviewType),
+    reviewType,
+    reviewGeneration: normalizeReviewGeneration(rawFeature.reviewGeneration),
     status: normalizeFeatureStatus(rawFeature.status),
     model,
     attempts: normalizeNonNegativeInteger(rawFeature.attempts),
@@ -509,6 +526,30 @@ function normalizeStringList(values: unknown): string[] {
 
 function normalizeFeatureModel(value: unknown): string | undefined {
   return normalizeModelName(typeof value === 'string' ? value : undefined);
+}
+
+function normalizeFeatureKind(value: unknown, reviewType?: ReviewType): FeatureKind {
+  const normalized = asTrimmedString(value);
+  if (normalized === 'implementation' || normalized === 'review' || normalized === 'review_remediation') {
+    return normalized;
+  }
+  return reviewType ? 'review' : 'implementation';
+}
+
+function normalizeReviewType(value: unknown): ReviewType | undefined {
+  const normalized = asTrimmedString(value).toLowerCase();
+  if (normalized === 'product' || normalized === 'code') {
+    return normalized;
+  }
+  return undefined;
+}
+
+function normalizeReviewGeneration(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.floor(value);
+  return normalized >= 1 ? normalized : undefined;
 }
 
 function normalizeTrackingKey(value: unknown): string | undefined {
@@ -621,6 +662,9 @@ function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {
         throw new Error(`Duplicate feature id in ${milestone.id}: ${feature.id}`);
       }
       featureIds.add(feature.id);
+      if (feature.kind === 'review' && !feature.reviewType) {
+        throw new Error(`Review feature ${feature.id} must specify reviewType`);
+      }
     }
   }
 }

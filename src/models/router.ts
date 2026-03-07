@@ -1,6 +1,6 @@
 import { isCodexFamily, resolveModelEffort, resolveModelEngine } from './registry.js';
 
-export type ModelRole = 'planner' | 'worker' | 'validator' | 'research';
+export type ModelRole = 'planner' | 'worker';
 
 export interface ModelAssignment {
   role: ModelRole;
@@ -37,8 +37,6 @@ export class ModelRouter {
     this.escalationCounts = {
       planner: 0,
       worker: 0,
-      validator: 0,
-      research: 0,
     };
   }
 
@@ -82,8 +80,6 @@ export class ModelRouter {
     return {
       planner: this.toAssignment('planner'),
       worker: this.toAssignment('worker'),
-      validator: this.toAssignment('validator'),
-      research: this.toAssignment('research'),
     };
   }
 

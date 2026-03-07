@@ -27,6 +27,10 @@ import {
   incrementMissionIterations,
 } from './state/mission.js';
 import {
+  type ReviewReport,
+  isBlockingReviewFinding,
+} from './state/review.js';
+import {
   type ValidationReport,
   type ValidationCheckResult,
   getAllValidationChecks,
@@ -86,8 +90,6 @@ export interface OrchestratorConfig {
   melosDir: string;
   plannerModel?: string;
   workerModel?: string;
-  validatorModel?: string;
-  researchModel?: string;
   managerEffort?: 'low' | 'medium' | 'high' | 'max';
   workerReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   interactivePlanning?: boolean;
@@ -121,6 +123,7 @@ interface RuntimeState {
   prd: string | null;
   latestValidationReport: ValidationReport | null;
   latestWorkerReport: WorkerFeatureReport | null;
+  latestReviewReport: ReviewReport | null;
   gitStrategy: GitStrategyState | null;
   startedAt: Date;
 }
@@ -156,8 +159,6 @@ export class Orchestrator {
       assignments: {
         planner: normalizeModelName(config.plannerModel) ?? CODEX_LATEST_ALIAS,
         worker: normalizeModelName(config.workerModel) ?? CODEX_LATEST_ALIAS,
-        validator: normalizeModelName(config.validatorModel) ?? CODEX_LATEST_ALIAS,
-        research: normalizeModelName(config.researchModel) ?? CODEX_LATEST_ALIAS,
       },
       escalationPolicy: {
         enabled: true,
@@ -201,6 +202,7 @@ export class Orchestrator {
       prd: null,
       latestValidationReport: null,
       latestWorkerReport: null,
+      latestReviewReport: null,
       gitStrategy: config.gitStrategy?.enabled
         ? createGitStrategyState({
           missionId: config.gitStrategy.missionId,
@@ -546,6 +548,7 @@ export class Orchestrator {
       }
     }
 
+    this.state.latestReviewReport = this.kernelState.latestReviewReport ?? null;
     this.kernelState.missionPlan = this.state.missionPlan ?? null;
     await this.emitStatusUpdate();
   }
@@ -791,6 +794,14 @@ export class Orchestrator {
     if (result.type === 'success') {
       this.recordValidationEvidence(updatedMilestone.id, result.report.checks);
       this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
+    }
+
+    if (updatedFeature.kind === 'review') {
+      if (result.type !== 'success' && result.report.warnings.length > 0) {
+        this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
+      }
+      await this.handleReviewFeatureResult(updatedMilestone, updatedFeature, result);
+      return;
     }
 
     const status = result.type === 'success'
@@ -1106,9 +1117,18 @@ export class Orchestrator {
 
     const runId = ++this.workerRunCounter;
     const workerStartedAt = new Date();
+    const workerRunType = feature.kind === 'review' ? 'review' : 'implement';
+    if (feature.kind === 'review') {
+      this.emitEvent('review_started', 'orchestrator', {
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        reviewType: feature.reviewType,
+        generation: feature.reviewGeneration ?? 1,
+      });
+    }
     this.emitEvent('worker_started', 'worker', {
       runId,
-      type: 'implement',
+      type: workerRunType,
       milestoneId: milestone.id,
       featureId: feature.id,
       branch: branchName,
@@ -1139,6 +1159,16 @@ export class Orchestrator {
         requestsHelp: false,
         createdAt: new Date().toISOString(),
       };
+      if (feature.kind === 'review' && feature.reviewType) {
+        report.review = {
+          reviewType: feature.reviewType,
+          generation: feature.reviewGeneration ?? 1,
+          passed: true,
+          summary: '[dry-run] final review skipped',
+          findings: [],
+          artifacts: [],
+        };
+      }
       const result: WorkerResult = { type: 'success', report };
       this.emitEvent('worker_finished', 'worker', {
         runId,
@@ -1289,6 +1319,7 @@ export class Orchestrator {
           this.state.missionPlan = appendFeaturesToMilestone(missionPlan, activeMilestoneId, [{
             id: nextId,
             description: `Resolve merge conflict for ${branchName}`,
+            kind: 'implementation',
             status: 'pending',
             attempts: 0,
             model: CODEX_LATEST_ALIAS,
@@ -1450,6 +1481,297 @@ export class Orchestrator {
     };
   }
 
+  private async handleReviewFeatureResult(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): Promise<void> {
+    const reviewReport = this.createReviewReport(milestone.id, feature, result.report);
+    this.state.latestReviewReport = reviewReport;
+    this.kernelState.latestReviewReport = reviewReport;
+    await this.persistReviewReport(reviewReport);
+
+    const blockingFindings = reviewReport.findings.filter((finding) => isBlockingReviewFinding(finding));
+    this.emitEvent('review_result', 'orchestrator', {
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      reviewType: reviewReport.reviewType,
+      generation: reviewReport.generation,
+      passed: reviewReport.passed,
+      blockingFindingCount: blockingFindings.length,
+      totalFindings: reviewReport.findings.length,
+      summary: reviewReport.summary,
+      report: reviewReport,
+    });
+
+    let missionPlan = this.requireMissionPlan();
+    missionPlan = incrementMissionIterations(missionPlan);
+
+    if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      missionPlan = transitionMissionState(missionPlan, 'paused');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.activityLabel = `${formatReviewLabel(feature)} blocked. Resolve the review environment or contract issue and resume.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    if (blockingFindings.length === 0 && reviewReport.passed) {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'done',
+      });
+      this.activityLabel = `${formatReviewLabel(feature)} passed.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const followUps = await this.manager.generateReviewFollowUpFeatures({
+      milestoneId: milestone.id,
+      reviewType: reviewReport.reviewType,
+      generation: reviewReport.generation,
+      findings: blockingFindings,
+      missionPlan,
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          action: 'review_followup_planning',
+          milestoneId: milestone.id,
+          featureId: feature.id,
+          message: detail,
+        });
+      },
+    });
+
+    const followUpResult = this.applyReviewFollowUps(
+      missionPlan,
+      milestone.id,
+      feature,
+      reviewReport,
+      followUps.length > 0
+        ? followUps
+        : [{
+          description: `Address blocking ${reviewReport.reviewType} review findings`,
+          trackingKey: `final-review-${reviewReport.reviewType}-g${reviewReport.generation}`,
+          model: CODEX_LATEST_ALIAS,
+        }]
+    );
+
+    missionPlan = updateMilestoneStatus(followUpResult.plan, milestone.id, 'in_progress');
+    missionPlan = setActiveMilestone(missionPlan, milestone.id);
+    missionPlan = setActiveFeature(missionPlan, null);
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+    this.emitEvent('iteration_completed', 'orchestrator', {
+      iteration: missionPlan.totalIterations,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      status: 'done',
+    });
+
+    if (followUpResult.addedFeatures.length > 0 || followUpResult.updatedFeatures.length > 0) {
+      this.emitEvent('task_added', 'manager', {
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        reviewType: reviewReport.reviewType,
+        generation: reviewReport.generation,
+        features: [
+          ...followUpResult.updatedFeatures,
+          ...followUpResult.addedFeatures,
+          ...followUpResult.addedReviewFeatures,
+        ],
+        followUpFeatures: followUpResult.addedFeatures,
+        rerunReviewFeatures: followUpResult.addedReviewFeatures,
+      });
+    }
+
+    const addedRemediations = followUpResult.addedFeatures.length + followUpResult.updatedFeatures.length;
+    this.activityLabel = [
+      `${formatReviewLabel(feature)} failed with ${blockingFindings.length} blocking finding${blockingFindings.length === 1 ? '' : 's'}.`,
+      `Added ${addedRemediations} remediation feature${addedRemediations === 1 ? '' : 's'} and scheduled ${followUpResult.addedReviewFeatures.length} review reruns.`,
+    ].join(' ');
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
+  private createReviewReport(
+    milestoneId: string,
+    feature: Feature,
+    report: WorkerFeatureReport
+  ): ReviewReport {
+    const fallbackReviewType = feature.reviewType ?? 'code';
+    const fallbackGeneration = feature.reviewGeneration ?? 1;
+    const findings = report.review?.findings ?? [];
+    const artifacts = report.review?.artifacts ?? [];
+    return {
+      milestoneId,
+      featureId: feature.id,
+      reviewType: report.review?.reviewType ?? fallbackReviewType,
+      generation: report.review?.generation ?? fallbackGeneration,
+      timestamp: new Date().toISOString(),
+      passed: report.review?.passed ?? findings.every((finding) => !isBlockingReviewFinding(finding)),
+      summary: report.review?.summary?.trim() || report.summary,
+      findings,
+      artifacts,
+      blockingFindingCount: findings.filter((finding) => isBlockingReviewFinding(finding)).length,
+    };
+  }
+
+  private applyReviewFollowUps(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    feature: Feature,
+    reviewReport: ReviewReport,
+    followUps: Array<{
+      description: string;
+      trackingKey?: string;
+      model?: string;
+    }>
+  ): {
+    plan: MissionPlan;
+    addedFeatures: Feature[];
+    updatedFeatures: Feature[];
+    addedReviewFeatures: Feature[];
+  } {
+    const milestone = missionPlan.milestones.find((item) => item.id === milestoneId);
+    if (!milestone) {
+      return {
+        plan: missionPlan,
+        addedFeatures: [],
+        updatedFeatures: [],
+        addedReviewFeatures: [],
+      };
+    }
+
+    const currentGeneration = reviewReport.generation;
+    const features = milestone.features.map((item) => {
+      if (item.id === feature.id) {
+        return { ...item, status: 'done' as const };
+      }
+      if (
+        feature.reviewType === 'product'
+        && item.kind === 'review'
+        && item.reviewGeneration === currentGeneration
+        && item.reviewType === 'code'
+        && (item.status === 'pending' || item.status === 'in_progress')
+      ) {
+        return { ...item, status: 'skipped' as const };
+      }
+      return { ...item };
+    });
+
+    const updatedFeatures: Feature[] = [];
+    const appendDrafts: Array<{ description: string; trackingKey?: string; model?: string }> = [];
+    for (const draft of followUps) {
+      const trackingKey = draft.trackingKey?.trim();
+      const matchIndex = trackingKey
+        ? features.findIndex((candidate) =>
+          candidate.kind !== 'review'
+          && candidate.trackingKey === trackingKey
+          && (candidate.status === 'pending' || candidate.status === 'in_progress' || candidate.status === 'failed')
+        )
+        : -1;
+
+      if (matchIndex >= 0) {
+        const existing = features[matchIndex];
+        const merged: Feature = {
+          ...existing,
+          kind: existing.kind === 'review' ? 'review_remediation' : existing.kind,
+          description: this.pickMoreSpecificFeatureDescription(existing.description, draft.description),
+          trackingKey: existing.trackingKey ?? trackingKey,
+          model: existing.model ?? normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+          status: existing.status === 'failed' ? 'pending' : existing.status,
+        };
+        features[matchIndex] = merged;
+        updatedFeatures.push(merged);
+        continue;
+      }
+
+      appendDrafts.push({
+        description: draft.description,
+        trackingKey,
+        model: normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+      });
+    }
+
+    let nextPlan = this.replaceMilestone(missionPlan, milestoneId, (current) => ({
+      ...current,
+      features,
+    }));
+
+    let addedFeatures: Feature[] = [];
+    if (appendDrafts.length > 0) {
+      const milestoneForAppend = nextPlan.milestones.find((item) => item.id === milestoneId);
+      const baseCount = milestoneForAppend?.features.length ?? 0;
+      addedFeatures = appendDrafts.map((draft, index) => ({
+        id: `${milestoneId}-f${baseCount + index + 1}`,
+        description: draft.description,
+        trackingKey: draft.trackingKey,
+        cwd: feature.cwd,
+        kind: 'review_remediation',
+        status: 'pending',
+        attempts: 0,
+        model: draft.model ?? CODEX_LATEST_ALIAS,
+      }));
+      nextPlan = appendFeaturesToMilestone(nextPlan, milestoneId, addedFeatures);
+    }
+
+    const nextGeneration = currentGeneration + 1;
+    const milestoneForReviews = nextPlan.milestones.find((item) => item.id === milestoneId);
+    const reviewBaseCount = milestoneForReviews?.features.length ?? 0;
+    const addedReviewFeatures: Feature[] = [
+      {
+        id: `${milestoneId}-f${reviewBaseCount + 1}`,
+        description: 'Re-run final product review after remediation',
+        cwd: feature.cwd,
+        kind: 'review',
+        reviewType: 'product',
+        reviewGeneration: nextGeneration,
+        status: 'pending',
+        attempts: 0,
+        model: CODEX_LATEST_ALIAS,
+      },
+      {
+        id: `${milestoneId}-f${reviewBaseCount + 2}`,
+        description: 'Re-run final code review after remediation',
+        kind: 'review',
+        reviewType: 'code',
+        reviewGeneration: nextGeneration,
+        status: 'pending',
+        attempts: 0,
+        model: CODEX_LATEST_ALIAS,
+      },
+    ];
+    nextPlan = appendFeaturesToMilestone(nextPlan, milestoneId, addedReviewFeatures);
+
+    return {
+      plan: nextPlan,
+      addedFeatures,
+      updatedFeatures,
+      addedReviewFeatures,
+    };
+  }
+
   private applyValidationFollowUps(
     missionPlan: MissionPlan,
     milestoneId: string,
@@ -1525,6 +1847,7 @@ export class Orchestrator {
       id: `${milestoneId}-f${baseCount + index + 1}`,
       description: draft.description,
       trackingKey: draft.trackingKey,
+      kind: 'implementation',
       status: 'pending',
       attempts: 0,
       model: draft.model ?? CODEX_LATEST_ALIAS,
@@ -1611,6 +1934,7 @@ export class Orchestrator {
   private ensureMelosDir(): void {
     mkdirSync(this.config.melosDir, { recursive: true });
     mkdirSync(join(this.config.melosDir, 'validations'), { recursive: true });
+    mkdirSync(join(this.config.melosDir, 'reviews'), { recursive: true });
   }
 
   private emitEvent(
@@ -1805,6 +2129,7 @@ export class Orchestrator {
         managerLog: (this.kernelState.managerLog ?? []).slice(-120),
         workerRuns,
         modelAssignments: assignments,
+        reviewStatus: buildReviewStatus(this.state.latestReviewReport, null),
         pendingPrompt: this.pendingPrompt,
       };
     }
@@ -1856,6 +2181,7 @@ export class Orchestrator {
       managerLog: (this.kernelState.managerLog ?? []).slice(-120),
       workerRuns,
       modelAssignments: assignments,
+      reviewStatus: buildReviewStatus(this.state.latestReviewReport, missionPlan.activeFeatureId),
       pendingPrompt: this.pendingPrompt,
     };
   }
@@ -1873,9 +2199,16 @@ export class Orchestrator {
       case 'awaiting_approval':
         return 'Plan ready. Waiting for approval.';
       case 'running':
-        return missionPlan.activeFeatureId
-          ? `Running ${missionPlan.activeFeatureId}...`
-          : 'Running mission iteration...';
+        if (missionPlan.activeFeatureId) {
+          const activeReviewFeature = missionPlan.milestones
+            .flatMap((milestone) => milestone.features)
+            .find((feature) => feature.id === missionPlan.activeFeatureId && feature.kind === 'review');
+          if (activeReviewFeature) {
+            return `Running ${formatReviewLabel(activeReviewFeature)}...`;
+          }
+          return `Running ${missionPlan.activeFeatureId}...`;
+        }
+        return 'Running mission iteration...';
       case 'paused':
         return 'Mission paused. Press R to resume.';
       case 'completed':
@@ -1957,6 +2290,15 @@ export class Orchestrator {
     await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf-8');
   }
 
+  private async persistReviewReport(report: ReviewReport): Promise<void> {
+    const path = join(
+      this.config.melosDir,
+      'reviews',
+      `${report.featureId}.json`
+    );
+    await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf-8');
+  }
+
   private resolveMissionId(): string {
     if (this.config.missionId && this.config.missionId.trim().length > 0) {
       return this.config.missionId.trim();
@@ -1976,6 +2318,14 @@ export class Orchestrator {
     );
     const warnings = uniqueRuntimeWarnings(this.kernelState.warnings ?? [])
       .map((warning) => `- ${formatRuntimeWarningRecord(warning)}`);
+    const latestReview = this.state.latestReviewReport;
+    const reviewLines = latestReview
+      ? [
+        `Last review: ${latestReview.reviewType} g${latestReview.generation} (${latestReview.passed ? 'passed' : 'failed'})`,
+        `Summary: ${latestReview.summary}`,
+        `Blocking findings: ${latestReview.blockingFindingCount}`,
+      ]
+      : ['No final review report'];
 
     const content = [
       '# Melos Mission Handoff',
@@ -1993,6 +2343,10 @@ export class Orchestrator {
       this.state.latestValidationReport
         ? `Last report: ${this.state.latestValidationReport.milestoneId} attempt ${this.state.latestValidationReport.attempt} (${this.state.latestValidationReport.passed ? 'passed' : 'failed'})`
         : 'No validation report',
+      '',
+      '## Final Review',
+      '',
+      ...reviewLines,
       '',
       '## Warnings',
       '',
@@ -2066,8 +2420,13 @@ function buildTaskPreviewLines(
       const activeMark = missionPlan.activeFeatureId === feature.id ? '>' : ' ';
       const modelState = resolveFeatureModelState(feature, defaultWorkerModel);
       const badge = toFeatureModelBadge(feature, modelState.source);
+      const reviewMeta = feature.kind === 'review'
+        ? ` [review:${feature.reviewType ?? 'unknown'} g${feature.reviewGeneration ?? 1}]`
+        : feature.kind === 'review_remediation'
+          ? ' [review-remediation]'
+          : '';
       lines.push(
-        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] [${badge}:${resolveDisplayModel(modelState.model)}] attempts=${feature.attempts} ${feature.description}`
+        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}]${reviewMeta} [${badge}:${resolveDisplayModel(modelState.model)}] attempts=${feature.attempts} ${feature.description}`
       );
     }
     const validationChecks = [
@@ -2172,6 +2531,14 @@ function asMilestoneCheckbox(status: Milestone['status']): string {
   }
 }
 
+function formatReviewLabel(feature: Pick<Feature, 'description' | 'reviewType' | 'reviewGeneration'>): string {
+  const generation = feature.reviewGeneration ?? 1;
+  if (feature.reviewType) {
+    return `${feature.reviewType} review g${generation}`;
+  }
+  return truncateMessage(feature.description, 80);
+}
+
 function formatElapsed(startedAt: Date): string {
   const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000));
   const hours = Math.floor(elapsedSeconds / 3600);
@@ -2181,6 +2548,24 @@ function formatElapsed(startedAt: Date): string {
     return `${hours}h ${minutes}m`;
   }
   return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+}
+
+function buildReviewStatus(
+  reviewReport: ReviewReport | null,
+  activeFeatureId: string | null
+): MissionControlState['reviewStatus'] {
+  if (!reviewReport) {
+    return null;
+  }
+  return {
+    reviewType: reviewReport.reviewType,
+    generation: reviewReport.generation,
+    activeFeatureId,
+    latestFindingCount: reviewReport.findings.length,
+    blockingFindingCount: reviewReport.blockingFindingCount,
+    passed: reviewReport.passed,
+    summary: reviewReport.summary,
+  };
 }
 
 function computeDurationLabel(startedAt: string, endedAt?: string): string {

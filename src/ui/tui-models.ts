@@ -23,7 +23,7 @@ export const modelsView: TUIView = {
       ...table,
       '',
       'Change model:',
-      '  1 Planner   2 Worker   3 Validator   4 Research',
+      '  1 Planner   2 Worker',
       'Press the number key to cycle model for each role.',
     ];
 

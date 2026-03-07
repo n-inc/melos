@@ -63,8 +63,6 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
       worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
-      research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
   };
   return {
@@ -364,9 +362,9 @@ describe('ui/tui runtime screen contract', () => {
 
     h.input.write('M');
     h.input.write('1');
-    h.input.write('3');
+    h.input.write('2');
     expect(h.onCycleModel).toHaveBeenNthCalledWith(1, 'planner');
-    expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'validator');
+    expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'worker');
 
     h.ui.stop();
   });

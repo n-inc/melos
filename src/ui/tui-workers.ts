@@ -116,7 +116,8 @@ function buildNowRunningLine(state: MissionControlState, actor: LogActor): strin
     }
     const target = running.featureId ?? running.milestoneId ?? '-';
     const model = running.model ?? '-';
-    return `NOW RUNNING  WORKER #${running.id}  ${target}  model=${model}  elapsed=${running.durationLabel}`;
+    const runType = running.type === 'review' ? 'REVIEW' : 'WORKER';
+    return `NOW RUNNING  ${runType} #${running.id}  ${target}  model=${model}  elapsed=${running.durationLabel}`;
   }
   if (actor === 'planning') {
     return 'NOW RUNNING  PLANNING  mission plan generation';

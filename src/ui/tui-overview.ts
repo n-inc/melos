@@ -42,6 +42,13 @@ export const overviewView: TUIView = {
     const expectedBehaviorLines = activeFeature
       ? wrapByCharCount(activeFeature.description, 42)
       : ['-'];
+    const reviewSummaryLines = state.reviewStatus
+      ? [
+        summaryLine('Review', `${state.reviewStatus.reviewType} g${state.reviewStatus.generation}`),
+        summaryLine('Findings', `${state.reviewStatus.blockingFindingCount}/${state.reviewStatus.latestFindingCount} blocking/total`),
+        summaryLine('Review OK', state.reviewStatus.passed === null ? '-' : state.reviewStatus.passed ? 'yes' : 'no'),
+      ]
+      : [];
     const leftLines = [
       'MISSION SUMMARY',
       `${statusIcon(activeFeature?.status ?? 'pending')} ${activeFeatureLabel}`,
@@ -51,6 +58,7 @@ export const overviewView: TUIView = {
       summaryLine('Activity', state.activity),
       summaryLine('Progress', state.progressLabel),
       summaryLine('Branch', state.activeBranch ?? '-'),
+      ...reviewSummaryLines,
       '',
       'Expected Behavior',
       ...expectedBehaviorLines.map((line) => `  ${line}`),

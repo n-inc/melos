@@ -11,6 +11,8 @@ import type { MissionPlan } from '../state/mission.js';
 import {
   createMissionPlan,
 } from '../state/mission.js';
+import type { ProductReviewContract, ReviewFinding, ReviewType } from '../state/review.js';
+import { normalizeProductReviewContract } from '../state/review.js';
 import type { ValidationCheckResult } from '../state/validation.js';
 import {
   createEmptyValidationContract,
@@ -148,6 +150,15 @@ interface MissionPlanningOutput {
   goal: string;
   constraints: string[];
   successCriteria: string[];
+  productReviewContract?: {
+    cwd?: string;
+    target?: string;
+    startup?: Array<{ cwd?: string; command?: string } | string>;
+    preconditions?: string[];
+    checkpoints?: Array<{ id?: string; description?: string; claim?: string; visual?: boolean } | string>;
+    artifactsDir?: string;
+    video?: boolean;
+  };
   milestones: Array<{
     id?: string;
     title: string;
@@ -302,35 +313,7 @@ export class ManagerAgent implements Agent {
     if (!milestone || !feature) {
       return undefined;
     }
-
-    const prompt = [
-      'You are a technical planning manager.',
-      'Provide a concise implementation briefing in Japanese for the next feature.',
-      '',
-      `Mission Goal: ${input.missionPlan.mission.goal}`,
-      `Milestone: ${milestone.id} ${milestone.title}`,
-      `Feature: ${feature.id} ${feature.description}`,
-      `Feature Attempts: ${feature.attempts}`,
-      '',
-      'Output only markdown with these sections:',
-      '## Objective',
-      '## Constraints',
-      '## Validation focus',
-      '## Risks',
-    ].join('\n');
-
-    const result = await this.executeWithConfiguredEngine(prompt, 'medium', {
-      onAgentMessageDelta: input.onAgentMessageDelta,
-      onCommandOutputDelta: input.onCommandOutputDelta,
-      onAppServerEvent: input.onAppServerEvent,
-    });
-
-    if (!result.success) {
-      return undefined;
-    }
-
-    const text = result.output.trim();
-    return text.length > 0 ? text : undefined;
+    return buildFeatureBriefing(input);
   }
 
   async generateFollowUpFeatures(input: {
@@ -380,6 +363,60 @@ export class ManagerAgent implements Agent {
 
     if (drafts.length === 0) {
       return this.fallbackFollowUpFeatures(failedChecks);
+    }
+
+    return drafts;
+  }
+
+  async generateReviewFollowUpFeatures(input: {
+    milestoneId: string;
+    reviewType: ReviewType;
+    generation: number;
+    findings: ReviewFinding[];
+    missionPlan: MissionPlan;
+    onAgentMessageDelta?: (chunk: string) => void;
+    onCommandOutputDelta?: (chunk: string) => void;
+    onAppServerEvent?: (method: string, params: unknown) => void;
+  }): Promise<FollowUpFeatureDraft[]> {
+    if (input.findings.length === 0) {
+      return [];
+    }
+
+    const prompt = [
+      'You are a technical manager.',
+      `Generate grouped remediation features for a failed ${input.reviewType} final review.`,
+      'Group related findings by root cause or surface area.',
+      'Do not create review tasks. Create only implementation/remediation features.',
+      'Use a small number of meaningful features instead of one feature per finding.',
+      'Return JSON array only.',
+      '',
+      `Milestone ID: ${input.milestoneId}`,
+      `Review generation: ${input.generation}`,
+      'Findings:',
+      JSON.stringify(input.findings, null, 2),
+      '',
+      'Schema:',
+      '[{"description":"...","trackingKey":"stable-root-cause-key","priority":"high|medium|low","rationale":"...","model":"codex-latest|claude-latest|explicit-model"}]',
+    ].join('\n');
+
+    const result = await this.executeWithConfiguredEngine(prompt, 'high', {
+      onAgentMessageDelta: input.onAgentMessageDelta,
+      onCommandOutputDelta: input.onCommandOutputDelta,
+      onAppServerEvent: input.onAppServerEvent,
+    });
+
+    if (!result.success) {
+      return fallbackReviewFollowUpFeatures(input.findings);
+    }
+
+    const parsed = this.parseJsonArray(result.output);
+    if (!parsed) {
+      return fallbackReviewFollowUpFeatures(input.findings);
+    }
+
+    const drafts = normalizeReviewFollowUpDrafts(parsed, input.findings);
+    if (drafts.length === 0) {
+      return fallbackReviewFollowUpFeatures(input.findings);
     }
 
     return drafts;
@@ -467,19 +504,28 @@ export class ManagerAgent implements Agent {
       features: milestone.features.map((featureDescription, featureIndex) => ({
         id: `m${milestoneIndex + 1}-f${featureIndex + 1}`,
         description: featureDescription,
+        kind: 'implementation' as const,
         status: 'pending' as const,
         model: inferFeatureModel(featureDescription),
         attempts: 0,
       })),
     }));
 
+    const productReviewContract = resolveProductReviewContract(undefined, {
+      cwd: this.config.cwd,
+      prd: input.prd,
+      goal,
+      successCriteria,
+    });
+
     return createMissionPlan({
       missionId: input.missionId,
       goal,
       constraints,
       successCriteria,
+      productReviewContract,
       state: 'planning',
-      milestones,
+      milestones: appendFinalReviewMilestone(milestones, productReviewContract),
     });
   }
 
@@ -487,6 +533,7 @@ export class ManagerAgent implements Agent {
     planning: MissionPlanningOutput,
     input: {
       missionId: string;
+      prd?: string | null;
       approvalMethod?: 'auto' | 'interactive';
       prdFile?: string;
     }
@@ -535,18 +582,27 @@ export class ManagerAgent implements Agent {
         description: normalizeFeatureDescription(feature.description),
         cwd: feature.cwd,
         checks: feature.checks?.map((check) => ({ text: check.text, type: check.type, passed: false })),
+        kind: 'implementation' as const,
         status: 'pending' as const,
         model: resolveFeatureModel(feature.model, feature.description),
         attempts: 0,
       })),
     }));
 
+    const productReviewContract = resolveProductReviewContract(planning.productReviewContract, {
+      cwd: this.config.cwd,
+      prd: input.prd,
+      goal: planning.goal,
+      successCriteria: planning.successCriteria,
+    });
+
     return createMissionPlan({
       missionId: input.missionId,
       goal: planning.goal,
       constraints: planning.constraints,
       successCriteria: planning.successCriteria,
-      milestones,
+      productReviewContract,
+      milestones: appendFinalReviewMilestone(milestones, productReviewContract),
       state: 'planning',
     });
   }
@@ -578,7 +634,7 @@ export class ManagerAgent implements Agent {
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -588,6 +644,9 @@ export class ManagerAgent implements Agent {
       '- One feature must represent a cohesive implementation slice that can be completed in one focused worker session.',
       '- If scope is too large, fold details into phase descriptions and keep executable features compact.',
       '- Each milestone requires validationContract with executable commands where possible',
+      '- Provide productReviewContract for the final interactive product review. It must include cwd, target, startup/preconditions, and concrete checkpoints derived from the PRD.',
+      '- If the PRD/repository mentions `.port`, `CONDUCTOR_PORT`, or `make info`, validation commands must reuse that local URL resolution strategy and must not hardcode port 8000 except as a final fallback through `${CONDUCTOR_PORT:-8000}` or `.port`.',
+      '- Set feature.cwd only when the implementation or QA must run from a workspace subdirectory. cwd must be repo-relative (example: `frontend/apps/web`).',
       '- Feature IDs must follow mX-fY',
       '- Default feature model is codex-latest',
       '- Use model "claude-latest" only for UI creation, UI fixes, styling, layout, or visual design work',
@@ -843,6 +902,126 @@ function isUiFocusedFeature(description: string): boolean {
 
   return uiTargets.some((target) => normalized.includes(target))
     && uiActions.some((action) => normalized.includes(action));
+}
+
+function buildFeatureBriefing(input: ManagerInput): string {
+  const milestone = input.activeMilestone;
+  const feature = input.activeFeature;
+  if (!milestone || !feature) {
+    return '';
+  }
+
+  if (feature.kind === 'review') {
+    const contract = input.missionPlan.productReviewContract;
+    const checkpoints = contract?.checkpoints.map((checkpoint) => checkpoint.description) ?? [];
+    const objectiveLines = [
+      `${feature.id} ${feature.description} を実行し、final review を判定する。`,
+      `Mission goal: ${input.missionPlan.mission.goal}`,
+    ];
+    const constraintLines = [
+      'P1/P2 finding があれば sign-off せず、root cause ごとに remediation に落とし込む前提で観察する。',
+      `reviewType=${feature.reviewType ?? 'unknown'} generation=${feature.reviewGeneration ?? 1}`,
+      `現在の試行回数: ${feature.attempts}`,
+    ];
+    const validationFocusLines = [
+      ...toBulletItems(checkpoints, 'productReviewContract の checkpoints を優先確認する。'),
+      'PRD と実装差分の両方を読み、通常系だけでなく境界条件も確認する。',
+    ];
+    const riskLines = [
+      feature.reviewType === 'product'
+        ? 'product review では interactive browser verification が前提。js_repl / Playwright / startup 条件が満たせない場合は BLOCKED にする。'
+        : 'code review では PRD を満たさない実装や regression risk を P1/P2/P3 で分類する。',
+      feature.attempts > 0
+        ? '再試行 review なので、前 generation の findings が解消されているかを重点確認する。'
+        : null,
+    ];
+
+    return [
+      '## Objective',
+      ...objectiveLines.map((line) => `- ${line}`),
+      '',
+      '## Constraints',
+      ...constraintLines.map((line) => `- ${line}`),
+      '',
+      '## Validation focus',
+      ...validationFocusLines.map((line) => `- ${line}`),
+      '',
+      '## Risks',
+      ...toBulletItems(riskLines, '大きな追加リスクは現時点で未検出。').map((line) => `- ${line}`),
+    ].join('\n');
+  }
+
+  const objectiveLines = [
+    `${feature.id} ${feature.description} を実装し、${milestone.id} ${milestone.title} を前進させる。`,
+    `Mission goal: ${input.missionPlan.mission.goal}`,
+  ];
+
+  const constraintLines = [
+    ...toBulletItems(input.missionPlan.mission.constraints, 'ミッション制約は未定義。TASK.json を確認すること。'),
+    'source of truth は TASK.json の feature description / checks / validationContract。',
+    `現在の試行回数: ${feature.attempts}`,
+  ];
+
+  const featureCheckLines = (feature.checks ?? []).map((check) =>
+    check.type ? `${check.text} [${check.type}]` : check.text
+  );
+  const validationLines = getValidationFocusLines(milestone.validationContract);
+  const validationFocusLines = [
+    ...toBulletItems(featureCheckLines, null),
+    ...toBulletItems(validationLines, '明示的な validation check は未定義。'),
+  ];
+
+  const riskLines = [
+    feature.attempts > 0
+      ? '再試行中の feature なので、前回の差分や未解決事項の取りこぼしに注意が必要。'
+      : null,
+    input.prd && input.prd.trim().length > 0
+      ? null
+      : 'PRD が読み込めていないため、TASK.json と既存実装の整合ずれが起こりやすい。',
+    validationLines.length === 0
+      ? '検証条件が薄いため、実装完了後の確認漏れが起こりやすい。'
+      : null,
+  ];
+
+  return [
+    '## Objective',
+    ...objectiveLines.map((line) => `- ${line}`),
+    '',
+    '## Constraints',
+    ...constraintLines.map((line) => `- ${line}`),
+    '',
+    '## Validation focus',
+    ...validationFocusLines.map((line) => `- ${line}`),
+    '',
+    '## Risks',
+    ...toBulletItems(riskLines, '大きな追加リスクは現時点で未検出。').map((line) => `- ${line}`),
+  ].join('\n');
+}
+
+function getValidationFocusLines(contract: MissionPlan['milestones'][number]['validationContract']): string[] {
+  return [
+    ...contract.staticChecks.map((check) => formatValidationCheckLine('static', check.description, check.command)),
+    ...contract.testSuites.map((check) => formatValidationCheckLine('test', check.description, check.command)),
+    ...(contract.e2eChecks ?? []).map((check) => formatValidationCheckLine('e2e', check.description, check.command)),
+    ...(contract.manualSteps ?? []).map((check) => formatValidationCheckLine('manual', check.description, check.command)),
+  ].filter((line) => line.trim().length > 0);
+}
+
+function formatValidationCheckLine(kind: string, description: string, command?: string): string {
+  if (command && command.trim().length > 0) {
+    return `${kind}: ${description} (${command.trim()})`;
+  }
+  return `${kind}: ${description}`;
+}
+
+function toBulletItems(items: Array<string | null | undefined>, fallback: string | null): string[] {
+  const normalized = items
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter((item) => item.length > 0);
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  return fallback ? [fallback] : [];
 }
 
 function normalizeFeatureDescription(description: unknown): string {
@@ -1235,6 +1414,7 @@ function normalizePlanningOutput(value: unknown): MissionPlanningOutput | null {
     goal,
     constraints: constraints.length > 0 ? constraints : ['No backward compatibility'],
     successCriteria: successCriteria.length > 0 ? successCriteria : ['All validations pass'],
+    productReviewContract: normalizePlanningProductReviewContract(root.productReviewContract),
     milestones,
   };
 }
@@ -1317,6 +1497,217 @@ function normalizePlanningFeatureChecks(value: unknown): Array<{ text: string; t
   return checks.length > 0 ? checks : undefined;
 }
 
+function normalizePlanningProductReviewContract(
+  value: unknown
+): MissionPlanningOutput['productReviewContract'] | undefined {
+  const normalized = normalizeProductReviewContract(value);
+  if (!normalized) {
+    return undefined;
+  }
+  return {
+    cwd: normalized.cwd,
+    target: normalized.target,
+    startup: normalized.startup?.map((step) => ({
+      cwd: step.cwd,
+      command: step.command,
+    })),
+    preconditions: normalized.preconditions,
+    checkpoints: normalized.checkpoints.map((checkpoint) => ({
+      id: checkpoint.id,
+      description: checkpoint.description,
+      claim: checkpoint.claim,
+      visual: checkpoint.visual,
+    })),
+    artifactsDir: normalized.artifactsDir,
+    video: normalized.video,
+  };
+}
+
+function resolveProductReviewContract(
+  value: unknown,
+  context: {
+    cwd: string;
+    prd: string | null | undefined;
+    goal: string;
+    successCriteria: string[];
+  }
+): ProductReviewContract {
+  const normalized = normalizeProductReviewContract(value, context.cwd);
+  if (normalized) {
+    return normalized;
+  }
+
+  const inferredCwd = existsSync(join(context.cwd, 'frontend', 'apps', 'web'))
+    ? 'frontend/apps/web'
+    : undefined;
+  const checkpoints = context.successCriteria.length > 0
+    ? context.successCriteria.slice(0, 4).map((criterion, index) => ({
+      id: `criterion-${index + 1}`,
+      description: criterion,
+      claim: criterion,
+      visual: true,
+    }))
+    : [
+      {
+        id: 'mission-goal',
+        description: context.goal,
+        claim: context.goal,
+        visual: true,
+      },
+    ];
+
+  return {
+    cwd: inferredCwd,
+    target: 'http://127.0.0.1:${PORT}',
+    startup: [
+      {
+        cwd: inferredCwd,
+        command: 'npm run dev',
+      },
+    ],
+    preconditions: [
+      'Resolve PORT using .port, CONDUCTOR_PORT, or 8000 as the final fallback.',
+      'js_repl must be enabled for Codex app-server.',
+      'playwright must be importable from the review cwd.',
+    ],
+    checkpoints,
+    artifactsDir: 'artifacts/screenshots',
+  };
+}
+
+function appendFinalReviewMilestone(
+  milestones: MissionPlan['milestones'],
+  productReviewContract: ProductReviewContract
+): MissionPlan['milestones'] {
+  const nextMilestoneIndex = milestones.length + 1;
+  const milestoneId = `m${nextMilestoneIndex}`;
+  return [
+    ...milestones,
+    {
+      id: milestoneId,
+      title: 'Final Review',
+      description: 'Run final product review and code review before mission completion.',
+      status: 'pending' as const,
+      validationContract: createEmptyValidationContract(),
+      features: [
+        {
+          id: `${milestoneId}-f1`,
+          description: 'Run final product review against the PRD and interactive browser checks',
+          cwd: productReviewContract.cwd,
+          kind: 'review' as const,
+          reviewType: 'product' as const,
+          reviewGeneration: 1,
+          status: 'pending' as const,
+          model: CODEX_LATEST_ALIAS,
+          attempts: 0,
+        },
+        {
+          id: `${milestoneId}-f2`,
+          description: 'Run final code review against the PRD and final implementation',
+          kind: 'review' as const,
+          reviewType: 'code' as const,
+          reviewGeneration: 1,
+          status: 'pending' as const,
+          model: CODEX_LATEST_ALIAS,
+          attempts: 0,
+        },
+      ],
+    },
+  ];
+}
+
+function normalizeReviewFollowUpDrafts(
+  candidates: unknown[],
+  findings: ReviewFinding[]
+): FollowUpFeatureDraft[] {
+  const drafts: FollowUpFeatureDraft[] = [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      continue;
+    }
+
+    const record = candidate as Record<string, unknown>;
+    const trackingKey = normalizeFollowUpTrackingKey(
+      toNonEmptyString(record.trackingKey)
+      ?? deriveTrackingKeyFromReviewFinding(findings[0])
+    );
+    const description = toNonEmptyString(record.description)
+      ?? synthesizeReviewFollowUpDescription(findings, trackingKey);
+    if (!description || !trackingKey) {
+      continue;
+    }
+
+    const priority = String(record.priority ?? 'medium').toLowerCase();
+    drafts.push({
+      description,
+      trackingKey,
+      priority: priority === 'high' || priority === 'low' ? priority : 'medium',
+      rationale: toNonEmptyString(record.rationale) ?? undefined,
+      model: resolveFeatureModel(
+        typeof record.model === 'string' ? record.model : undefined,
+        description
+      ),
+    });
+  }
+
+  return mergeFollowUpDrafts(drafts);
+}
+
+function fallbackReviewFollowUpFeatures(findings: ReviewFinding[]): FollowUpFeatureDraft[] {
+  const buckets = new Map<string, ReviewFinding[]>();
+  for (const finding of findings) {
+    const trackingKey = normalizeFollowUpTrackingKey(
+      finding.trackingKey
+      ?? deriveTrackingKeyFromText(finding.surface)
+      ?? deriveTrackingKeyFromReviewFinding(finding)
+      ?? 'final-review'
+    ) ?? 'final-review';
+    const bucket = buckets.get(trackingKey) ?? [];
+    bucket.push(finding);
+    buckets.set(trackingKey, bucket);
+  }
+
+  return Array.from(buckets.entries()).map(([trackingKey, groupedFindings], index) => ({
+    description: synthesizeReviewFollowUpDescription(groupedFindings, trackingKey) ?? `Address ${trackingKey.replace(/[-_]+/g, ' ')}`,
+    trackingKey,
+    priority: index === 0 ? 'high' : 'medium',
+    rationale: groupedFindings[0]?.rationale,
+    model: CODEX_LATEST_ALIAS,
+  }));
+}
+
+function deriveTrackingKeyFromReviewFinding(finding: ReviewFinding | undefined): string | null {
+  if (!finding) {
+    return null;
+  }
+  return deriveTrackingKeyFromText(finding.trackingKey ?? finding.surface ?? finding.summary);
+}
+
+function synthesizeReviewFollowUpDescription(
+  findings: ReviewFinding[],
+  trackingKey?: string
+): string | null {
+  const suggestedFix = findings
+    .map((finding) => finding.suggestedFix?.trim())
+    .find((value): value is string => Boolean(value));
+  if (suggestedFix) {
+    return truncateMessage(suggestedFix, 220);
+  }
+
+  const summary = findings
+    .map((finding) => finding.summary.trim())
+    .find((value) => value.length > 0);
+  if (summary) {
+    return truncateMessage(`Address final review issue: ${summary}`, 220);
+  }
+
+  if (trackingKey) {
+    return truncateMessage(`Address ${trackingKey.replace(/[-_]+/g, ' ')}`, 220);
+  }
+
+  return null;
+}
+
 function coarsenPlanningFeatures(
   features: MissionPlanningOutput['milestones'][number]['features'],
   maxFeatures: number
@@ -1388,10 +1779,29 @@ function normalizeValidationChecks(
       id,
       description,
       type: type ?? undefined,
-      command: command ?? undefined,
+      command: normalizeValidationCommand(command),
     });
   });
   return checks.length > 0 ? checks : undefined;
+}
+
+function normalizeValidationCommand(command: string | null): string | undefined {
+  if (!command) {
+    return undefined;
+  }
+
+  let normalized = command;
+  normalized = normalized.replace(
+    /\bPORT=8000\b/g,
+    'PORT=$(cat .port 2>/dev/null || echo ${CONDUCTOR_PORT:-8000})'
+  );
+  normalized = normalized.replace(/http:\/\/127\.0\.0\.1:8000\b/g, 'http://127.0.0.1:$PORT');
+  normalized = normalized.replace(/http:\/\/localhost:8000\b/g, 'http://localhost:$PORT');
+  normalized = normalized.replace(/\bnext dev -p 8000\b/g, 'next dev -p $PORT');
+  normalized = normalized.replace(/\b--port 8000\b/g, '--port $PORT');
+  normalized = normalized.replace(/\b-p 8000\b/g, '-p $PORT');
+
+  return normalized;
 }
 
 function toNonEmptyString(value: unknown): string | null {

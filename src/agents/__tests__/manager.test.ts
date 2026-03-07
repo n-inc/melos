@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { jest } from '@jest/globals';
 
 import { ManagerAgent } from '../manager.js';
+import { createMissionPlan } from '../../state/mission.js';
 
 describe('ManagerAgent', () => {
   afterEach(() => {
@@ -63,6 +64,94 @@ describe('ManagerAgent', () => {
     expect(claudeExecute).not.toHaveBeenCalled();
   });
 
+  it('builds feature briefing locally without invoking engines', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<unknown>;
+      };
+      claudeEngine: {
+        execute: (...args: unknown[]) => Promise<unknown>;
+      };
+    };
+    const codexExecute = jest.spyOn(agentAny.codexEngine, 'execute');
+    const claudeExecute = jest.spyOn(agentAny.claudeEngine, 'execute');
+
+    const missionPlan = createMissionPlan({
+      missionId: 'student-lp',
+      goal: 'studentPageContent を source of truth にして persona 導線を統一する',
+      constraints: ['No backward compatibility layer'],
+      successCriteria: ['Persona pages are routed from the unified source'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Persona migration',
+          description: '既存 persona page を統合ルートへ移行する',
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [
+              {
+                id: 'typecheck',
+                description: 'Typecheck must pass',
+                type: 'auto:typecheck',
+                command: 'npm run typecheck',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+            testSuites: [
+              {
+                id: 'test',
+                description: 'Tests must pass',
+                type: 'auto:test',
+                command: 'npm test',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'student persona route を hard cutover で移行する',
+              checks: [{ text: 'studentPageContent を source of truth に保つ', type: 'product' }],
+              status: 'in_progress',
+              attempts: 1,
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    const milestone = missionPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+
+    const briefing = await agent.generateFeatureBriefing({
+      iteration: 1,
+      maxIterations: 3,
+      missionPlan,
+      activeMilestone: milestone,
+      activeFeature: feature,
+      prd: '',
+      latestValidationReport: null,
+      latestWorkerReport: null,
+    });
+
+    expect(briefing).toContain('## Objective');
+    expect(briefing).toContain('## Constraints');
+    expect(briefing).toContain('## Validation focus');
+    expect(briefing).toContain('## Risks');
+    expect(briefing).toContain('source of truth は TASK.json');
+    expect(briefing).toContain('npm run typecheck');
+    expect(briefing).toContain('PRD が読み込めていない');
+    expect(codexExecute).not.toHaveBeenCalled();
+    expect(claudeExecute).not.toHaveBeenCalled();
+  });
+
   it('generates mission plan from model output', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
@@ -112,6 +201,60 @@ describe('ManagerAgent', () => {
     expect(plan.milestones[0]?.id).toBe('m1');
     expect(plan.milestones[0]?.features[0]?.id).toBe('m1-f1');
     expect(mockExecute).toHaveBeenCalled();
+  });
+
+  it('normalizes hardcoded local dev ports in validation commands', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Students LP',
+        constraints: ['Use repo standard local URL resolution'],
+        successCriteria: ['Smoke command uses repo port'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'QA',
+            description: 'Run smoke',
+            validationContract: {
+              staticChecks: [],
+              testSuites: [
+                {
+                  id: 'lp-smoke',
+                  description: 'Run LP smoke',
+                  type: 'auto:test',
+                  command: 'bash -lc \'PORT=8000 pnpm dev && curl http://127.0.0.1:8000 && next dev -p 8000\'',
+                },
+              ],
+            },
+            features: [{ id: 'm1-f1', description: 'Verify QA flow', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'students-lp',
+      prd: '# Students LP\n\nUse `.port` / `CONDUCTOR_PORT` for local URLs.',
+    });
+
+    expect(plan.milestones[0]?.validationContract.testSuites[0]?.command).toBe(
+      'bash -lc \'PORT=$(cat .port 2>/dev/null || echo ${CONDUCTOR_PORT:-8000}) pnpm dev && curl http://127.0.0.1:$PORT && next dev -p $PORT\''
+    );
   });
 
   it('returns follow-up features from fallback when model output is invalid', async () => {
@@ -952,7 +1095,8 @@ describe('ManagerAgent', () => {
       prd: '# Large mission',
     });
 
-    expect(plan.milestones).toHaveLength(3);
-    expect(plan.milestones.every((milestone) => milestone.features.length <= 5)).toBe(true);
+    expect(plan.milestones).toHaveLength(4);
+    expect(plan.milestones.slice(0, 3).every((milestone) => milestone.features.length <= 5)).toBe(true);
+    expect(plan.milestones[3]?.title).toBe('Final Review');
   });
 });

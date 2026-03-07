@@ -40,6 +40,7 @@ export interface AppServerEngineOptions extends EngineOptions {
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   approvalPolicy?: AppServerApprovalPolicy;
   sandboxPolicy?: AppServerSandboxPolicyOption;
+  enabledFeatures?: string[];
   threadId?: string;
   onStream?: (chunk: string) => void;
   onCommandOutput?: (chunk: string) => void;
@@ -82,6 +83,7 @@ export class AppServerEngine extends Engine {
   private activeTurnId: string | null = null;
   private suppressTerminalOutput = false;
   private onEventSink: ((method: string, params: unknown) => void) | null = null;
+  private enabledFeaturesKey = '';
 
   constructor(dependencies: AppServerEngineDependencies = {}) {
     super();
@@ -115,6 +117,7 @@ export class AppServerEngine extends Engine {
         reasoningEffort = DEFAULT_REASONING_EFFORT,
         approvalPolicy = DEFAULT_APPROVAL_POLICY,
         sandboxPolicy = DEFAULT_SANDBOX_POLICY,
+        enabledFeatures,
         threadId: requestedThreadId,
         onStream,
         onCommandOutput,
@@ -125,7 +128,7 @@ export class AppServerEngine extends Engine {
       } = options;
       this.suppressTerminalOutput = suppressTerminalOutput;
       this.onEventSink = onEvent;
-      await this.ensureRunning();
+      await this.ensureRunning(enabledFeatures);
 
       const threadId = requestedThreadId
         ? await this.resumeThread(requestedThreadId, {
@@ -283,16 +286,28 @@ export class AppServerEngine extends Engine {
   /**
    * App Server を起動し、初期化する
    */
-  async ensureRunning(): Promise<void> {
-    if (this.serverProcess && this.transport && this.initialized) {
+  async ensureRunning(enabledFeatures?: string[]): Promise<void> {
+    const normalizedFeatures = normalizeEnabledFeatures(enabledFeatures);
+    const featuresKey = normalizedFeatures.join('\0');
+    if (
+      this.serverProcess
+      && this.transport
+      && this.initialized
+      && this.enabledFeaturesKey === featuresKey
+    ) {
       return;
     }
 
     await this.shutdown();
 
+    const args = ['app-server', '--listen', 'stdio://'];
+    for (const feature of normalizedFeatures) {
+      args.push('--enable', feature);
+    }
+
     const child = this.spawnProcess(
       'codex',
-      ['app-server', '--listen', 'stdio://'],
+      args,
       {
         cwd: process.cwd(),
         env: process.env,
@@ -336,6 +351,7 @@ export class AppServerEngine extends Engine {
     await this.requestWithRetry('initialize', initializeParams, 30_000);
     transport.notify('initialized');
     this.initialized = true;
+    this.enabledFeaturesKey = featuresKey;
   }
 
   /**
@@ -352,6 +368,7 @@ export class AppServerEngine extends Engine {
     this.serverProcess = null;
     this.initialized = false;
     this.activeTurnId = null;
+    this.enabledFeaturesKey = '';
 
     if (!child || child.killed) {
       return;
@@ -631,6 +648,26 @@ export class AppServerEngine extends Engine {
       }
     }
   }
+}
+
+function normalizeEnabledFeatures(enabledFeatures: string[] | undefined): string[] {
+  if (!Array.isArray(enabledFeatures)) {
+    return [];
+  }
+
+  const unique = new Set<string>();
+  for (const value of enabledFeatures) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+    const normalized = value.trim();
+    if (normalized.length === 0) {
+      continue;
+    }
+    unique.add(normalized);
+  }
+
+  return Array.from(unique).sort();
 }
 
 function mapSandboxMode(policy: AppServerSandboxPolicyOption): AppServerSandboxMode {

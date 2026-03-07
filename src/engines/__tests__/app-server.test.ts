@@ -304,4 +304,156 @@ describe('AppServerEngine', () => {
     expect(writes.some((line) => line.includes('running tests...'))).toBe(false);
     stderrSpy.mockRestore();
   });
+
+  it('starts codex app-server with enabled features when requested', async () => {
+    const transport = new MockTransport();
+    const spawnCalls: Array<{ command: string; args: string[] }> = [];
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        return { thread: { id: 'thr_5' } };
+      }
+      if (method === 'turn/start') {
+        setImmediate(async () => {
+          await transport.emitNotification('turn/completed', {
+            threadId: 'thr_5',
+            turn: {
+              id: 'turn_5',
+              status: 'completed',
+              error: null,
+            },
+          });
+        });
+        return { turn: { id: 'turn_5' } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: (command, args) => {
+        spawnCalls.push({ command, args });
+        return createFakeChildProcess();
+      },
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    const result = await engine.execute('product review', {
+      enabledFeatures: [' js_repl ', 'js_repl', ''],
+    });
+
+    expect(result.success).toBe(true);
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]).toEqual({
+      command: 'codex',
+      args: ['app-server', '--listen', 'stdio://', '--enable', 'js_repl'],
+    });
+  });
+
+  it('reuses the running app-server when enabled features stay the same', async () => {
+    const transport = new MockTransport();
+    const spawnCalls: Array<{ command: string; args: string[] }> = [];
+    let turnCounter = 0;
+    let threadCounter = 0;
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        threadCounter += 1;
+        return { thread: { id: `thr_reuse_${threadCounter}` } };
+      }
+      if (method === 'turn/start') {
+        turnCounter += 1;
+        const currentTurnId = `turn_reuse_${turnCounter}`;
+        const currentThreadId = `thr_reuse_${threadCounter}`;
+        setImmediate(async () => {
+          await transport.emitNotification('turn/completed', {
+            threadId: currentThreadId,
+            turn: {
+              id: currentTurnId,
+              status: 'completed',
+              error: null,
+            },
+          });
+        });
+        return { turn: { id: currentTurnId } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: (command, args) => {
+        spawnCalls.push({ command, args });
+        return createFakeChildProcess();
+      },
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    await engine.execute('review 1', {
+      enabledFeatures: ['js_repl'],
+    });
+    await engine.execute('review 2', {
+      enabledFeatures: ['js_repl'],
+    });
+
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('restarts the app-server when enabled features change', async () => {
+    const transport = new MockTransport();
+    const spawnCalls: Array<{ command: string; args: string[] }> = [];
+    let turnCounter = 0;
+    let threadCounter = 0;
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        threadCounter += 1;
+        return { thread: { id: `thr_restart_${threadCounter}` } };
+      }
+      if (method === 'turn/start') {
+        turnCounter += 1;
+        const currentTurnId = `turn_restart_${turnCounter}`;
+        const currentThreadId = `thr_restart_${threadCounter}`;
+        setImmediate(async () => {
+          await transport.emitNotification('turn/completed', {
+            threadId: currentThreadId,
+            turn: {
+              id: currentTurnId,
+              status: 'completed',
+              error: null,
+            },
+          });
+        });
+        return { turn: { id: currentTurnId } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: (command, args) => {
+        spawnCalls.push({ command, args });
+        return createFakeChildProcess();
+      },
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    await engine.execute('implementation', {});
+    await engine.execute('product review', {
+      enabledFeatures: ['js_repl'],
+    });
+
+    expect(spawnCalls).toHaveLength(2);
+    expect(spawnCalls[0]).toEqual({
+      command: 'codex',
+      args: ['app-server', '--listen', 'stdio://'],
+    });
+    expect(spawnCalls[1]).toEqual({
+      command: 'codex',
+      args: ['app-server', '--listen', 'stdio://', '--enable', 'js_repl'],
+    });
+  });
 });

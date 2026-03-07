@@ -80,8 +80,6 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
       worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
-      research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
   };
   return {
@@ -352,14 +350,11 @@ describe('ui/tui contract', () => {
     h.input.write('M');
     h.input.write('1');
     h.input.write('2');
-    h.input.write('3');
-    h.input.write('4');
     h.ui.stop();
 
     expect(h.onCycleModel).toHaveBeenNthCalledWith(1, 'planner');
     expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'worker');
-    expect(h.onCycleModel).toHaveBeenNthCalledWith(3, 'validator');
-    expect(h.onCycleModel).toHaveBeenNthCalledWith(4, 'research');
+    expect(h.onCycleModel).toHaveBeenCalledTimes(2);
   });
 
   it('routes C/A/U keys to active feature model controls only in features/task views', () => {

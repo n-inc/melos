@@ -6,7 +6,7 @@ export type ViewId = 'overview' | 'features' | 'workers' | 'models' | 'prd' | 't
 
 export interface WorkerRunView {
   id: number;
-  type: 'implement' | 'validate' | 'research';
+  type: 'implement' | 'validate' | 'review' | 'research';
   featureId?: string;
   featureTitle?: string;
   milestoneId?: string;
@@ -54,6 +54,15 @@ export interface MissionControlState {
   workerRuns: WorkerRunView[];
   modelAssignments: Record<ModelRole, ModelAssignment>;
   pendingPrompt?: string | null;
+  reviewStatus?: {
+    reviewType: 'product' | 'code';
+    generation: number;
+    activeFeatureId: string | null;
+    latestFindingCount: number;
+    blockingFindingCount: number;
+    passed: boolean | null;
+    summary?: string;
+  } | null;
 }
 
 export interface ViewPort {

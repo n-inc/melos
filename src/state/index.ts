@@ -14,6 +14,7 @@ export {
 
 export {
   type MissionState,
+  type FeatureKind,
   type FeatureStatus,
   type MilestoneStatus,
   type CheckItem,
@@ -40,6 +41,21 @@ export {
   updateFeatureStatus,
   appendFeaturesToMilestone,
 } from './mission.js';
+
+export {
+  type ReviewType,
+  type ReviewFindingPriority,
+  type ReviewFinding,
+  type ReviewArtifact,
+  type ProductReviewCheckpoint,
+  type ProductReviewStartupStep,
+  type ProductReviewContract,
+  type ReviewReport,
+  normalizeProductReviewContract,
+  normalizeReviewFinding,
+  normalizeReviewArtifact,
+  isBlockingReviewFinding,
+} from './review.js';
 
 export {
   type CheckType,

@@ -37,8 +37,6 @@ export interface CLIOptions {
   maxIterations?: number;
   plannerModel?: string;
   workerModel?: string;
-  validatorModel?: string;
-  researchModel?: string;
   model?: string;
   effort?: 'low' | 'medium' | 'high' | 'max';
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -139,8 +137,6 @@ export function createProgram(): Command {
     .option('--model <model>', '全ロールの共通モデル')
     .option('--planner-model <model>', 'Planner/Manager モデル')
     .option('--worker-model <model>', 'Worker モデル')
-    .option('--validator-model <model>', 'Validator モデル')
-    .option('--research-model <model>', 'Research モデル')
     .option('--reasoning-effort <level>', 'Worker 推論努力レベル (minimal|low|medium|high|xhigh)')
     .option('--effort <level>', 'Planner effort レベル (low|medium|high|max)')
     .option('--plain', 'プレーン出力モード')
@@ -395,8 +391,6 @@ export async function executeWithOptions(
     melosDir,
     plannerModel: models.planner,
     workerModel: models.worker,
-    validatorModel: models.validator,
-    researchModel: models.research,
     managerEffort: options.effort ?? 'high',
     workerReasoningEffort: options.reasoningEffort ?? 'xhigh',
     interactivePlanning: options.interactive === true,
@@ -545,6 +539,15 @@ export interface MissionStatusPayload {
     activeFeatureId: string | null;
     totalIterations: number;
   };
+  review: {
+    reviewType: 'product' | 'code';
+    generation: number;
+    activeFeatureId: string | null;
+    latestFindingCount: number;
+    blockingFindingCount: number;
+    passed: boolean | null;
+    summary?: string;
+  } | null;
   pendingPrompt: string | null;
   lastEvent: {
     seq: number;
@@ -569,12 +572,15 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   let activeFeatureId: string | null = null;
   let totalIterations = 0;
   let pendingPrompt: string | null = null;
+  let review: MissionStatusPayload['review'] = null;
   let missionFromTask = false;
   let initialized = false;
+  let missionPlanForReview: MissionPlan | null = null;
 
   if (existsSync(missionFilePath)) {
     try {
       const mission = await loadMissionPlan(missionFilePath);
+      missionPlanForReview = mission;
       missionFromTask = true;
       missionState = mission.state;
       const totalFeatures = mission.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
@@ -605,6 +611,7 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   } else {
     const snapshotPlan = snapshot.state?.kernel?.missionPlan;
     if (!missionFromTask && snapshotPlan) {
+      missionPlanForReview = snapshotPlan;
       missionState = snapshotPlan.state;
       const totalFeatures = snapshotPlan.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
       const completedFeatures = snapshotPlan.milestones.reduce(
@@ -624,6 +631,10 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
       initialized = true;
     }
     appendRuntimeStatusWarnings(warnings, snapshot.state?.kernel?.warnings);
+    review = buildMissionStatusReview(
+      missionPlanForReview,
+      snapshot.state?.kernel?.latestReviewReport ?? null
+    );
     if (!pendingPrompt && snapshot.state?.kernel?.logEntries) {
       const entries = snapshot.state.kernel.logEntries;
       for (let idx = entries.length - 1; idx >= 0; idx -= 1) {
@@ -663,6 +674,7 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
       activeFeatureId,
       totalIterations,
     },
+    review,
     pendingPrompt,
     lastEvent: last
       ? {
@@ -686,6 +698,11 @@ function formatStatusPlain(status: MissionStatusPayload): string {
     `lastEvent=${status.lastEvent ? `${status.lastEvent.seq}:${status.lastEvent.type}` : '-'}`,
     `nextSeq=${status.cursor.nextSeq}`,
   ];
+  if (status.review) {
+    lines.push(
+      `review=${status.review.reviewType} g${status.review.generation} active=${status.review.activeFeatureId ?? '-'} findings=${status.review.latestFindingCount} blocking=${status.review.blockingFindingCount} passed=${status.review.passed === null ? '-' : status.review.passed ? 'yes' : 'no'}`
+    );
+  }
   if (status.pendingPrompt) {
     lines.push(`pending=${status.pendingPrompt}`);
   }
@@ -911,6 +928,9 @@ function deriveLogActor(event: MissionEvent): Exclude<LogActorFilter, 'all'> {
   if (event.type.startsWith('validation_')) {
     return 'validator';
   }
+  if (event.type.startsWith('review_')) {
+    return 'worker';
+  }
   if (event.type === 'warning_emitted') {
     const source = event.payload?.source;
     if (source === 'validation') {
@@ -994,6 +1014,25 @@ function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: 
       message: payloadMessage || event.type,
     };
   }
+  if (event.type === 'review_started') {
+    const reviewType = typeof event.payload?.reviewType === 'string' ? event.payload.reviewType : 'review';
+    const generation = typeof event.payload?.generation === 'number' ? event.payload.generation : 1;
+    return {
+      kind: 'REVIEW',
+      message: `${reviewType} review g${generation} started`,
+    };
+  }
+  if (event.type === 'review_result') {
+    const summary = typeof event.payload?.summary === 'string' ? event.payload.summary : 'review completed';
+    const blockingFindingCount = typeof event.payload?.blockingFindingCount === 'number'
+      ? event.payload.blockingFindingCount
+      : 0;
+    const passed = event.payload?.passed === true;
+    return {
+      kind: passed ? 'DONE' : 'REVIEW',
+      message: `${summary} [${passed ? 'passed' : `${blockingFindingCount} blocking`}]`,
+    };
+  }
   if (event.type === 'validation_started') {
     return { kind: 'VALIDATE', message: payloadMessage || 'validation started' };
   }
@@ -1027,6 +1066,9 @@ function resolveDefaultKind(event: MissionEvent): string {
   }
   if (event.type === 'worker_error' || event.type === 'manager_error' || event.type === 'error' || event.type === 'mission_failed') {
     return 'ERR';
+  }
+  if (event.type === 'review_started' || event.type === 'review_result') {
+    return 'REVIEW';
   }
   if (event.type === 'validation_started' || event.type === 'validation_result') {
     return 'VALIDATE';
@@ -1143,16 +1185,12 @@ function resolveGitStrategy(
 function resolveModels(options: CLIOptions, config: MelosConfig): {
   planner: string;
   worker: string;
-  validator: string;
-  research: string;
 } {
   const fallback = normalizeModelName(options.model) ?? CODEX_LATEST_ALIAS;
 
   return {
     planner: normalizeModelName(options.plannerModel ?? config.models?.planner) ?? fallback,
     worker: normalizeModelName(options.workerModel ?? config.models?.worker) ?? fallback,
-    validator: normalizeModelName(options.validatorModel ?? config.models?.validator) ?? fallback,
-    research: normalizeModelName(options.researchModel ?? config.models?.research) ?? fallback,
   };
 }
 
@@ -1208,6 +1246,41 @@ function inferMissionIdFromCwd(cwd: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     || 'mission';
+}
+
+function buildMissionStatusReview(
+  missionPlan: MissionPlan | null,
+  latestReviewReport: MissionKernelState['latestReviewReport']
+): MissionStatusPayload['review'] {
+  const activeReviewFeature = findActiveReviewFeature(missionPlan);
+  if (!activeReviewFeature && !latestReviewReport) {
+    return null;
+  }
+
+  return {
+    reviewType: activeReviewFeature?.reviewType ?? latestReviewReport?.reviewType ?? 'code',
+    generation: activeReviewFeature?.reviewGeneration ?? latestReviewReport?.generation ?? 1,
+    activeFeatureId: activeReviewFeature?.id ?? null,
+    latestFindingCount: latestReviewReport?.findings.length ?? 0,
+    blockingFindingCount: latestReviewReport?.blockingFindingCount ?? 0,
+    passed: latestReviewReport?.passed ?? null,
+    summary: latestReviewReport?.summary,
+  };
+}
+
+function findActiveReviewFeature(missionPlan: MissionPlan | null) {
+  if (!missionPlan?.activeFeatureId) {
+    return null;
+  }
+  for (const milestone of missionPlan.milestones) {
+    const feature = milestone.features.find((candidate) =>
+      candidate.id === missionPlan.activeFeatureId && candidate.kind === 'review'
+    );
+    if (feature) {
+      return feature;
+    }
+  }
+  return null;
 }
 
 async function handleCommandAction(action: () => Promise<void>): Promise<void> {

@@ -15,6 +15,12 @@ import {
   resolveRuntimeModel,
 } from '../models/registry.js';
 import type { ValidationCheckFailure, ValidationCheckResult } from '../state/validation.js';
+import {
+  isBlockingReviewFinding,
+  normalizeReviewArtifact,
+  normalizeReviewFinding,
+  type ProductReviewContract,
+} from '../state/review.js';
 import type {
   Agent,
   AgentMode,
@@ -163,6 +169,13 @@ export class WorkerAgent implements Agent {
   }
 
   private async buildPrompt(input: WorkerInput): Promise<string> {
+    if (input.feature.kind === 'review' && input.feature.reviewType === 'product') {
+      return this.buildProductReviewPrompt(input);
+    }
+    if (input.feature.kind === 'review' && input.feature.reviewType === 'code') {
+      return this.buildCodeReviewPrompt(input);
+    }
+
     const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
     const featureChecks = input.feature.checks?.map((check) => `- ${check.text}`).join('\n') || '- none';
     const executionCwd = this.resolveExecutionCwd(input);
@@ -263,11 +276,145 @@ export class WorkerAgent implements Agent {
     return sections.join('\n');
   }
 
+  private async buildProductReviewPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveProductReviewPromptPath());
+    const contract = this.resolveProductReviewContract(input);
+    const executionCwd = this.resolveExecutionCwd(input);
+    const startup = (contract?.startup ?? [])
+      .map((step) => `- cwd=${step.cwd ?? '.'} :: ${step.command}`)
+      .join('\n') || '- none';
+    const checkpoints = (contract?.checkpoints ?? [])
+      .map((checkpoint) => `- ${checkpoint.id} :: ${checkpoint.description}${checkpoint.claim ? ` (claim: ${checkpoint.claim})` : ''}${checkpoint.visual ? ' [visual]' : ''}`)
+      .join('\n') || '- none';
+    const preconditions = (contract?.preconditions ?? []).map((item) => `- ${item}`).join('\n') || '- none';
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Review feature: ${input.feature.id} ${input.feature.description}`,
+      `- Review generation: ${input.feature.reviewGeneration ?? 1}`,
+      `- Execution cwd: ${executionCwd}`,
+      '',
+      '## Product Review Contract',
+      contract ? JSON.stringify(contract, null, 2) : '(missing contract)',
+      '',
+      '## Startup',
+      startup,
+      '',
+      '## Preconditions',
+      preconditions,
+      '',
+      '## Checkpoints',
+      checkpoints,
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'product review summary',
+        warnings: [],
+        findings: [
+          {
+            id: 'product-finding-1',
+            priority: 'P2',
+            summary: 'Describe the unmet requirement',
+            rationale: 'Why this blocks sign-off',
+            suggestedFix: 'What should be fixed',
+            trackingKey: 'stable-root-cause',
+            surface: 'checkout-flow',
+            affectedFiles: ['src/app.tsx'],
+          },
+        ],
+        artifacts: [
+          {
+            kind: 'screenshot',
+            path: `${contract?.artifactsDir ?? 'artifacts/screenshots'}/signoff-home.png`,
+            label: 'Hero state after verification',
+          },
+        ],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
+  private async buildCodeReviewPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveCodeReviewPromptPath());
+    const executionCwd = this.resolveExecutionCwd(input);
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Review feature: ${input.feature.id} ${input.feature.description}`,
+      `- Review generation: ${input.feature.reviewGeneration ?? 1}`,
+      `- Execution cwd: ${executionCwd}`,
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'code review summary',
+        warnings: [],
+        findings: [
+          {
+            id: 'code-finding-1',
+            priority: 'P2',
+            summary: 'Describe the blocking code issue',
+            rationale: 'Why this blocks sign-off',
+            suggestedFix: 'What should be fixed',
+            trackingKey: 'stable-root-cause',
+            surface: 'api-contract',
+            affectedFiles: ['src/server.ts'],
+          },
+        ],
+        artifacts: [],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
   private resolveWorkerPromptPath(): string {
     const promptsDir = isAbsolute(this.config.promptsDir)
       ? this.config.promptsDir
       : resolve(this.config.cwd, this.config.promptsDir);
     return join(promptsDir, 'worker.md');
+  }
+
+  private resolveProductReviewPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'product-review.md');
+  }
+
+  private resolveCodeReviewPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'code-review.md');
+  }
+
+  private resolveProductReviewContract(input: WorkerInput): ProductReviewContract | undefined {
+    return input.missionPlan.productReviewContract;
   }
 
   private resolveGitCommitterSkillPath(): string {
@@ -330,6 +477,27 @@ export class WorkerAgent implements Agent {
         if (Array.isArray(parsed.warnings)) {
           report.warnings = normalizeWarnings(parsed.warnings);
         }
+        const reviewType = input.feature.reviewType;
+        if (reviewType && Array.isArray((parsed as { findings?: unknown[] }).findings)) {
+          const findings = ((parsed as { findings?: unknown[] }).findings ?? [])
+            .map((finding, index) => normalizeReviewFinding(finding, reviewType, index))
+            .filter((finding): finding is NonNullable<typeof finding> => Boolean(finding));
+          const artifacts = (Array.isArray((parsed as { artifacts?: unknown[] }).artifacts)
+            ? (parsed as { artifacts?: unknown[] }).artifacts ?? []
+            : [])
+            .map((artifact) => normalizeReviewArtifact(artifact))
+            .filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact));
+          report.review = {
+            reviewType,
+            generation: input.feature.reviewGeneration ?? 1,
+            passed: findings.every((finding) => !isBlockingReviewFinding(finding))
+              && parsed.status !== 'FAILED'
+              && parsed.status !== 'BLOCKED',
+            summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+            findings,
+            artifacts,
+          };
+        }
         if (Array.isArray(parsed.discoveredFeatures)) {
           report.discoveredFeatures = normalizeDiscoveredFeatures(parsed.discoveredFeatures);
         }
@@ -352,9 +520,37 @@ export class WorkerAgent implements Agent {
       report.status = 'SUCCESS';
     }
 
+    if (input.feature.reviewType && !report.review) {
+      const summary = report.summary
+        || output.split(/\n/).find((line) => line.trim().length > 0)?.trim()
+        || `${input.feature.reviewType} review could not be completed`;
+      report.review = {
+        reviewType: input.feature.reviewType,
+        generation: input.feature.reviewGeneration ?? 1,
+        passed: false,
+        summary,
+        findings: [
+          {
+            id: `${input.feature.reviewType}-review-blocked`,
+            reviewType: input.feature.reviewType,
+            priority: 'P1',
+            summary,
+            rationale: 'The review executor did not return a structured final review report.',
+          },
+        ],
+        artifacts: [],
+      };
+      if (report.status === 'SUCCESS' && report.review.findings.some((finding) => isBlockingReviewFinding(finding))) {
+        report.status = 'FAILED';
+      }
+    }
+
     if (!report.summary) {
       report.summary = output.split(/\n/).find((line) => line.trim().length > 0)?.trim()
         || `${report.status} ${input.feature.id}`;
+    }
+    if (report.review && !report.review.summary) {
+      report.review.summary = report.summary;
     }
 
     return report;
@@ -385,7 +581,9 @@ export class WorkerAgent implements Agent {
     const shouldResume = this.resumeThreadId !== null
       && this.resumeMissionId !== null
       && this.resumeMissionId === input.missionPlan.mission.id;
+    const isReviewFeature = input.feature.kind === 'review';
     const threadId = shouldResume && this.resumeThreadId
+      && !isReviewFeature
       ? this.resumeThreadId
       : undefined;
 
@@ -393,6 +591,9 @@ export class WorkerAgent implements Agent {
       cwd: this.resolveExecutionCwd(input),
       model: resolveRuntimeModel(this.config.model, CODEX_LATEST_ALIAS),
       reasoningEffort: this.config.reasoningEffort || 'xhigh',
+      enabledFeatures: input.feature.kind === 'review' && input.feature.reviewType === 'product'
+        ? ['js_repl']
+        : undefined,
       execMode: true,
       suppressTerminalOutput: this.config.suppressTerminalOutput === true,
       threadId,
@@ -426,12 +627,21 @@ export class WorkerAgent implements Agent {
   }
 
   private shouldExecuteWithClaude(input: WorkerInput): boolean {
+    if (input.feature.kind === 'review' && input.feature.reviewType === 'product') {
+      return false;
+    }
     return isClaudeFamily(input.feature.model);
   }
 
   private resolveExecutionCwd(input: WorkerInput): string {
     if (typeof input.feature.cwd === 'string' && input.feature.cwd.trim().length > 0) {
       return resolve(this.config.cwd, input.feature.cwd);
+    }
+    if (input.feature.kind === 'review') {
+      const reviewCwd = input.missionPlan.productReviewContract?.cwd;
+      if (typeof reviewCwd === 'string' && reviewCwd.trim().length > 0) {
+        return resolve(this.config.cwd, reviewCwd);
+      }
     }
     return this.config.cwd;
   }

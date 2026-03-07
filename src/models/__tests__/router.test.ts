@@ -6,8 +6,6 @@ describe('models/router', () => {
       assignments: {
         planner: 'opus',
         worker: 'gpt-5.4',
-        validator: 'sonnet',
-        research: 'haiku',
       },
       escalationPolicy: {
         enabled: true,
@@ -34,8 +32,6 @@ describe('models/router', () => {
       assignments: {
         planner: 'haiku',
         worker: 'gpt-5.4',
-        validator: 'sonnet',
-        research: 'sonnet',
       },
       escalationPolicy: {
         enabled: true,

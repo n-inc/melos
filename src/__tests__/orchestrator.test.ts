@@ -8,7 +8,7 @@ import { Orchestrator } from '../orchestrator.js';
 import { ManagerAgent, MissionPlanningError } from '../agents/manager.js';
 import { WorkerAgent } from '../agents/worker.js';
 import { getDefaultPromptsDir } from '../prompts/index.js';
-import { createMissionPlan } from '../state/mission.js';
+import { createMissionPlan, type MissionPlan } from '../state/mission.js';
 import type { MissionControlState } from '../ui/tui-views.js';
 
 describe('Orchestrator v0.8', () => {
@@ -98,6 +98,489 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.success).toBe(true);
     expect(result.reason).toBe('completed');
+  });
+
+  it('runs final review gate before completion and saves review reports', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-final-review-pass-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Final review mission\n\nVerify the final sign-off flow.', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'final-review-pass',
+      goal: 'Finish implementation only after final reviews pass',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['product review passes', 'code review passes'],
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          { id: 'hero', description: 'Hero flow satisfies the PRD', visual: true },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Implementation',
+          description: 'Build the feature',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement the feature',
+              kind: 'implementation',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+        {
+          id: 'm2',
+          title: 'Final Review',
+          description: 'Run final product review and code review',
+          order: 2,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm2-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+            {
+              id: 'm2-f2',
+              description: 'Run final code review',
+              kind: 'review',
+              reviewType: 'code',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    const workerRun = jest.spyOn(WorkerAgent.prototype, 'run');
+    workerRun
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'SUCCESS',
+          summary: 'implementation complete',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 2,
+          milestoneId: 'm2',
+          featureId: 'm2-f1',
+          status: 'SUCCESS',
+          summary: 'product review passed',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          checks: [],
+          review: {
+            reviewType: 'product',
+            generation: 1,
+            passed: true,
+            summary: 'product review passed',
+            findings: [],
+            artifacts: [
+              { kind: 'screenshot', path: 'artifacts/screenshots/home.png', label: 'Home' },
+            ],
+          },
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 3,
+          milestoneId: 'm2',
+          featureId: 'm2-f2',
+          status: 'SUCCESS',
+          summary: 'code review passed',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          checks: [],
+          review: {
+            reviewType: 'code',
+            generation: 1,
+            passed: true,
+            summary: 'code review passed',
+            findings: [],
+            artifacts: [],
+          },
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe('completed');
+    expect(workerRun.mock.calls.map(([input]) => input.feature.id)).toEqual(['m1-f1', 'm2-f1', 'm2-f2']);
+    expect(existsSync(join(melosDir, 'reviews', 'm2-f1.json'))).toBe(true);
+    expect(existsSync(join(melosDir, 'reviews', 'm2-f2.json'))).toBe(true);
+  });
+
+  it('adds remediation features and reruns final review after a product review failure', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-final-review-rerun-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Final review rerun mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'final-review-rerun',
+      goal: 'Loop on final review findings until sign-off',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['final review reruns after remediation'],
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          { id: 'checkout', description: 'Checkout flow satisfies the PRD', visual: true },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Implementation',
+          description: 'Build the feature',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement the feature',
+              kind: 'implementation',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+        {
+          id: 'm2',
+          title: 'Final Review',
+          description: 'Run final product review and code review',
+          order: 2,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm2-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+            {
+              id: 'm2-f2',
+              description: 'Run final code review',
+              kind: 'review',
+              reviewType: 'code',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    const reviewFollowUps = jest.spyOn(ManagerAgent.prototype, 'generateReviewFollowUpFeatures')
+      .mockResolvedValue([
+        {
+          description: 'Fix the checkout flow to satisfy the PRD',
+          trackingKey: 'checkout-flow',
+          priority: 'high',
+          model: 'codex-latest',
+        },
+      ]);
+    const workerRun = jest.spyOn(WorkerAgent.prototype, 'run');
+    workerRun
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'SUCCESS',
+          summary: 'implementation complete',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 2,
+          milestoneId: 'm2',
+          featureId: 'm2-f1',
+          status: 'SUCCESS',
+          summary: 'product review found blockers',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          checks: [],
+          review: {
+            reviewType: 'product',
+            generation: 1,
+            passed: false,
+            summary: 'product review found blockers',
+            findings: [
+              {
+                id: 'product-finding-1',
+                reviewType: 'product',
+                priority: 'P2',
+                summary: 'Checkout flow does not satisfy the PRD',
+                rationale: 'The main product claim is still unmet.',
+                trackingKey: 'checkout-flow',
+                surface: 'checkout',
+              },
+            ],
+            artifacts: [],
+          },
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 3,
+          milestoneId: 'm2',
+          featureId: 'm2-f3',
+          status: 'SUCCESS',
+          summary: 'remediation complete',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 4,
+          milestoneId: 'm2',
+          featureId: 'm2-f4',
+          status: 'SUCCESS',
+          summary: 'product review passed after remediation',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          checks: [],
+          review: {
+            reviewType: 'product',
+            generation: 2,
+            passed: true,
+            summary: 'product review passed after remediation',
+            findings: [],
+            artifacts: [],
+          },
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 5,
+          milestoneId: 'm2',
+          featureId: 'm2-f5',
+          status: 'SUCCESS',
+          summary: 'code review passed after remediation',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: false,
+            typecheckPassed: false,
+          },
+          checks: [],
+          review: {
+            reviewType: 'code',
+            generation: 2,
+            passed: true,
+            summary: 'code review passed after remediation',
+            findings: [],
+            artifacts: [],
+          },
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 12,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe('completed');
+    expect(reviewFollowUps).toHaveBeenCalledWith(expect.objectContaining({
+      milestoneId: 'm2',
+      reviewType: 'product',
+      generation: 1,
+    }));
+    expect(workerRun.mock.calls.map(([input]) => input.feature.id)).toEqual(['m1-f1', 'm2-f1', 'm2-f3', 'm2-f4', 'm2-f5']);
+
+    const persisted = JSON.parse(readFileSync(missionPath, 'utf-8')) as MissionPlan;
+    const finalReviewMilestone = persisted.milestones.find((milestone) => milestone.id === 'm2');
+    expect(finalReviewMilestone?.features.map((feature) => ({ id: feature.id, status: feature.status }))).toEqual([
+      { id: 'm2-f1', status: 'done' },
+      { id: 'm2-f2', status: 'skipped' },
+      { id: 'm2-f3', status: 'done' },
+      { id: 'm2-f4', status: 'done' },
+      { id: 'm2-f5', status: 'done' },
+    ]);
+    expect(existsSync(join(melosDir, 'reviews', 'm2-f1.json'))).toBe(true);
+    expect(existsSync(join(melosDir, 'reviews', 'm2-f4.json'))).toBe(true);
+    expect(existsSync(join(melosDir, 'reviews', 'm2-f5.json'))).toBe(true);
   });
 
   it('completes with warnings when worker warnings exist and manual validation evidence is missing', async () => {
@@ -1542,14 +2025,14 @@ describe('Orchestrator v0.8', () => {
     });
 
     const router = (orchestrator as unknown as {
-      modelRouter: { getModel: (role: 'validator') => string };
+      modelRouter: { getModel: (role: 'planner') => string };
     }).modelRouter;
 
-    expect(router.getModel('validator')).toBe('codex-latest');
-    await orchestrator.cycleModel('validator');
-    expect(router.getModel('validator')).toBe('claude-latest');
-    await orchestrator.cycleModel('validator');
-    expect(router.getModel('validator')).toBe('sonnet');
+    expect(router.getModel('planner')).toBe('codex-latest');
+    await orchestrator.cycleModel('planner');
+    expect(router.getModel('planner')).toBe('claude-latest');
+    await orchestrator.cycleModel('planner');
+    expect(router.getModel('planner')).toBe('sonnet');
   });
 
   it('defaults all roles to codex-latest when models are not specified', () => {
@@ -1574,13 +2057,11 @@ describe('Orchestrator v0.8', () => {
     });
 
     const router = (orchestrator as unknown as {
-      modelRouter: { getModel: (role: 'planner' | 'worker' | 'validator' | 'research') => string };
+      modelRouter: { getModel: (role: 'planner' | 'worker') => string };
     }).modelRouter;
 
     expect(router.getModel('planner')).toBe('codex-latest');
     expect(router.getModel('worker')).toBe('codex-latest');
-    expect(router.getModel('validator')).toBe('codex-latest');
-    expect(router.getModel('research')).toBe('codex-latest');
   });
 
   it('keeps TASK fixed model even after pre-approval worker model switch', async () => {

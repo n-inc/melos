@@ -62,8 +62,6 @@ function createState(): MissionControlState {
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
       worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
-      research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
   };
 }

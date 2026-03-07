@@ -73,8 +73,6 @@ function createState(): MissionControlState {
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
       worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
-      research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
   };
 }
@@ -230,7 +228,7 @@ describe('ui/tui views', () => {
     expect(lines).toContain('max');
     expect(lines).toContain('high');
     expect(lines).toContain('1 Planner');
-    expect(lines).toContain('4 Research');
+    expect(lines).toContain('2 Worker');
   });
 
 });

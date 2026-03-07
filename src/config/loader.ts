@@ -11,8 +11,6 @@ export interface MelosConfig {
   models?: {
     planner?: ModelName;
     worker?: ModelName;
-    validator?: ModelName;
-    research?: ModelName;
   };
   git?: {
     enabled?: boolean;
@@ -74,12 +72,6 @@ function validateConfig(config: MelosConfig): MelosConfig {
     }
     if (isNonEmptyString(config.models.worker)) {
       models.worker = config.models.worker;
-    }
-    if (isNonEmptyString(config.models.validator)) {
-      models.validator = config.models.validator;
-    }
-    if (isNonEmptyString(config.models.research)) {
-      models.research = config.models.research;
     }
     if (Object.keys(models).length > 0) {
       validated.models = models;

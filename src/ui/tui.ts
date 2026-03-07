@@ -65,10 +65,6 @@ function resolveModelHotkey(raw: string): ModelRole | null {
       return 'planner';
     case '2':
       return 'worker';
-    case '3':
-      return 'validator';
-    case '4':
-      return 'research';
     default:
       return null;
   }
@@ -201,7 +197,10 @@ export function createRuntimeUI(
 
   const buildPlainStatusLine = (nextState: MissionControlState) => {
     const pending = nextState.pendingPrompt ? ` pending=${nextState.pendingPrompt}` : '';
-    return `state=${nextState.missionState} progress=${nextState.progressLabel} active=${nextState.activeFeatureId ?? '-'} branch=${nextState.activeBranch ?? '-'} actor=${nextState.currentActor}${pending}`;
+    const review = nextState.reviewStatus
+      ? ` review=${nextState.reviewStatus.reviewType} g${nextState.reviewStatus.generation} findings=${nextState.reviewStatus.latestFindingCount}`
+      : '';
+    return `state=${nextState.missionState} progress=${nextState.progressLabel} active=${nextState.activeFeatureId ?? '-'} branch=${nextState.activeBranch ?? '-'} actor=${nextState.currentActor}${review}${pending}`;
   };
   const getLastEntrySeq = (entries: MissionControlState['logEntries']) => (
     [...entries].reverse().find((entry) => typeof entry.seq === 'number')?.seq ?? 0
@@ -848,7 +847,7 @@ function buildFrame(
     state.pendingPrompt
       ? `入力待ち  ${state.pendingPrompt}`
       : options.view === 'models'
-        ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker 3 Validator 4 Research`
+        ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker`
         : options.view === 'task'
           ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=gpt-5.4[Latest] A=claude-opus-4.6[Latest] U=Auto  ↑↓/PgUp/PgDn/Home/End Scroll`
           : options.view === 'prd'
