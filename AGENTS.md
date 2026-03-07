@@ -12,7 +12,9 @@ Melos の Manager は、`TASK.json` を起点に Worker 実行を管理し、要
 6. 状況に応じて `HANDOFF.md` を出力してよい。
 7. 実装・検証タスクを実行する際、`TASK.json` の `task.model` が指定されていれば最優先で従う。正式 alias は `codex-latest` / `claude-latest` とし、実モデル名の明示指定も許可する。
 8. `task.model` 未指定時は、既定 worker model `codex-latest` を基本方針とする。
-9. UI 作成・UI 修正・デザイン調整・スタイリング・レイアウト調整を主目的とするタスクのみ `task.model: "claude-latest"` を明示して実行する。
-10. `browser` を含む動作確認は実装作業から切り出す。ただし final `reviewType: "product"` は Codex + `js_repl` 前提で実行し、通常のブラウザ確認タスクのみ `task.model: "claude-latest"` を明示して実行する。
+9. 画面に描画されるユーザー向け UI の見た目・レイアウト・スタイリング・視覚表現の変更を主目的とするタスクのみ `task.model: "claude-latest"` を明示して実行する。
+10. React / JSX / hook / provider / context / 型 / 依存解決 / テスト基盤 / config / build / tooling などの足回りタスクでは、パスやパッケージ名に `ui` や `component` が含まれていても `task.model: "claude-latest"` を使わない。
+11. UI 作業と足回り作業が混在する場合は、見た目変更タスクと非 UI タスクに分割し、前者にのみ `task.model: "claude-latest"` を付ける。
+12. `browser` を含む動作確認は実装作業から切り出す。ただし final `reviewType: "product"` は Codex + `js_repl` 前提で実行し、通常のブラウザ確認タスクのみ `task.model: "claude-latest"` を明示して実行する。
 
 詳細な挙動と出力フォーマットは `prompts/manager.md` を正とする。

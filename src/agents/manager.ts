@@ -711,7 +711,9 @@ export class ManagerAgent implements Agent {
       '- Feature IDs must follow mX-fY',
       '- Put interactive browser/manual/e2e verification in `validationContract.qaChecks`. Do not output a dedicated qa feature; Melos synthesizes it automatically when qaChecks exist.',
       '- Default feature model is codex-latest',
-      '- Use model "claude-latest" only for UI creation, UI fixes, styling, layout, or visual design work',
+      '- Use model "claude-latest" only when the primary deliverable is a user-visible UI change in the rendered surface.',
+      '- Do not use "claude-latest" for React/runtime/hooks/providers/contexts/types/dependencies/tests/config/build/tooling tasks, even if the files live under frontend/, shared/ui/, editor/ui/, or mention components.',
+      '- If a task mixes visual UI work and infrastructure work, split it into separate features. Only the visual feature should use "claude-latest".',
       '',
       'Files already reviewed by system and required for planning coverage:',
       reviewedFilesBlock,
@@ -868,17 +870,14 @@ function inferFeatureModel(description: string): string {
 }
 
 function resolveFeatureModel(
-  model: string | undefined,
+  _model: string | undefined,
   description: string
 ): string {
-  if (isUiFocusedFeature(description)) {
-    return CLAUDE_LATEST_ALIAS;
-  }
-  return normalizeModelName(model) ?? CODEX_LATEST_ALIAS;
+  return inferFeatureModel(description);
 }
 
 function isUiFocusedFeature(description: string): boolean {
-  const normalized = normalizeFeatureDescription(description).toLowerCase();
+  const normalized = sanitizeFeatureDescriptionForModelSelection(description).toLowerCase();
 
   const strongSignalPatterns = [
     /\bui\b/,
@@ -892,6 +891,10 @@ function isUiFocusedFeature(description: string): boolean {
     /\btheme\b/,
     /\bcss\b/,
     /\btailwind\b/,
+    /\bresponsive\b/,
+    /\bspacing\b/,
+    /\bcolor\b/,
+    /\btypography\b/,
   ];
   if (strongSignalPatterns.some((pattern) => pattern.test(normalized))) {
     return true;
@@ -911,6 +914,68 @@ function isUiFocusedFeature(description: string): boolean {
   ];
   if (japaneseStrongSignals.some((signal) => normalized.includes(signal))) {
     return true;
+  }
+
+  const infraSignalPatterns = [
+    /\bruntime\b/,
+    /\bhook\b/,
+    /\bprovider\b/,
+    /\bcontext\b/,
+    /\btype\b/,
+    /\btypes\b/,
+    /\btyping\b/,
+    /\bjsx\b/,
+    /\btsx\b/,
+    /\bdependency\b/,
+    /\bdependencies\b/,
+    /\bpackage\b/,
+    /\bpackages\b/,
+    /\bsetup\b/,
+    /\bconfig\b/,
+    /\bconfiguration\b/,
+    /\bbuild\b/,
+    /\bbundl(?:e|er|ing)\b/,
+    /\bmodule\b/,
+    /\bimport\b/,
+    /\bexport\b/,
+    /\btest\b/,
+    /\btests\b/,
+    /\btesting\b/,
+    /\bvitest\b/,
+    /\bjest\b/,
+    /\btsconfig\b/,
+    /\blint\b/,
+    /\beslint\b/,
+    /\bcompiler\b/,
+    /\bcompile\b/,
+    /\bresolution\b/,
+    /\bresolver\b/,
+    /\bprops\b/,
+    /\bapi\b/,
+  ];
+  const japaneseInfraSignals = [
+    '型解決',
+    '型定義',
+    '型不整合',
+    '依存解決',
+    '依存関係',
+    '単一ランタイム',
+    'ランタイム',
+    'フック',
+    'プロバイダ',
+    'コンテキスト',
+    'テスト',
+    'テストセットアップ',
+    '設定',
+    '構成',
+    'パッケージ',
+    'ビルド',
+  ];
+  if (
+    infraSignalPatterns.some((pattern) => pattern.test(normalized))
+    || japaneseInfraSignals.some((signal) => normalized.includes(signal))
+  ) {
+    return false;
   }
 
   const uiTargets = [
@@ -964,6 +1029,12 @@ function isUiFocusedFeature(description: string): boolean {
 
   return uiTargets.some((target) => normalized.includes(target))
     && uiActions.some((action) => normalized.includes(action));
+}
+
+function sanitizeFeatureDescriptionForModelSelection(description: string): string {
+  return normalizeFeatureDescription(description)
+    .replace(/\b[\w@.-]+(?:[\\/][\w@.-]+){1,}\b/g, ' ')
+    .replace(/[`"'“”‘’]/g, ' ');
 }
 
 function buildFeatureBriefing(input: ManagerInput): string {

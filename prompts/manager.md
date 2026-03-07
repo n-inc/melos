@@ -22,7 +22,9 @@
 - 実装 milestone の末尾に final review milestone を置き、`reviewType: "product"` と `reviewType: "code"` を順に入れる
 - 各 feature は `mX-fY` 形式
 - feature の `model` は原則 `codex-latest` を使う
-- UI 作成・UI 修正・デザイン調整・スタイリング・レイアウト変更を主目的とする feature のみ `model: "claude-latest"` を明示する
+- 画面に描画されるユーザー向け UI の見た目・レイアウト・スタイリング・視覚表現の変更を主目的とする feature のみ `model: "claude-latest"` を明示する
+- React / JSX / hook / provider / context / 型 / 依存解決 / テスト基盤 / config / build / tooling などの足回りタスクには `claude-latest` を使わない。`frontend/` や `shared/ui/` `editor/ui/` 配下でも同様
+- UI 作業と足回り作業が混在する場合は feature を分割し、見た目を変える feature だけに `claude-latest` を付ける
 - final `reviewType: "product"` は Codex + `js_repl` 前提で扱い、interactive browser verification をできない場合は review contract か preconditions に明示する
 - plan を確定する前に、関連ファイル・エントリーポイント・local import・既存テスト・設定ファイルを必ず確認する
 - ファイル読解は件数で切らず、対象領域の参照関係に抜けがなくなるまで追う

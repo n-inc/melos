@@ -929,7 +929,8 @@ describe('ManagerAgent', () => {
     expect(prompt).toContain('Prefer 2-3 milestones (phases)');
     expect(prompt).toContain('For large implementations, keep phase count compact but allow sufficient features');
     expect(prompt).toContain('Default feature model is codex-latest');
-    expect(prompt).toContain('Use model "claude-latest" only for UI creation, UI fixes, styling, layout, or visual design work');
+    expect(prompt).toContain('Use model "claude-latest" only when the primary deliverable is a user-visible UI change in the rendered surface.');
+    expect(prompt).toContain('Do not use "claude-latest" for React/runtime/hooks/providers/contexts/types/dependencies/tests/config/build/tooling tasks');
   });
 
   it('forces claude for Japanese UI repair tasks even when planner returns codex', async () => {
@@ -972,6 +973,60 @@ describe('ManagerAgent', () => {
     });
 
     expect(plan.milestones[0]?.features[0]?.model).toBe('claude-latest');
+  });
+
+  it('forces codex for infra tasks even when planner returns claude and the description includes ui paths', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Frontend cleanup',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Tests pass'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Infra',
+            description: 'Tighten frontend infrastructure',
+            validationContract: { staticChecks: [], testSuites: [] },
+            features: [
+              {
+                id: 'm1-f1',
+                description: 'React と JSX の型解決を editor package 基準で統一し、shared/ui 由来コンポーネントを JSX で再び安全に扱えるようにする',
+                model: 'claude-latest',
+              },
+              {
+                id: 'm1-f2',
+                description: 'Vitest 実行時の React 単一ランタイム保証を追加し、web app から参照する editor/ui/shared の hook 実行を安定化する',
+                model: 'claude-latest',
+              },
+            ],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'frontend-infra',
+      prd: '# Frontend infra cleanup',
+    });
+
+    expect(plan.milestones[0]?.features[0]?.model).toBe('codex-latest');
+    expect(plan.milestones[0]?.features[1]?.model).toBe('codex-latest');
   });
 
   it('embeds repository context and asks planner to inspect related files before planning', async () => {
