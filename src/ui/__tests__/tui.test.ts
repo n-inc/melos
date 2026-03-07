@@ -15,7 +15,7 @@ function createSessionInfo(): SessionInfo {
     missionId: 'auth',
     missionTitle: 'Auth system',
     planner: 'opus',
-    worker: 'gpt-5.3-codex',
+    worker: 'gpt-5.4',
   };
 }
 
@@ -40,7 +40,6 @@ function createState(): MissionControlState {
         id: 'm1',
         title: 'Core',
         status: 'in_progress',
-        order: 1,
         features: [
           { id: 'm1-f1', description: 'feature', status: 'in_progress', attempts: 1 },
         ],
@@ -56,21 +55,13 @@ function createState(): MissionControlState {
         status: 'running',
         durationLabel: '0m 10s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [{ timestamp: new Date().toISOString(), actor: 'worker', kind: 'READ', message: 'src/a.ts' }],
       },
     ],
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
-    },
-    tokenUsage: {
-      total: { input: 100, output: 50, cached: 20, cost: 0.01 },
-      byRole: {
-        worker: { model: 'gpt-5.3-codex', input: 100, output: 50, cached: 20, cost: 0.01 },
-      },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
     },
   };
 }
@@ -151,6 +142,67 @@ describe('ui/tui v0.8', () => {
     ui.stop();
 
     expect(rendered).toBe('');
+  });
+
+  it('appends only new log entries in plain runtime mode', () => {
+    const output = new PassThrough();
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    const ui = createRuntimeUI('plain', output as unknown as NodeJS.WriteStream, input as unknown as NodeJS.ReadStream);
+    ui.start(createSessionInfo());
+
+    ui.updateState({
+      ...createState(),
+      logEntries: [
+        {
+          seq: 1,
+          timestamp: '2026-03-03T00:00:00.000Z',
+          actor: 'planning',
+          kind: 'WRITE',
+          message: 'src/auth.ts (+1 -1)',
+          detailLines: ['@@ -1,3 +1,3 @@', '-const oldMode = true;', '+const newMode = true;'],
+        },
+      ],
+      currentActor: 'planning',
+    });
+
+    ui.updateState({
+      ...createState(),
+      logEntries: [
+        {
+          seq: 1,
+          timestamp: '2026-03-03T00:00:00.000Z',
+          actor: 'planning',
+          kind: 'WRITE',
+          message: 'src/auth.ts (+1 -1)',
+          detailLines: ['@@ -1,3 +1,3 @@', '-const oldMode = true;', '+const newMode = true;'],
+        },
+        {
+          seq: 2,
+          timestamp: '2026-03-03T00:00:02.000Z',
+          actor: 'worker',
+          kind: 'BASH',
+          message: 'npm test -- auth',
+        },
+      ],
+      currentActor: 'worker',
+      activity: 'Running m1-f1 tests...',
+    });
+
+    ui.stop();
+
+    expect(rendered).toContain('[melos] Auth system');
+    expect(rendered).toContain('state=running progress=1/3 (33%) active=m1-f1 branch=melos/auth/m1-f1 actor=planning');
+    expect(rendered).toContain('LOG START: PLANNING');
+    expect(rendered).toContain('[WRITE] src/auth.ts (+1 -1)');
+    expect(rendered).toContain('│ @@ -1,3 +1,3 @@');
+    expect(rendered).toContain('SWITCH: PLANNING -> WORKER');
+    expect(rendered).toContain('[BASH] npm test -- auth');
+    expect(rendered.match(/src\/auth\.ts \(\+1 -1\)/g)).toHaveLength(1);
   });
 
   it('pauses stdin stream on stop to avoid hanging process', () => {
@@ -294,7 +346,8 @@ describe('ui/tui v0.8', () => {
     ui.stop();
 
     expect(rendered).toContain('NOW RUNNING  WORKER');
-    expect(rendered).toContain('[READ] src/a.ts');
+    expect(rendered).toContain('[EXPLORED] 1 file');
+    expect(rendered).toContain('Read: a.ts');
   });
 
   it('pending input allows task/models navigation, but blocks run controls', () => {

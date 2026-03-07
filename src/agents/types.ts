@@ -1,5 +1,7 @@
 import type { MissionPlan, Milestone, Feature } from '../state/mission.js';
 import type { ValidationCheckResult, ValidationReport } from '../state/validation.js';
+import type { ReviewArtifact, ReviewFinding, ReviewType } from '../state/review.js';
+import type { PullRequestState, PullRequestFollowUpState } from '../state/git-strategy.js';
 
 export type AgentMode = 'manager' | 'worker';
 
@@ -11,12 +13,6 @@ export interface AskUserPrompt {
   options?: Array<{ label: string; description: string }>;
   recommendation?: string;
   allowFreeText?: boolean;
-}
-
-export interface WorkerTokenUsage {
-  input: number;
-  output: number;
-  cached?: number;
 }
 
 export interface WorkerFileChange {
@@ -31,6 +27,7 @@ export interface WorkerFeatureReport {
   featureId: string;
   status: 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'BLOCKED';
   summary: string;
+  warnings: string[];
   filesChanged: WorkerFileChange[];
   validation: {
     testsRun: boolean;
@@ -40,6 +37,16 @@ export interface WorkerFeatureReport {
     typecheckPassed: boolean;
   };
   checks: ValidationCheckResult[];
+  pullRequest?: PullRequestState;
+  pullRequestFollowUp?: PullRequestFollowUpState;
+  review?: {
+    reviewType: ReviewType;
+    generation: number;
+    passed: boolean;
+    summary: string;
+    findings: ReviewFinding[];
+    artifacts: ReviewArtifact[];
+  };
   discoveredFeatures: Array<{
     description: string;
     priority: 'high' | 'medium' | 'low';
@@ -47,7 +54,6 @@ export interface WorkerFeatureReport {
   }>;
   learnings: string[];
   requestsHelp: boolean;
-  tokenUsage?: WorkerTokenUsage;
   createdAt: string;
 }
 
@@ -88,9 +94,11 @@ export interface WorkerInput {
 
 export interface FollowUpFeatureDraft {
   description: string;
+  trackingKey?: string;
   priority: 'high' | 'medium' | 'low';
+  affectedChecks?: string[];
   rationale?: string;
-  model?: 'claude' | 'codex';
+  model?: string;
 }
 
 export interface Agent {

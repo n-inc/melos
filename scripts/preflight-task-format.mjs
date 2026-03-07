@@ -63,7 +63,11 @@ const validateMilestone = (milestone, path) => {
     return;
   }
 
-  const groups = ['staticChecks', 'testSuites', 'e2eChecks', 'manualSteps'];
+  if (Object.prototype.hasOwnProperty.call(contract, 'e2eChecks')) {
+    pushError(`${path}.validationContract.e2eChecks is no longer supported; use browserChecks instead`);
+  }
+
+  const groups = ['staticChecks', 'testSuites', 'browserChecks', 'manualSteps'];
   for (const group of groups) {
     const checks = contract[group] ?? [];
     if (!Array.isArray(checks)) {
@@ -90,8 +94,8 @@ try {
 if (!task || typeof task !== 'object' || Array.isArray(task)) {
   pushError('TASK.json must be a MissionPlan object');
 } else {
-  if (task.version !== 2) {
-    pushError(`version must be 2 (received=${String(task.version)})`);
+  if (task.version !== 3) {
+    pushError(`version must be 3 (received=${String(task.version)})`);
   }
 
   if (!task.mission || typeof task.mission !== 'object' || Array.isArray(task.mission)) {

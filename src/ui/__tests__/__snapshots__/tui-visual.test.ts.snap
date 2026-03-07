@@ -1,7 +1,7 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
 exports[`ui/tui visual snapshots awaiting approval frame snapshot (input required) 1`] = `
-"● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
+"● Mission Control  テキスト統計ユーティリティの追加                                      Time 5m 42s
 ● AWAITING_APPROVAL [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2                       
 ╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
 ║ Overview                                                                                         ║
@@ -34,7 +34,7 @@ exports[`ui/tui visual snapshots awaiting approval frame snapshot (input require
 `;
 
 exports[`ui/tui visual snapshots initializing frame snapshot 1`] = `
-"● Mission Control  テキスト統計ユーティリティの追加         Time 0m 00s  Input 0  Cached 0  Output 0
+"● Mission Control  テキスト統計ユーティリティの追加                                      Time 0m 00s
 ● INITIALIZING [░░░░░░░░░░] 0/0 (0%)                                                                
 Initializing mission runtime...                                                                     
                                                                                                     
@@ -67,7 +67,7 @@ melos> initializing...                                                          
 `;
 
 exports[`ui/tui visual snapshots narrow terminal snapshot (80x24) 1`] = `
-"● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  …
+"● Mission Control  テキスト統計ユーティリティの追加                  Time 5m 42s
 ● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2             
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║ Overview                                                                     ║
@@ -94,7 +94,7 @@ melos> Running m1-f2...  (Ctrl+G steer)                                         
 `;
 
 exports[`ui/tui visual snapshots overview frame snapshot 1`] = `
-"● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
+"● Mission Control  テキスト統計ユーティリティの追加                                      Time 5m 42s
 ● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2                                 
 ╔══════════════════════════════════════════════════════════════════════════════════════════════════╗
 ║ Overview                                                                                         ║
@@ -127,14 +127,15 @@ melos> Running m1-f2...  (Ctrl+G steer)                                         
 `;
 
 exports[`ui/tui visual snapshots workers frame snapshot 1`] = `
-"● Mission Control  テキスト統計ユーティリティの追加  Time 5m 42s  Input 12000  Cached 2500  Output …
+"● Mission Control  テキスト統計ユーティリティの追加                                      Time 5m 42s
 ● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2                                 
-NOW RUNNING  WORKER #1  m1-f2  model=gpt-5.3-codex  elapsed=1m 12s  Lines 1-5/5
+NOW RUNNING  WORKER #1  m1-f2  model=gpt-5.4  elapsed=1m 12s  LIVE  Lines 1-6/6
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ────────── LOG START: PLANNING ──────────
 09:00:00 [PLAN_CREATED] milestones=2 features=4
 ────────── SWITCH: PLANNING -> WORKER ──────────
-09:00:10 [READ] src/parser.ts
+09:00:10 [EXPLORED] 1 file
+  │ Read: parser.ts
 09:00:11 [BASH] npm test -- parser
 
 
@@ -154,7 +155,6 @@ NOW RUNNING  WORKER #1  m1-f2  model=gpt-5.3-codex  elapsed=1m 12s  Lines 1-5/5
 
 
 
-
-Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  L Focus  P Pause  R Resume …
+Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn Scroll  Shift+↑ Oldest  Shift+↓ Latest  L Fo…
 melos> Running m1-f2...  (Ctrl+G steer)                                                             "
 `;

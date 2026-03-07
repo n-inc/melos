@@ -1,4 +1,6 @@
-export type ModelRole = 'planner' | 'worker' | 'validator' | 'research';
+import { isCodexFamily, resolveModelEffort, resolveModelEngine } from './registry.js';
+
+export type ModelRole = 'planner' | 'worker';
 
 export interface ModelAssignment {
   role: ModelRole;
@@ -16,6 +18,10 @@ export interface ModelRouterConfig {
   };
 }
 
+export function isCodexModel(model: string | undefined | null): boolean {
+  return isCodexFamily(model);
+}
+
 export class ModelRouter {
   private readonly assignments: Record<ModelRole, string>;
   private readonly escalationPolicy: NonNullable<ModelRouterConfig['escalationPolicy']>;
@@ -31,8 +37,6 @@ export class ModelRouter {
     this.escalationCounts = {
       planner: 0,
       worker: 0,
-      validator: 0,
-      research: 0,
     };
   }
 
@@ -65,32 +69,17 @@ export class ModelRouter {
   }
 
   resolveEngine(model: string): 'claude' | 'codex' {
-    return model.toLowerCase().includes('codex') ? 'codex' : 'claude';
+    return resolveModelEngine(model);
   }
 
   resolveEffort(model: string): string {
-    const normalized = model.toLowerCase();
-    if (normalized.includes('codex')) {
-      return 'high';
-    }
-    if (normalized === 'opus') {
-      return 'max';
-    }
-    if (normalized === 'sonnet') {
-      return 'high';
-    }
-    if (normalized === 'haiku') {
-      return 'low';
-    }
-    return 'medium';
+    return resolveModelEffort(model);
   }
 
   getAssignments(): Record<ModelRole, ModelAssignment> {
     return {
       planner: this.toAssignment('planner'),
       worker: this.toAssignment('worker'),
-      validator: this.toAssignment('validator'),
-      research: this.toAssignment('research'),
     };
   }
 

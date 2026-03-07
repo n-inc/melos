@@ -6,7 +6,6 @@ export {
   type AskUserPrompt,
   type FollowUpFeatureDraft,
   type WorkerFeatureReport,
-  type WorkerTokenUsage,
   type Agent,
 } from './types.js';
 

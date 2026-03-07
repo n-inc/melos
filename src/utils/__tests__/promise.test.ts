@@ -209,7 +209,7 @@ Moving to next task.
 2回目: request.raw_postで取得 → 失敗
 3回目: ミドルウェアで保存 → 失敗
 
-PROGRESS.md にエスカレーション詳細を記録しました。
+HANDOFF.md にエスカレーション詳細を記録しました。
 
 <promise>ESCALATE</promise>`;
         const result = detectPromise(output);

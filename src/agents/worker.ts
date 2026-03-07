@@ -1,11 +1,26 @@
 import { writeFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import {
   AppServerEngine,
   type AppServerEngineOptions,
 } from '../engines/app-server.js';
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
+import { loadPromptFromPath } from '../prompts/index.js';
+import {
+  CLAUDE_LATEST_ALIAS,
+  CODEX_LATEST_ALIAS,
+  isClaudeFamily,
+  isCodexFamily,
+  resolveRuntimeModel,
+} from '../models/registry.js';
+import type { ValidationCheckFailure, ValidationCheckResult } from '../state/validation.js';
+import {
+  isBlockingReviewFinding,
+  normalizeReviewArtifact,
+  normalizeReviewFinding,
+  type ProductReviewContract,
+} from '../state/review.js';
 import type {
   Agent,
   AgentMode,
@@ -14,8 +29,6 @@ import type {
   WorkerInput,
   WorkerResult,
 } from './types.js';
-
-const DEFAULT_CLAUDE_MODEL = 'opus';
 
 export interface WorkerAgentConfig {
   cwd: string;
@@ -49,7 +62,7 @@ export class WorkerAgent implements Agent {
   }
 
   async run(input: WorkerInput): Promise<WorkerResult> {
-    const prompt = this.buildPrompt(input);
+    const prompt = await this.buildPrompt(input);
     const executeWithClaude = this.shouldExecuteWithClaude(input);
     const streamTranscript: string[] = [];
     this.activeEngine = executeWithClaude ? 'claude' : 'codex';
@@ -57,7 +70,7 @@ export class WorkerAgent implements Agent {
     const result = await (executeWithClaude
       ? this.claudeEngine.execute(
         prompt,
-        this.buildClaudeOptions({
+        this.buildClaudeOptions(input, {
           onAgentMessageDelta: (chunk) => {
             streamTranscript.push(chunk);
             input.onAgentMessageDelta?.(chunk);
@@ -127,8 +140,11 @@ export class WorkerAgent implements Agent {
   }
 
   setRuntimeModel(model: string): void {
+    if (isClaudeFamily(model)) {
+      this.config.claudeModel = model;
+      return;
+    }
     this.config.model = model;
-    this.config.claudeModel = model;
   }
 
   getActiveThreadId(): string | null {
@@ -152,41 +168,329 @@ export class WorkerAgent implements Agent {
     return accepted ? 'accepted' : 'unavailable';
   }
 
-  private buildPrompt(input: WorkerInput): string {
+  private async buildPrompt(input: WorkerInput): Promise<string> {
+    if (input.feature.kind === 'review' && input.feature.reviewType === 'product') {
+      return this.buildProductReviewPrompt(input);
+    }
+    if (input.feature.kind === 'review' && input.feature.reviewType === 'code') {
+      return this.buildCodeReviewPrompt(input);
+    }
+    if (input.feature.kind === 'pull_request') {
+      return this.buildPullRequestPrompt(input);
+    }
+    if (input.feature.kind === 'pr_followup') {
+      return this.buildPullRequestFollowUpPrompt(input);
+    }
+    if (input.feature.kind === 'qa') {
+      return this.buildQaPrompt(input);
+    }
+    return this.buildImplementationPrompt(input);
+  }
+
+  private async buildProductReviewPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveProductReviewPromptPath());
+    const contract = this.resolveProductReviewContract(input);
+    const executionCwd = this.resolveExecutionCwd(input);
+    const startup = (contract?.startup ?? [])
+      .map((step) => `- cwd=${step.cwd ?? '.'} :: ${step.command}`)
+      .join('\n') || '- none';
+    const checkpoints = (contract?.checkpoints ?? [])
+      .map((checkpoint) => `- ${checkpoint.id} :: ${checkpoint.description}${checkpoint.claim ? ` (claim: ${checkpoint.claim})` : ''}${checkpoint.visual ? ' [visual]' : ''}`)
+      .join('\n') || '- none';
+    const preconditions = (contract?.preconditions ?? []).map((item) => `- ${item}`).join('\n') || '- none';
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Review feature: ${input.feature.id} ${input.feature.description}`,
+      `- Review generation: ${input.feature.reviewGeneration ?? 1}`,
+      `- Execution cwd: ${executionCwd}`,
+      '',
+      '## Product Review Contract',
+      contract ? JSON.stringify(contract, null, 2) : '(missing contract)',
+      '',
+      '## Startup',
+      startup,
+      '',
+      '## Preconditions',
+      preconditions,
+      '',
+      '## Checkpoints',
+      checkpoints,
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'product review summary',
+        warnings: [],
+        findings: [
+          {
+            id: 'product-finding-1',
+            priority: 'P2',
+            summary: 'Describe the unmet requirement',
+            rationale: 'Why this blocks sign-off',
+            suggestedFix: 'What should be fixed',
+            trackingKey: 'stable-root-cause',
+            surface: 'checkout-flow',
+            affectedFiles: ['src/app.tsx'],
+          },
+        ],
+        artifacts: [
+          {
+            kind: 'screenshot',
+            path: `${contract?.artifactsDir ?? 'artifacts/screenshots'}/signoff-home.png`,
+            label: 'Hero state after verification',
+          },
+        ],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
+  private async buildCodeReviewPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveCodeReviewPromptPath());
+    const executionCwd = this.resolveExecutionCwd(input);
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Review feature: ${input.feature.id} ${input.feature.description}`,
+      `- Review generation: ${input.feature.reviewGeneration ?? 1}`,
+      `- Execution cwd: ${executionCwd}`,
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'code review summary',
+        warnings: [],
+        findings: [
+          {
+            id: 'code-finding-1',
+            priority: 'P2',
+            summary: 'Describe the blocking code issue',
+            rationale: 'Why this blocks sign-off',
+            suggestedFix: 'What should be fixed',
+            trackingKey: 'stable-root-cause',
+            surface: 'api-contract',
+            affectedFiles: ['src/server.ts'],
+          },
+        ],
+        artifacts: [],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
+  private async buildPullRequestPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolvePullRequestPromptPath());
+    const executionCwd = this.resolveExecutionCwd(input);
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
+      `- Current branch: ${input.currentBranch ?? '(not set)'}`,
+      `- Base branch: ${input.baseBranch ?? '(not set)'}`,
+      `- git-new-pull-request skill: ${this.resolveGitNewPullRequestSkillPath()}`,
+      '- Use non-interactive GitHub CLI commands such as `gh pr create` or `gh pr edit`',
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'created or updated PR',
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        warnings: [],
+        pullRequest: {
+          number: 123,
+          url: 'https://github.com/owner/repo/pull/123',
+          title: 'feat: PR title',
+          baseBranch: input.baseBranch ?? 'main',
+          headBranch: input.currentBranch ?? 'melos/mission/mission',
+          draft: false,
+          action: 'created',
+        },
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
+  private async buildPullRequestFollowUpPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolvePullRequestFollowUpPromptPath());
+    const executionCwd = this.resolveExecutionCwd(input);
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
+      `- Current branch: ${input.currentBranch ?? '(not set)'}`,
+      `- Base branch: ${input.baseBranch ?? '(not set)'}`,
+      `- melos-ci-fix-loop skill: ${this.resolveMelosCiFixLoopSkillPath()}`,
+      `- git-committer skill: ${this.resolveGitCommitterSkillPath()}`,
+      '- Gather PR state with `gh pr view --json ...`, `gh api graphql`, and `gh pr checks --required`',
+      '- Never invoke nested `npx melos` from this follow-up step',
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'handled actionable PR feedback and waited for quiet window',
+        filesChanged: [{ path: 'src/file.ts', additions: 10, deletions: 2 }],
+        validation: {
+          testsRun: true,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        warnings: ['ignored off-target feedback: explain why it was skipped'],
+        pullRequest: {
+          number: 123,
+          url: 'https://github.com/owner/repo/pull/123',
+          title: 'feat: PR title',
+          baseBranch: input.baseBranch ?? 'main',
+          headBranch: input.currentBranch ?? 'melos/mission/mission',
+          draft: false,
+          action: 'updated',
+        },
+        pullRequestFollowUp: {
+          handledFeedbackIds: ['PRRC_kwDO_example'],
+          lastExternalActivityAt: '2026-03-07T09:00:00.000Z',
+          quietUntil: '2026-03-07T09:30:00.000Z',
+        },
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
+  private async buildImplementationPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
     const featureChecks = input.feature.checks?.map((check) => `- ${check.text}`).join('\n') || '- none';
+    const executionCwd = this.resolveExecutionCwd(input);
+    const validationChecks = [
+      ...input.milestone.validationContract.staticChecks,
+      ...input.milestone.validationContract.testSuites,
+    ]
+      .map((check) => {
+        const action = typeof check.command === 'string' && check.command.trim().length > 0
+          ? check.command.trim()
+          : 'no command';
+        return `- ${check.id} [${check.type}] ${check.description} :: ${action}`;
+      })
+      .join('\n');
     const validationCommands = [
       ...input.milestone.validationContract.staticChecks,
       ...input.milestone.validationContract.testSuites,
-      ...(input.milestone.validationContract.e2eChecks ?? []),
     ]
       .map((check) => check.command)
       .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
       .join('\n');
+    const qaChecks = this.formatQaChecks(input);
 
-    return [
-      'You are a senior implementation worker.',
-      'Implement exactly one mission feature and output a JSON report.',
-      'Hard cutover mode: do not implement backward compatibility.',
+    const sections = [
+      promptTemplate.trim(),
       '',
-      `Mission Goal: ${input.missionPlan.mission.goal}`,
-      `Milestone: ${input.milestone.id} ${input.milestone.title}`,
-      `Feature: ${input.feature.id} ${input.feature.description}`,
-      `Branch: ${input.currentBranch ?? '(not set)'}`,
-      `Base Branch: ${input.baseBranch ?? '(not set)'}`,
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
+      `- Current branch: ${input.currentBranch ?? '(not set)'}`,
+      `- Base branch: ${input.baseBranch ?? '(not set)'}`,
       '',
-      'Feature checks:',
+      '## Feature Checks',
       featureChecks,
       '',
-      'Manager briefing:',
+      '## Manager Briefing',
       input.briefing?.trim() || '(none)',
       '',
-      'PRD:',
+      '## PRD',
       input.prd?.trim() || '(PRD not found)',
       '',
-      'Milestone validation commands:',
+      '## Milestone Validation Checks',
+      validationChecks || '- none',
+      '',
+      '## Milestone Validation Commands',
       validationCommands || '(none)',
       '',
-      'Output JSON schema:',
+      '## Dedicated QA Handoff',
+      qaChecks,
+      'QA evidence is handled by the dedicated qa feature. Do not pre-emptively report qaChecks from this implementation feature unless you actually ran the QA step.',
+    ];
+
+    if (this.shouldIncludeCommitWorkflow(input)) {
+      sections.push(
+        '',
+        '## Commit Workflow',
+        `- Use the git-committer skill at: ${this.resolveGitCommitterSkillPath()}`,
+        '- Before committing, inspect: `git status --porcelain`, `git log --oneline -20`, `git diff --staged`',
+        '- Create the commit only after implementation and validation are complete for this feature branch',
+        '- Use `type(scope): subject` for the commit subject',
+        '- Do not use `...` or other abbreviated placeholders in the commit message',
+        '- If you add a commit body, briefly explain why the change is needed'
+      );
+    }
+
+    sections.push(
+      '',
+      '## Output JSON Schema',
       JSON.stringify({
         status: 'SUCCESS',
         summary: 'what was done',
@@ -199,14 +503,174 @@ export class WorkerAgent implements Agent {
           typecheckPassed: true,
         },
         checks: [],
+        warnings: ['describe any fallback, unverified scope, or required user follow-up'],
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
-        tokenUsage: { input: 0, output: 0, cached: 0 },
+      }, null, 2),
+      '',
+      'Return only one fenced json block.'
+    );
+
+    return sections.join('\n');
+  }
+
+  private async buildQaPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
+    const executionCwd = this.resolveExecutionCwd(input);
+    const qaChecks = this.formatQaChecks(input);
+    const validationCommands = [
+      ...input.milestone.validationContract.staticChecks,
+      ...input.milestone.validationContract.testSuites,
+    ]
+      .map((check) => check.command)
+      .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
+      .join('\n');
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## QA Mode',
+      '- This feature is the dedicated milestone QA execution step.',
+      '- Do not change code unless the QA environment is completely blocked and the manager explicitly briefed a setup-only change.',
+      '- Do not create commits or branches from this step.',
+      '- Execute the qaChecks below and report every checkId in `checks`.',
+      '- If a qaCheck fails, keep that failure inside `checks`. Return feature status `SUCCESS` once the QA checklist itself was executed and evidence was captured.',
+      '- Return `BLOCKED` only when QA could not be executed due to environment, credentials, startup, or tooling blockers.',
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- QA feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## QA Checks',
+      qaChecks,
+      '',
+      '## Reference Validation Commands',
+      validationCommands || '(none)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'qa checklist executed',
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [
+          {
+            checkId: 'm1-qa-1',
+            passed: true,
+            runner: 'playwright-interactive',
+            screenshotPath: 'artifacts/screenshots/example.png',
+          },
+          {
+            checkId: 'm1-qa-2',
+            passed: false,
+            failure: {
+              summary: 'qa observation failed',
+              affectedFiles: [],
+              errorMessages: ['describe what failed'],
+            },
+          },
+        ],
+        warnings: ['describe any fallback or caveat that affected the QA run'],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
       }, null, 2),
       '',
       'Return only one fenced json block.',
     ].join('\n');
+  }
+
+  private resolveWorkerPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'worker.md');
+  }
+
+  private resolveProductReviewPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'product-review.md');
+  }
+
+  private resolveCodeReviewPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'code-review.md');
+  }
+
+  private resolvePullRequestPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'pull-request.md');
+  }
+
+  private resolvePullRequestFollowUpPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'pr-followup.md');
+  }
+
+  private resolveProductReviewContract(input: WorkerInput): ProductReviewContract | undefined {
+    return input.missionPlan.productReviewContract;
+  }
+
+  private resolveGitCommitterSkillPath(): string {
+    return join(this.config.cwd, '.claude', 'skills', 'git-committer', 'SKILL.md');
+  }
+
+  private resolveGitNewPullRequestSkillPath(): string {
+    return join(this.config.cwd, '.claude', 'skills', 'git-new-pull-request', 'SKILL.md');
+  }
+
+  private resolveMelosCiFixLoopSkillPath(): string {
+    return join(this.config.cwd, '.claude', 'skills', 'melos-ci-fix-loop', 'SKILL.md');
+  }
+
+  private formatQaChecks(input: WorkerInput): string {
+    return (input.milestone.validationContract.qaChecks ?? [])
+      .map((check) => {
+        const action = typeof check.command === 'string' && check.command.trim().length > 0
+          ? check.command.trim()
+          : (check.type === 'browser'
+              ? 'report browser evidence in `checks` with runner plus screenshot/video paths or URLs'
+              : check.type === 'e2e'
+                ? 'report structured e2e evidence in `checks`'
+                : 'report structured QA evidence in `checks`');
+        const requirementNotes = [
+          check.requiredRunner ? `runner=${check.requiredRunner}` : null,
+          check.requiredArtifacts?.length ? `artifacts=${check.requiredArtifacts.join(',')}` : null,
+        ].filter((item): item is string => Boolean(item));
+        const requirements = requirementNotes.length > 0 ? ` [${requirementNotes.join(' ')}]` : '';
+        return `- ${check.id} [${check.type}] ${check.description}${requirements} :: ${action}`;
+      })
+      .join('\n') || '- none';
+  }
+
+  private shouldIncludeCommitWorkflow(input: WorkerInput): boolean {
+    if (!input.currentBranch || !input.baseBranch) {
+      return false;
+    }
+    return input.feature.kind === 'implementation' || input.feature.kind === 'review_remediation';
   }
 
   private parseWorkReport(
@@ -220,6 +684,7 @@ export class WorkerAgent implements Agent {
       featureId: input.feature.id,
       status: engineSuccess ? 'SUCCESS' : 'FAILED',
       summary: '',
+      warnings: [],
       filesChanged: [],
       validation: {
         testsRun: false,
@@ -235,10 +700,12 @@ export class WorkerAgent implements Agent {
       createdAt: new Date().toISOString(),
     };
 
+    let parsedStructuredReport = false;
     const jsonBlock = extractJsonBlock(output);
     if (jsonBlock) {
       try {
         const parsed = JSON.parse(jsonBlock) as Partial<WorkerFeatureReport>;
+        parsedStructuredReport = true;
         if (parsed.status) {
           report.status = parsed.status;
         }
@@ -259,23 +726,48 @@ export class WorkerAgent implements Agent {
           };
         }
         if (Array.isArray(parsed.checks)) {
-          report.checks = parsed.checks;
+          report.checks = normalizeValidationCheckResults(parsed.checks);
+        }
+        if (Array.isArray(parsed.warnings)) {
+          report.warnings = normalizeWarnings(parsed.warnings);
+        }
+        const pullRequest = normalizePullRequestState((parsed as { pullRequest?: unknown }).pullRequest);
+        if (pullRequest) {
+          report.pullRequest = pullRequest;
+        }
+        const pullRequestFollowUp = normalizePullRequestFollowUpState((parsed as { pullRequestFollowUp?: unknown }).pullRequestFollowUp);
+        if (pullRequestFollowUp) {
+          report.pullRequestFollowUp = pullRequestFollowUp;
+        }
+        const reviewType = input.feature.reviewType;
+        if (reviewType && Array.isArray((parsed as { findings?: unknown[] }).findings)) {
+          const findings = ((parsed as { findings?: unknown[] }).findings ?? [])
+            .map((finding, index) => normalizeReviewFinding(finding, reviewType, index))
+            .filter((finding): finding is NonNullable<typeof finding> => Boolean(finding));
+          const artifacts = (Array.isArray((parsed as { artifacts?: unknown[] }).artifacts)
+            ? (parsed as { artifacts?: unknown[] }).artifacts ?? []
+            : [])
+            .map((artifact) => normalizeReviewArtifact(artifact))
+            .filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact));
+          report.review = {
+            reviewType,
+            generation: input.feature.reviewGeneration ?? 1,
+            passed: findings.every((finding) => !isBlockingReviewFinding(finding))
+              && parsed.status !== 'FAILED'
+              && parsed.status !== 'BLOCKED',
+            summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+            findings,
+            artifacts,
+          };
         }
         if (Array.isArray(parsed.discoveredFeatures)) {
-          report.discoveredFeatures = parsed.discoveredFeatures.map((item) => ({
-            description: item.description,
-            priority: item.priority,
-            rationale: item.rationale,
-          }));
+          report.discoveredFeatures = normalizeDiscoveredFeatures(parsed.discoveredFeatures);
         }
         if (Array.isArray(parsed.learnings)) {
           report.learnings = parsed.learnings.filter((item): item is string => typeof item === 'string');
         }
         if (typeof parsed.requestsHelp === 'boolean') {
           report.requestsHelp = parsed.requestsHelp;
-        }
-        if (parsed.tokenUsage) {
-          report.tokenUsage = parsed.tokenUsage;
         }
       } catch {
         // fallback to heuristic
@@ -290,9 +782,43 @@ export class WorkerAgent implements Agent {
       report.status = 'SUCCESS';
     }
 
+    if (input.feature.reviewType && !report.review) {
+      const summary = report.summary
+        || output.split(/\n/).find((line) => line.trim().length > 0)?.trim()
+        || `${input.feature.reviewType} review could not be completed`;
+      report.review = {
+        reviewType: input.feature.reviewType,
+        generation: input.feature.reviewGeneration ?? 1,
+        passed: false,
+        summary,
+        findings: [
+          {
+            id: `${input.feature.reviewType}-review-blocked`,
+            reviewType: input.feature.reviewType,
+            priority: 'P1',
+            summary,
+            rationale: 'The review executor did not return a structured final review report.',
+          },
+        ],
+        artifacts: [],
+      };
+      if (report.status === 'SUCCESS' && report.review.findings.some((finding) => isBlockingReviewFinding(finding))) {
+        report.status = 'FAILED';
+      }
+    }
+
+    if (!input.feature.reviewType && !parsedStructuredReport) {
+      report.status = 'FAILED';
+      report.requestsHelp = true;
+      report.summary = 'worker did not return a structured JSON report';
+    }
+
     if (!report.summary) {
       report.summary = output.split(/\n/).find((line) => line.trim().length > 0)?.trim()
         || `${report.status} ${input.feature.id}`;
+    }
+    if (report.review && !report.review.summary) {
+      report.review.summary = report.summary;
     }
 
     return report;
@@ -323,14 +849,17 @@ export class WorkerAgent implements Agent {
     const shouldResume = this.resumeThreadId !== null
       && this.resumeMissionId !== null
       && this.resumeMissionId === input.missionPlan.mission.id;
+    const disallowThreadReuse = input.feature.kind === 'review' || input.feature.kind === 'qa';
     const threadId = shouldResume && this.resumeThreadId
+      && !disallowThreadReuse
       ? this.resumeThreadId
       : undefined;
 
     return {
-      cwd: this.config.cwd,
-      model: this.config.model,
-      reasoningEffort: this.config.reasoningEffort || 'high',
+      cwd: this.resolveExecutionCwd(input),
+      model: resolveRuntimeModel(this.config.model, CODEX_LATEST_ALIAS),
+      reasoningEffort: this.config.reasoningEffort || 'xhigh',
+      enabledFeatures: this.shouldEnableJsRepl(input) ? ['js_repl'] : undefined,
       execMode: true,
       suppressTerminalOutput: this.config.suppressTerminalOutput === true,
       threadId,
@@ -341,10 +870,11 @@ export class WorkerAgent implements Agent {
   }
 
   private buildClaudeOptions(
+    input: WorkerInput,
     callbacks: Pick<WorkerInput, 'onAgentMessageDelta' | 'onAppServerEvent'> = {}
   ): ClaudeEngineOptions {
     return {
-      cwd: this.config.cwd,
+      cwd: this.resolveExecutionCwd(input),
       model: this.resolveClaudeModel(),
       effort: this.config.claudeEffort,
       skipPermissions: true,
@@ -356,18 +886,46 @@ export class WorkerAgent implements Agent {
   }
 
   private resolveClaudeModel(): string | undefined {
-    const candidate = this.config.claudeModel;
-    if (!candidate || candidate.trim().length === 0) {
-      return DEFAULT_CLAUDE_MODEL;
+    if (!isClaudeFamily(this.config.claudeModel) && isCodexFamily(this.config.claudeModel)) {
+      return resolveRuntimeModel(CLAUDE_LATEST_ALIAS, CLAUDE_LATEST_ALIAS);
     }
-    if (candidate.toLowerCase().includes('codex')) {
-      return DEFAULT_CLAUDE_MODEL;
-    }
-    return candidate;
+    return resolveRuntimeModel(this.config.claudeModel, CLAUDE_LATEST_ALIAS);
   }
 
   private shouldExecuteWithClaude(input: WorkerInput): boolean {
-    return input.feature.model === 'claude';
+    if (input.feature.kind === 'review' && input.feature.reviewType === 'product') {
+      return false;
+    }
+    if (input.feature.kind === 'qa') {
+      return false;
+    }
+    if (input.feature.kind === 'pull_request' || input.feature.kind === 'pr_followup') {
+      return true;
+    }
+    return isClaudeFamily(input.feature.model);
+  }
+
+  private resolveExecutionCwd(input: WorkerInput): string {
+    if (typeof input.feature.cwd === 'string' && input.feature.cwd.trim().length > 0) {
+      return resolve(this.config.cwd, input.feature.cwd);
+    }
+    if (input.feature.kind === 'review') {
+      const reviewCwd = input.missionPlan.productReviewContract?.cwd;
+      if (typeof reviewCwd === 'string' && reviewCwd.trim().length > 0) {
+        return resolve(this.config.cwd, reviewCwd);
+      }
+    }
+    return this.config.cwd;
+  }
+
+  private shouldEnableJsRepl(input: WorkerInput): boolean {
+    if (input.feature.kind === 'review' && input.feature.reviewType === 'product') {
+      return true;
+    }
+    if (input.feature.kind !== 'qa') {
+      return false;
+    }
+    return (input.milestone.validationContract.qaChecks ?? []).some((check) => check.type === 'browser');
   }
 }
 
@@ -387,4 +945,187 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function normalizeValidationCheckResults(value: unknown): ValidationCheckResult[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return [];
+    }
+
+    const record = item as Record<string, unknown>;
+    const checkId = typeof record.checkId === 'string' ? record.checkId.trim() : '';
+    if (checkId.length === 0 || typeof record.passed !== 'boolean') {
+      return [];
+    }
+
+    const result: ValidationCheckResult = {
+      checkId,
+      passed: record.passed,
+    };
+
+    if (typeof record.exitCode === 'number') {
+      result.exitCode = record.exitCode;
+    }
+    if (typeof record.durationMs === 'number') {
+      result.durationMs = record.durationMs;
+    }
+    if (typeof record.output === 'string' && record.output.trim().length > 0) {
+      result.output = record.output;
+    }
+    if (typeof record.warning === 'string' && record.warning.trim().length > 0) {
+      result.warning = record.warning.trim();
+    }
+    if (typeof record.runner === 'string' && record.runner.trim().length > 0) {
+      result.runner = record.runner.trim();
+    }
+    if (typeof record.screenshotPath === 'string' && record.screenshotPath.trim().length > 0) {
+      result.screenshotPath = record.screenshotPath.trim();
+    }
+    if (typeof record.videoPath === 'string' && record.videoPath.trim().length > 0) {
+      result.videoPath = record.videoPath.trim();
+    }
+    if (typeof record.screenshotUrl === 'string' && record.screenshotUrl.trim().length > 0) {
+      result.screenshotUrl = record.screenshotUrl.trim();
+    }
+    if (typeof record.videoUrl === 'string' && record.videoUrl.trim().length > 0) {
+      result.videoUrl = record.videoUrl.trim();
+    }
+
+    const failure = normalizeValidationCheckFailure(record.failure);
+    if (failure) {
+      result.failure = failure;
+    }
+
+    return [result];
+  });
+}
+
+function normalizeValidationCheckFailure(value: unknown): ValidationCheckFailure | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const summary = typeof record.summary === 'string' ? record.summary.trim() : '';
+  if (summary.length === 0) {
+    return undefined;
+  }
+
+  return {
+    summary,
+    affectedFiles: Array.isArray(record.affectedFiles)
+      ? record.affectedFiles.filter((item): item is string => typeof item === 'string')
+      : [],
+    errorMessages: Array.isArray(record.errorMessages)
+      ? record.errorMessages.filter((item): item is string => typeof item === 'string')
+      : [],
+    rootCause: typeof record.rootCause === 'string' && record.rootCause.trim().length > 0
+      ? record.rootCause.trim()
+      : undefined,
+  };
+}
+
+function normalizePullRequestState(value: unknown): WorkerFeatureReport['pullRequest'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const url = typeof record.url === 'string' ? record.url.trim() : '';
+  const baseBranch = typeof record.baseBranch === 'string' ? record.baseBranch.trim() : '';
+  const headBranch = typeof record.headBranch === 'string' ? record.headBranch.trim() : '';
+  const action = record.action === 'created' || record.action === 'updated'
+    ? record.action
+    : null;
+  if (!url || !baseBranch || !headBranch || !action) {
+    return undefined;
+  }
+
+  return {
+    number: typeof record.number === 'number' && Number.isFinite(record.number)
+      ? Math.max(1, Math.floor(record.number))
+      : undefined,
+    url,
+    title: typeof record.title === 'string' && record.title.trim().length > 0
+      ? record.title.trim()
+      : undefined,
+    baseBranch,
+    headBranch,
+    draft: record.draft === true,
+    action,
+    updatedAt: typeof record.updatedAt === 'string' && record.updatedAt.trim().length > 0
+      ? record.updatedAt
+      : new Date().toISOString(),
+  };
+}
+
+function normalizePullRequestFollowUpState(value: unknown): WorkerFeatureReport['pullRequestFollowUp'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const handledFeedbackIds = Array.isArray(record.handledFeedbackIds)
+    ? record.handledFeedbackIds
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+    : [];
+
+  return {
+    handledFeedbackIds,
+    lastExternalActivityAt: typeof record.lastExternalActivityAt === 'string' && record.lastExternalActivityAt.trim().length > 0
+      ? record.lastExternalActivityAt
+      : null,
+    quietUntil: typeof record.quietUntil === 'string' && record.quietUntil.trim().length > 0
+      ? record.quietUntil
+      : null,
+  };
+}
+
+function normalizeWarnings(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function normalizeDiscoveredFeatures(value: unknown): WorkerFeatureReport['discoveredFeatures'] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (typeof item === 'string') {
+      const description = item.trim();
+      return description.length > 0
+        ? [{ description, priority: 'medium' as const }]
+        : [];
+    }
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return [];
+    }
+
+    const description = typeof item.description === 'string' ? item.description.trim() : '';
+    if (description.length === 0) {
+      return [];
+    }
+
+    const priority = item.priority === 'high' || item.priority === 'medium' || item.priority === 'low'
+      ? item.priority
+      : 'medium';
+    const rationale = typeof item.rationale === 'string' && item.rationale.trim().length > 0
+      ? item.rationale.trim()
+      : undefined;
+
+    return [{ description, priority, rationale }];
+  });
 }

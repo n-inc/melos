@@ -17,7 +17,9 @@ describe('ui/tui-keymap', () => {
     expect(parseKey('R')).toEqual({ type: 'resume' });
     expect(parseKey('\u0007')).toEqual({ type: 'steer_mode' });
     expect(parseKey('\u001b')).toEqual({ type: 'overview' });
+    expect(parseKey('\u001b[1;2A')).toEqual({ type: 'scroll_top' });
     expect(parseKey('\u001bOA')).toEqual({ type: 'cursor_up' });
+    expect(parseKey('\u001b[1;2B')).toEqual({ type: 'scroll_bottom' });
     expect(parseKey('\u001bOB')).toEqual({ type: 'cursor_down' });
     expect(parseKey('k')).toEqual({ type: 'cursor_up' });
     expect(parseKey('j')).toEqual({ type: 'cursor_down' });

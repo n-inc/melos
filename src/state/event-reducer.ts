@@ -1,12 +1,13 @@
 import type { MissionPlan } from './mission.js';
 import type { MissionEvent } from './events.js';
 import type { GitStrategyState } from './git-strategy.js';
-import type { TokenUsageSnapshot } from './token-tracker.js';
-import type { LogActor, UnifiedLogEntry } from './log-entry.js';
+import type { ReviewReport } from './review.js';
+import type { ValidationEvidenceMap, ValidationReport } from './validation.js';
+import { normalizeLogMessage, type LogActor, type UnifiedLogEntry } from './log-entry.js';
 
 export interface WorkerRunState {
   id: number;
-  type: 'implement' | 'validate' | 'research';
+  type: 'implement' | 'validate' | 'review' | 'research';
   featureId?: string;
   milestoneId?: string;
   status: 'running' | 'done' | 'failed';
@@ -15,6 +16,29 @@ export interface WorkerRunState {
   startedAt: string;
   endedAt?: string;
   log: UnifiedLogEntry[];
+}
+
+export type RuntimeWarningSource = 'worker' | 'validation' | 'system';
+
+export interface RuntimeWarningRecord {
+  timestamp: string;
+  iteration: number;
+  source: RuntimeWarningSource;
+  message: string;
+  milestoneId?: string;
+  featureId?: string;
+  checkId?: string;
+  seq?: number;
+}
+
+export interface FeatureRetryRecord {
+  milestoneId: string;
+  featureId: string;
+  nextAttempt: number;
+  dueAt: string;
+  lastStatus: 'PARTIAL' | 'FAILED' | 'BLOCKED';
+  reason: string;
+  summary?: string;
 }
 
 export interface MissionKernelState {
@@ -27,7 +51,11 @@ export interface MissionKernelState {
   currentActor: LogActor;
   activeWorkerRunId: number | null;
   gitStrategy: GitStrategyState | null;
-  tokenUsage: TokenUsageSnapshot;
+  warnings?: RuntimeWarningRecord[];
+  validationEvidence?: ValidationEvidenceMap;
+  latestValidationReport?: ValidationReport | null;
+  latestReviewReport?: ReviewReport | null;
+  featureRetries?: FeatureRetryRecord[];
 }
 
 export function createInitialKernelState(): MissionKernelState {
@@ -41,10 +69,11 @@ export function createInitialKernelState(): MissionKernelState {
     currentActor: 'idle',
     activeWorkerRunId: null,
     gitStrategy: null,
-    tokenUsage: {
-      total: { input: 0, output: 0, cached: 0, cost: 0 },
-      byRole: {},
-    },
+    warnings: [],
+    validationEvidence: {},
+    latestValidationReport: null,
+    latestReviewReport: null,
+    featureRetries: [],
   };
 }
 
@@ -61,7 +90,8 @@ export function reduceMissionEvent(
         event.timestamp,
         message,
         'planning',
-        'INFO'
+        'INFO',
+        event.seq
       );
     }
 
@@ -77,7 +107,8 @@ export function reduceMissionEvent(
         event.timestamp,
         message,
         actor,
-        kind
+        kind,
+        event.seq
       );
     }
 
@@ -86,7 +117,7 @@ export function reduceMissionEvent(
       const missionPlan = (event.payload.plan as MissionPlan | undefined) ?? state.missionPlan;
       const message = `${event.type}`;
       return {
-        ...appendUnifiedProgress(state, event.timestamp, message, 'planning', event.type.toUpperCase()),
+        ...appendUnifiedProgress(state, event.timestamp, message, 'planning', event.type.toUpperCase(), event.seq),
         missionPlan,
         iteration: event.iteration,
       };
@@ -99,7 +130,8 @@ export function reduceMissionEvent(
         event.timestamp,
         `${event.type} #${event.iteration}`,
         'system',
-        event.type.toUpperCase()
+        event.type.toUpperCase(),
+        event.seq
       );
       return {
         ...next,
@@ -126,7 +158,8 @@ export function reduceMissionEvent(
         event.timestamp,
         'worker',
         `[STARTED] ${startSummary}`,
-        'STARTED'
+        'STARTED',
+        event.seq
       );
       return {
         ...appendUnifiedEntry(
@@ -148,7 +181,7 @@ export function reduceMissionEvent(
         ? 'worker'
         : (state.activeWorkerRunId ? 'worker' : 'system');
       const defaultKind = event.type === 'command_executed' ? 'BASH' : 'INFO';
-      const entry = createLogEntry(event.timestamp, actor, message, defaultKind);
+      const entry = createLogEntry(event.timestamp, actor, message, defaultKind, event.seq);
 
       const nextWorkerRuns = state.workerRuns.map((run) => {
         if (run.id !== state.activeWorkerRunId) {
@@ -182,7 +215,8 @@ export function reduceMissionEvent(
         event.timestamp,
         'worker',
         summary ? `[${success ? 'DONE' : 'ERR'}] ${summary}` : `[${success ? 'DONE' : 'ERR'}] ${completionMessage}`,
-        success ? 'DONE' : 'ERR'
+        success ? 'DONE' : 'ERR',
+        event.seq
       );
       return {
         ...appendUnifiedEntry(
@@ -202,10 +236,71 @@ export function reduceMissionEvent(
             status: success ? 'done' : 'failed',
             endedAt: event.timestamp,
             log: summary
-              ? [...run.log, createLogEntry(event.timestamp, 'worker', `[${success ? 'DONE' : 'ERR'}] ${summary}`, success ? 'DONE' : 'ERR')]
+              ? [...run.log, createLogEntry(event.timestamp, 'worker', `[${success ? 'DONE' : 'ERR'}] ${summary}`, success ? 'DONE' : 'ERR', event.seq)]
               : run.log,
           };
         }),
+      };
+    }
+
+    case 'review_started': {
+      const reviewType = asString(event.payload.reviewType) ?? 'review';
+      const generation = Number.isFinite(event.payload.generation)
+        ? Math.max(1, Math.floor(Number(event.payload.generation)))
+        : 1;
+      const message = `${reviewType} review g${generation} started`;
+      return appendUnifiedProgress(
+        state,
+        event.timestamp,
+        message,
+        'worker',
+        'STARTED',
+        event.seq
+      );
+    }
+
+    case 'review_result': {
+      const summary = asString(event.payload.summary) ?? 'review completed';
+      const report = event.payload.report as ReviewReport | undefined;
+      const passed = Boolean(event.payload.passed);
+      const blockingFindingCount = Number.isFinite(event.payload.blockingFindingCount)
+        ? Math.max(0, Math.floor(Number(event.payload.blockingFindingCount)))
+        : 0;
+      const suffix = passed
+        ? 'passed'
+        : `failed (${blockingFindingCount} blocking finding${blockingFindingCount === 1 ? '' : 's'})`;
+      const next = appendUnifiedProgress(
+        state,
+        event.timestamp,
+        `review_result: ${summary} [${suffix}]`,
+        'worker',
+        passed ? 'DONE' : 'WARN',
+        event.seq
+      );
+      return {
+        ...next,
+        latestReviewReport: report ?? next.latestReviewReport ?? null,
+      };
+    }
+
+    case 'warning_emitted': {
+      const warning = runtimeWarningRecordFromEvent(event);
+      if (!warning) {
+        return state;
+      }
+
+      const actor = resolveActorFromWarningSource(warning.source);
+      const next = appendUnifiedProgress(
+        state,
+        event.timestamp,
+        formatRuntimeWarningRecord(warning),
+        actor,
+        'WARN',
+        event.seq
+      );
+      return {
+        ...next,
+        warnings: appendWarning(next.warnings ?? state.warnings ?? [], warning),
       };
     }
 
@@ -214,7 +309,6 @@ export function reduceMissionEvent(
     case 'branch_abandoned':
     case 'validation_started':
     case 'validation_result':
-    case 'token_usage':
     case 'mission_completed':
     case 'mission_failed':
     case 'mission_interrupted':
@@ -226,7 +320,7 @@ export function reduceMissionEvent(
       const message = `${event.type}: ${stringifyPayload(event.payload)}`;
       const actor = resolveActorFromEvent(event);
       const kind = event.type.toUpperCase();
-      return appendUnifiedProgress(state, event.timestamp, message, actor, kind);
+      return appendUnifiedProgress(state, event.timestamp, message, actor, kind, event.seq);
     }
 
     default:
@@ -270,10 +364,12 @@ function appendUnifiedProgress(
   timestamp: string,
   message: string,
   actor: LogActor,
-  defaultKind: string
+  defaultKind: string,
+  seq?: number
 ): MissionKernelState {
-  const next = appendProgress(state, timestamp, message);
-  return appendUnifiedEntry(next, createLogEntry(timestamp, actor, message, defaultKind));
+  const entry = createLogEntry(timestamp, actor, message, defaultKind, seq);
+  const next = appendProgress(state, timestamp, extractProgressHeadline(message, entry.message));
+  return appendUnifiedEntry(next, entry);
 }
 
 function appendManagerUnifiedProgress(
@@ -281,10 +377,12 @@ function appendManagerUnifiedProgress(
   timestamp: string,
   message: string,
   actor: LogActor,
-  defaultKind: string
+  defaultKind: string,
+  seq?: number
 ): MissionKernelState {
-  const next = appendManagerProgress(state, timestamp, message);
-  return appendUnifiedEntry(next, createLogEntry(timestamp, actor, message, defaultKind));
+  const entry = createLogEntry(timestamp, actor, message, defaultKind, seq);
+  const next = appendManagerProgress(state, timestamp, extractProgressHeadline(message, entry.message));
+  return appendUnifiedEntry(next, entry);
 }
 
 function appendLog(
@@ -317,36 +415,26 @@ function createLogEntry(
   timestamp: string,
   actor: LogActor,
   rawMessage: string,
-  defaultKind: string
+  defaultKind: string,
+  seq?: number
 ): UnifiedLogEntry {
-  const lines = rawMessage
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\s+$/g, ''))
-    .filter((line) => line.length > 0);
-  const first = lines[0] ?? '';
-  const parsed = parseKindAndMessage(first, defaultKind);
-  const detailLines = lines.length > 1 ? limitDetailLines(lines.slice(1)) : undefined;
+  const parsed = normalizeLogMessage(rawMessage, defaultKind);
   return {
+    seq,
     timestamp,
     actor,
     kind: parsed.kind,
     message: parsed.message,
-    detailLines,
+    detailLines: parsed.detailLines,
   };
 }
 
-function parseKindAndMessage(firstLine: string, defaultKind: string): { kind: string; message: string } {
-  const tagged = firstLine.match(/^\[([A-Z0-9_]+)\]\s*(.*)$/);
-  if (tagged) {
-    const kind = tagged[1];
-    const message = tagged[2] && tagged[2].trim().length > 0 ? tagged[2].trim() : kind;
-    return { kind, message };
-  }
-  const cleanMessage = firstLine.trim();
-  return {
-    kind: defaultKind,
-    message: cleanMessage.length > 0 ? cleanMessage : defaultKind,
-  };
+function extractProgressHeadline(rawMessage: string, fallback: string): string {
+  const first = rawMessage
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+$/g, ''))
+    .find((line) => line.trim().length > 0);
+  return first?.trim() || fallback;
 }
 
 function stringifyPayload(payload: Record<string, unknown>): string {
@@ -361,9 +449,38 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function resolveActorFromWarningSource(source: RuntimeWarningSource): LogActor {
+  if (source === 'validation') {
+    return 'validator';
+  }
+  if (source === 'worker') {
+    return 'worker';
+  }
+  return 'system';
+}
+
+function appendWarning(
+  warnings: RuntimeWarningRecord[],
+  warning: RuntimeWarningRecord
+): RuntimeWarningRecord[] {
+  const next = [...warnings, warning];
+  if (next.length > 200) {
+    return next.slice(next.length - 200);
+  }
+  return next;
+}
+
 function resolveActorFromEvent(event: MissionEvent): LogActor {
   if (event.type.startsWith('validation_')) {
     return 'validator';
+  }
+  if (event.type.startsWith('review_')) {
+    return 'worker';
+  }
+  if (event.type === 'warning_emitted') {
+    return resolveActorFromWarningSource(
+      runtimeWarningRecordFromEvent(event)?.source ?? 'system'
+    );
   }
   if (event.type.startsWith('manager_')) {
     return 'manager';
@@ -383,12 +500,63 @@ function resolveActorFromEvent(event: MissionEvent): LogActor {
   return 'system';
 }
 
-function limitDetailLines(lines: string[]): string[] {
-  const clipped = lines
-    .slice(0, 3)
-    .map((line) => (line.length > 180 ? `${line.slice(0, 177)}...` : line));
-  if (lines.length > 3) {
-    clipped.push(`... +${lines.length - 3} more lines`);
+export function runtimeWarningRecordFromEvent(event: MissionEvent): RuntimeWarningRecord | null {
+  if (event.type !== 'warning_emitted') {
+    return null;
   }
-  return clipped;
+
+  return normalizeRuntimeWarningRecord({
+    timestamp: event.timestamp,
+    iteration: event.iteration,
+    seq: event.seq,
+    ...event.payload,
+  });
+}
+
+export function normalizeRuntimeWarningRecord(value: unknown): RuntimeWarningRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const message = typeof record.message === 'string' ? record.message.trim() : '';
+  if (message.length === 0) {
+    return null;
+  }
+
+  const source = record.source === 'worker' || record.source === 'validation' || record.source === 'system'
+    ? record.source
+    : 'system';
+
+  return {
+    timestamp: typeof record.timestamp === 'string' ? record.timestamp : new Date().toISOString(),
+    iteration: typeof record.iteration === 'number' ? Math.max(0, Math.floor(record.iteration)) : 0,
+    source,
+    message,
+    milestoneId: asString(record.milestoneId),
+    featureId: asString(record.featureId),
+    checkId: asString(record.checkId),
+    seq: typeof record.seq === 'number' ? record.seq : undefined,
+  };
+}
+
+export function formatRuntimeWarningRecord(warning: RuntimeWarningRecord): string {
+  const scope = formatRuntimeWarningScope(warning);
+  if (scope) {
+    return `[${warning.source}] ${scope}: ${warning.message}`;
+  }
+  return `[${warning.source}] ${warning.message}`;
+}
+
+function formatRuntimeWarningScope(warning: RuntimeWarningRecord): string {
+  const parts: string[] = [];
+  if (warning.featureId) {
+    parts.push(warning.featureId);
+  } else if (warning.milestoneId) {
+    parts.push(warning.milestoneId);
+  }
+  if (warning.checkId) {
+    parts.push(warning.checkId);
+  }
+  return parts.join('/');
 }

@@ -11,8 +11,17 @@ export interface MelosConfig {
   models?: {
     planner?: ModelName;
     worker?: ModelName;
-    validator?: ModelName;
-    research?: ModelName;
+  };
+  execution?: {
+    maxFeatureAttempts?: number;
+    retryInitialDelayMs?: number;
+    retryMaxDelayMs?: number;
+    stallTimeoutMs?: number;
+  };
+  verification?: {
+    requireManualEvidence?: boolean;
+    requireE2EEvidence?: boolean;
+    failOnWorkerWarnings?: boolean;
   };
   git?: {
     enabled?: boolean;
@@ -20,6 +29,9 @@ export interface MelosConfig {
     autoPush?: boolean;
     preMergeValidation?: boolean;
     validationCommands?: string[];
+    pullRequest?: {
+      enabled?: boolean;
+    };
   };
 }
 
@@ -75,14 +87,59 @@ function validateConfig(config: MelosConfig): MelosConfig {
     if (isNonEmptyString(config.models.worker)) {
       models.worker = config.models.worker;
     }
-    if (isNonEmptyString(config.models.validator)) {
-      models.validator = config.models.validator;
-    }
-    if (isNonEmptyString(config.models.research)) {
-      models.research = config.models.research;
-    }
     if (Object.keys(models).length > 0) {
       validated.models = models;
+    }
+  }
+
+  if (config.execution && typeof config.execution === 'object') {
+    const execution: NonNullable<MelosConfig['execution']> = {};
+
+    if (typeof config.execution.maxFeatureAttempts === 'number') {
+      const maxFeatureAttempts = Math.floor(config.execution.maxFeatureAttempts);
+      if (maxFeatureAttempts >= 1 && maxFeatureAttempts <= 100) {
+        execution.maxFeatureAttempts = maxFeatureAttempts;
+      }
+    }
+    if (typeof config.execution.retryInitialDelayMs === 'number') {
+      const retryInitialDelayMs = Math.floor(config.execution.retryInitialDelayMs);
+      if (retryInitialDelayMs >= 0 && retryInitialDelayMs <= 3_600_000) {
+        execution.retryInitialDelayMs = retryInitialDelayMs;
+      }
+    }
+    if (typeof config.execution.retryMaxDelayMs === 'number') {
+      const retryMaxDelayMs = Math.floor(config.execution.retryMaxDelayMs);
+      if (retryMaxDelayMs >= 0 && retryMaxDelayMs <= 3_600_000) {
+        execution.retryMaxDelayMs = retryMaxDelayMs;
+      }
+    }
+    if (typeof config.execution.stallTimeoutMs === 'number') {
+      const stallTimeoutMs = Math.floor(config.execution.stallTimeoutMs);
+      if (stallTimeoutMs >= 1_000 && stallTimeoutMs <= 86_400_000) {
+        execution.stallTimeoutMs = stallTimeoutMs;
+      }
+    }
+
+    if (Object.keys(execution).length > 0) {
+      validated.execution = execution;
+    }
+  }
+
+  if (config.verification && typeof config.verification === 'object') {
+    const verification: NonNullable<MelosConfig['verification']> = {};
+
+    if (typeof config.verification.requireManualEvidence === 'boolean') {
+      verification.requireManualEvidence = config.verification.requireManualEvidence;
+    }
+    if (typeof config.verification.requireE2EEvidence === 'boolean') {
+      verification.requireE2EEvidence = config.verification.requireE2EEvidence;
+    }
+    if (typeof config.verification.failOnWorkerWarnings === 'boolean') {
+      verification.failOnWorkerWarnings = config.verification.failOnWorkerWarnings;
+    }
+
+    if (Object.keys(verification).length > 0) {
+      validated.verification = verification;
     }
   }
 
@@ -103,6 +160,15 @@ function validateConfig(config: MelosConfig): MelosConfig {
     }
     if (Array.isArray(config.git.validationCommands)) {
       git.validationCommands = config.git.validationCommands.filter(isNonEmptyString);
+    }
+    if (config.git.pullRequest && typeof config.git.pullRequest === 'object') {
+      const pullRequest: NonNullable<NonNullable<MelosConfig['git']>['pullRequest']> = {};
+      if (typeof config.git.pullRequest.enabled === 'boolean') {
+        pullRequest.enabled = config.git.pullRequest.enabled;
+      }
+      if (Object.keys(pullRequest).length > 0) {
+        git.pullRequest = pullRequest;
+      }
     }
 
     if (Object.keys(git).length > 0) {

@@ -1,19 +1,6 @@
 export {
-  type TaskEngine,
-  type TaskEntry,
-  type TaskList,
-  taskFileExists,
-  loadTasks,
-  saveTasks,
-  updateTaskStatus,
-  getPendingTasks,
-  getNextTask,
-  isAllTasksCompleted,
-  addTasks,
-} from './task.js';
-
-export {
   type MissionState,
+  type FeatureKind,
   type FeatureStatus,
   type MilestoneStatus,
   type CheckItem,
@@ -42,12 +29,30 @@ export {
 } from './mission.js';
 
 export {
+  type ReviewType,
+  type ReviewFindingPriority,
+  type ReviewFinding,
+  type ReviewArtifact,
+  type ProductReviewCheckpoint,
+  type ProductReviewStartupStep,
+  type ProductReviewContract,
+  type ReviewReport,
+  normalizeProductReviewContract,
+  normalizeReviewFinding,
+  normalizeReviewArtifact,
+  isBlockingReviewFinding,
+} from './review.js';
+
+export {
   type CheckType,
+  type ValidationRunner,
+  type ValidationArtifact,
   type ValidationCheck,
   type ValidationContract,
   type ValidationCheckFailure,
   type ValidationCheckResult,
   type ValidationReport,
+  type ValidationEvidenceMap,
   type ValidationFailureSummary,
   createEmptyValidationContract,
   getAllValidationChecks,
@@ -83,8 +88,12 @@ export {
 
 export {
   type WorkerRunState,
+  type RuntimeWarningSource,
+  type RuntimeWarningRecord,
   type MissionKernelState,
   createInitialKernelState,
+  formatRuntimeWarningRecord,
+  runtimeWarningRecordFromEvent,
   reduceMissionEvent,
   replayMissionEvents,
 } from './event-reducer.js';
@@ -100,49 +109,9 @@ export {
   Watchdog,
 } from './watchdog.js';
 
-export {
-  type TokenUsage,
-  type TokenUsageEntry,
-  type TokenUsageSnapshot,
-  TokenTracker,
-} from './token-tracker.js';
-
-export {
-  type ExecutionMode,
-  type ProgressHeader,
-  type IterationEntry,
-  type Progress,
-  progressExists,
-  loadProgress,
-  parseProgress,
-  saveProgress,
-  serializeProgress,
-  initializeProgress,
-  addIteration,
-  getCurrentIteration,
-  addCodebasePattern,
-} from './progress.js';
-
 export { getCIStatus } from './git.js';
 
 export { type PrdFrontmatter, extractPrdTitle } from './prd.js';
-
-export {
-  type WorkReportStatus,
-  type FileChange,
-  type VerificationResult,
-  type CriterionResult,
-  type DiscoveredTask,
-  type WorkReport,
-  getWorkReportPath,
-  workReportExists,
-  loadWorkReport,
-  saveWorkReport,
-  createWorkReport,
-  clearWorkReport,
-  isAllCriteriaPassed,
-  isVerificationPassed,
-} from './work-report.js';
 
 export {
   type EscalationType,
@@ -161,15 +130,6 @@ export {
   clearEscalation,
   generateEscalationId,
 } from './escalation.js';
-
-export {
-  type MelosSession,
-  getSessionPath,
-  sessionExists,
-  loadSession,
-  saveSession,
-  clearSession,
-} from './session.js';
 
 export {
   type MelosRuntime,

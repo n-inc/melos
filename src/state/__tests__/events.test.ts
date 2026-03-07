@@ -112,6 +112,38 @@ describe('event sourcing', () => {
     expect(state.logEntries.some((entry) => entry.actor === 'planning' || entry.actor === 'manager')).toBe(true);
   });
 
+  it('stores warning events and exposes WARN log entries', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-events-warning-'));
+    const log = new EventLog({ melosDir: dir });
+
+    log.emit({
+      type: 'warning_emitted',
+      iteration: 1,
+      agent: 'worker',
+      payload: {
+        source: 'worker',
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        message: 'manual verification is still required',
+      },
+    });
+
+    const state = replayMissionEvents(log.readAll());
+    expect(state.warnings).toEqual([
+      expect.objectContaining({
+        source: 'worker',
+        featureId: 'm1-f1',
+        message: 'manual verification is still required',
+      }),
+    ]);
+    expect(state.logEntries).toEqual([
+      expect.objectContaining({
+        actor: 'worker',
+        kind: 'WARN',
+      }),
+    ]);
+  });
+
   it('returns null snapshot when state.json does not exist', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'melos-events-no-snapshot-'));
     const snapshot = await loadSnapshot(dir);

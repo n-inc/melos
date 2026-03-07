@@ -1,5 +1,7 @@
 import type { MissionControlState, TUIView, ViewPort } from './tui-views.js';
 import { drawBox, splitColumns } from './tui-layout.js';
+import { resolveDisplayModel } from '../models/registry.js';
+import { selectRecentProgressEntries } from './tui-progress.js';
 
 function statusIcon(status: string): string {
   switch (status) {
@@ -23,15 +25,17 @@ export const featuresView: TUIView = {
     for (const milestone of state.milestones) {
       left.push(`${statusIcon(milestone.status)} ${milestone.id} ${milestone.title}`);
       for (const feature of milestone.features) {
-        left.push(`  ${statusIcon(feature.status)} ${feature.id} ${feature.description}`);
+        const modelBadge = feature.model
+          ? `${feature.modelStateSource === 'default' ? 'D' : 'E'}:${resolveDisplayModel(feature.model)}`
+          : 'U:-';
+        left.push(`  ${statusIcon(feature.status)} ${feature.id} [${modelBadge}] ${feature.description}`);
       }
       left.push('');
     }
 
     const activeMilestone = state.milestones.find((milestone) => milestone.id === state.activeMilestoneId) ?? null;
     const activeFeature = activeMilestone?.features.find((feature) => feature.id === state.activeFeatureId) ?? null;
-    const recentLogLines = state.progressLog
-      .slice(-6)
+    const recentLogLines = selectRecentProgressEntries(state.progressLog, 6)
       .map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
     if (recentLogLines.length === 0) {
       recentLogLines.push(state.activity || 'No mission events yet');
@@ -47,6 +51,8 @@ export const featuresView: TUIView = {
       'Details',
       `Active Milestone: ${activeMilestone ? `${activeMilestone.id} ${activeMilestone.title}` : '-'}`,
       `Active Feature: ${activeFeature ? `${activeFeature.id} ${activeFeature.description}` : '-'}`,
+      `Model: ${activeFeature?.model ? resolveDisplayModel(activeFeature.model) : '-'}`,
+      `Model Source: ${activeFeature?.modelStateSource ?? 'default'}`,
       `Mission State: ${state.missionState}`,
       `Activity: ${state.activity}`,
       `Progress: ${state.progressLabel}`,
@@ -54,6 +60,9 @@ export const featuresView: TUIView = {
       'Recent Log (events)',
       logModeLine,
       ...recentLogLines,
+      '',
+      'Model badges: E=explicit, D=defaulted, U=unset',
+      'Feature model keys: C=gpt-5.4 [Latest] A=claude-opus-4.6 [Latest] U=unset(active feature)',
       '',
       'Hint: Worker execution log is in Workers view (W).',
     ];

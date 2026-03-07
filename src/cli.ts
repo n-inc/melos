@@ -21,16 +21,24 @@ import {
   terminateProcess,
 } from './state/runtime.js';
 import { loadSnapshot } from './state/snapshot.js';
+import { loadGitStrategyState, type PullRequestState } from './state/git-strategy.js';
 import type { MissionEvent } from './state/events.js';
-import type { MissionKernelState } from './state/event-reducer.js';
+import {
+  formatRuntimeWarningRecord,
+  runtimeWarningRecordFromEvent,
+  type MissionKernelState,
+} from './state/event-reducer.js';
+import { normalizeLogMessage } from './state/log-entry.js';
+import { formatLogStreamLines } from './ui/log-stream.js';
+import { canUseColor } from './ui/tui-ansi.js';
 import { createRuntimeUI, resolveRuntimeUIMode, type SessionInfo, type TerminalCapabilities } from './ui/tui.js';
+import { CODEX_LATEST_ALIAS, normalizeModelName } from './models/registry.js';
 
 export interface CLIOptions {
+  input?: string;
   maxIterations?: number;
   plannerModel?: string;
   workerModel?: string;
-  validatorModel?: string;
-  researchModel?: string;
   model?: string;
   effort?: 'low' | 'medium' | 'high' | 'max';
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -38,7 +46,9 @@ export interface CLIOptions {
   dryRun?: boolean;
   interactive?: boolean;
   autoApprove?: boolean;
+  quick?: boolean;
   gitStrategy?: boolean;
+  createPr?: boolean;
   baseBranch?: string;
   missionId?: string;
   headless?: boolean;
@@ -58,7 +68,7 @@ const LOG_ACTORS = ['planning', 'manager', 'worker', 'validator', 'system', 'all
 type LogActorFilter = typeof LOG_ACTORS[number];
 
 interface SignalControllerHooks {
-  abort: () => void;
+  abort: (signal: NodeJS.Signals) => void;
   stopUI: () => void;
   setExitCode: (code: number) => void;
   exitNow: (code: number) => void;
@@ -102,7 +112,7 @@ export function createSignalController(hooks: SignalControllerHooks): SignalCont
     signalExitCode = nextCode;
     hooks.setExitCode(signalExitCode);
     hooks.write('\n[melos] 中断しています...（もう一度 Ctrl+C で強制終了）\n');
-    hooks.abort();
+    hooks.abort(signal);
 
     forceExitTimer = setTimeout(() => {
       forceExit(signalExitCode ?? nextCode);
@@ -127,21 +137,22 @@ export function createProgram(): Command {
     .helpOption('-h, --help', 'ヘルプを表示');
 
   const applyCommonRunOptions = (cmd: Command): Command => cmd
+    .option('--input <path>', 'RunSpec JSON ファイルからミッションを起動')
     .option('--max-iterations <number>', '最大イテレーション数', parseMaxIterations)
     .option('--model <model>', '全ロールの共通モデル')
     .option('--planner-model <model>', 'Planner/Manager モデル')
     .option('--worker-model <model>', 'Worker モデル')
-    .option('--validator-model <model>', 'Validator モデル')
-    .option('--research-model <model>', 'Research モデル')
     .option('--reasoning-effort <level>', 'Worker 推論努力レベル (minimal|low|medium|high|xhigh)')
     .option('--effort <level>', 'Planner effort レベル (low|medium|high|max)')
     .option('--plain', 'プレーン出力モード')
     .option('--headless', 'TUIを無効化し、外部コマンドで監視/承認するヘッドレスモード')
     .option('--detach', 'バックグラウンドで実行して即時に終了（--headless推奨）')
     .option('--dry-run', '実装を行わず計画のみ進める')
+    .option('--quick', '計画スキップ・単一 Feature 即実行')
     .option('--interactive', '対話型 planning を有効化')
     .option('--auto-approve', 'plan 承認を自動化')
     .option('--git-strategy', 'Git-as-Truth ハンドオフを有効化')
+    .option('--create-pr', 'final review 後に GitHub Pull Request 作成と post-PR follow-up を有効化')
     .option('--base-branch <branch>', 'Git戦略のベースブランチ')
     .option('--mission-id <id>', 'ミッションID')
     .addOption(new Option(DETACHED_CHILD_FLAG).hideHelp());
@@ -215,9 +226,13 @@ export function createProgram(): Command {
           if (logs.entries.length === 0) {
             console.log('(no logs)');
           } else {
-            for (const entry of logs.entries) {
-              console.log(`${entry.seq} ${entry.timestamp} [${entry.actor.toUpperCase()}][${entry.kind}] ${entry.message}`);
-            }
+            const lines = formatLogStreamLines(logs.entries, {
+              useColor: canUseColor(process.stdout.isTTY === true),
+              showSeq: true,
+              showActor: true,
+              summarizeExploration: true,
+            });
+            console.log(lines.join('\n'));
           }
           return;
         }
@@ -341,6 +356,31 @@ export async function executeWithOptions(
   const melosDir = join(cwd, '.melos');
   const missionFilePath = join(cwd, 'TASK.json');
   const prdFilePath = join(cwd, 'PRD.md');
+  let prdOverride: string | undefined;
+  let runIdentity: OrchestratorConfig['runIdentity'];
+  let runSpecTitle: string | undefined;
+
+  if (options.input) {
+    const { loadRunSpec, runSpecToPrdText, extractRunIdentity } = await import('./run-spec.js');
+    const runSpec = await loadRunSpec(options.input);
+    runSpecTitle = runSpec.source.title;
+    prdOverride = runSpecToPrdText(runSpec);
+    runIdentity = extractRunIdentity(runSpec);
+
+    if (runSpec.options?.quick) {
+      options.quick = true;
+    }
+    if (runSpec.options?.maxIterations) {
+      options.maxIterations ??= runSpec.options.maxIterations;
+    }
+    if (runSpec.options?.model) {
+      options.workerModel ??= runSpec.options.model;
+      options.plannerModel ??= runSpec.options.model;
+    }
+  }
+  if (options.quick === true) {
+    options.autoApprove = true;
+  }
 
   const autoResumeState = runtimeOptions.resume
     ? null
@@ -352,10 +392,15 @@ export async function executeWithOptions(
     melosDir,
     missionFilePath,
     prdFilePath,
+    hasRunSpecInput: options.input !== undefined,
     resume: effectiveResume,
   });
   if (autoResumeState) {
-    preflightMessages.unshift(`TASK.json の状態 ${autoResumeState} を検出したため、自動で再開モードに切り替えます。`);
+    preflightMessages.unshift([
+      `TASK.json の状態 ${autoResumeState} を検出したため、自動で再開モードに切り替えます。`,
+      '前回のミッションを継続します。状態確認は別端末で `melos status --plain` / `melos logs --plain` を使ってください。',
+      '新規ミッションを開始したい場合は、既存の TASK.json を退避または更新してから再実行してください。',
+    ].join('\n'));
   }
   for (const message of preflightMessages) {
     process.stderr.write(`[melos] ${message}\n`);
@@ -380,13 +425,16 @@ export async function executeWithOptions(
     melosDir,
     plannerModel: models.planner,
     workerModel: models.worker,
-    validatorModel: models.validator,
-    researchModel: models.research,
+    execution: fileConfig.execution,
+    verification: fileConfig.verification,
     managerEffort: options.effort ?? 'high',
-    workerReasoningEffort: options.reasoningEffort ?? 'high',
+    workerReasoningEffort: options.reasoningEffort ?? 'xhigh',
     interactivePlanning: options.interactive === true,
     autoApprove: options.autoApprove === true,
     dryRun: options.dryRun === true,
+    quick: options.quick === true,
+    runIdentity,
+    prdOverride,
     resume: effectiveResume,
     missionId: options.missionId,
     runtimeUIMode: uiMode,
@@ -399,8 +447,9 @@ export async function executeWithOptions(
   const orchestrator = new Orchestrator(orchestratorConfig);
 
   let runFailureMessage: string | null = null;
+  let runCompletionMessage: string | null = null;
   const signalController = createSignalController({
-    abort: () => orchestrator.abort(),
+    abort: (signal) => orchestrator.abort(signal),
     stopUI: () => runtimeUI.stop(),
     setExitCode: (code) => {
       process.exitCode = code;
@@ -429,7 +478,7 @@ export async function executeWithOptions(
     runtimeUI.start(buildSessionInfo({
       version: getVersion(),
       missionId: options.missionId ?? 'mission',
-      missionTitle: readPrdTitle(prdFilePath),
+      missionTitle: runSpecTitle ?? readPrdTitle(prdFilePath),
       planner: models.planner,
       worker: models.worker,
     }), {
@@ -441,18 +490,26 @@ export async function executeWithOptions(
       onCycleModel: (role) => {
         void orchestrator.cycleModel(role);
       },
+      onSetActiveFeatureModel: (model) => {
+        void orchestrator.setActiveFeatureModel(model);
+      },
     });
 
     const result = await orchestrator.run();
     if (signalController.getExitCode() !== null) {
       return;
     }
-
     if (!result.success) {
       const detail = result.error ? ` (${result.error})` : '';
       runFailureMessage = `実行失敗: ${result.reason}${detail}`;
       return;
     }
+
+    const status = await readMissionStatus(cwd);
+    runCompletionMessage = buildRunCompletionMessage(status, {
+      initialState: autoResumeState,
+      uiMode,
+    });
   } finally {
     signalController.clear();
     runtimeUI.stop();
@@ -461,13 +518,45 @@ export async function executeWithOptions(
     process.removeListener('SIGTERM', handleSignal);
   }
 
+  if (runCompletionMessage) {
+    process.stderr.write(`[melos] ${runCompletionMessage}\n`);
+  }
   if (runFailureMessage) {
     console.error(runFailureMessage);
     process.exitCode = 1;
   }
 }
 
+function buildRunCompletionMessage(
+  status: {
+    mission: {
+      state: MissionState | 'unknown' | 'not_initialized';
+      progress: { label: string };
+    };
+    lastEvent: { seq: number; type: string } | null;
+  },
+  options: {
+    initialState: MissionState | null;
+    uiMode: 'tui' | 'plain' | 'headless';
+  }
+): string {
+  const details = [
+    `progress=${status.mission.progress.label}`,
+    status.lastEvent ? `lastEvent=${status.lastEvent.seq}:${status.lastEvent.type}` : null,
+  ].filter((value): value is string => Boolean(value));
+  const detailSuffix = details.length > 0 ? ` (${details.join(', ')})` : '';
+  const completionDetail = options.uiMode === 'tui'
+    ? ' TUI を終了しました。'
+    : '';
+
+  if (options.initialState) {
+    return `起動時点では state=${options.initialState} でしたが、自動再開後の最終状態は state=${status.mission.state} です${detailSuffix}。${completionDetail}`;
+  }
+  return `ミッションが完了しました。最終状態は state=${status.mission.state} です${detailSuffix}。${completionDetail}`;
+}
+
 export interface MissionStatusPayload {
+  schemaVersion: 1;
   initialized: boolean;
   warnings: string[];
   running: boolean;
@@ -490,6 +579,47 @@ export interface MissionStatusPayload {
     activeFeatureId: string | null;
     totalIterations: number;
   };
+  validation: {
+    milestoneId: string;
+    attempt: number;
+    passed: boolean;
+    failedCheckCount: number;
+    warningCount: number;
+  } | null;
+  qa: {
+    summaries: Array<{
+      milestoneId: string;
+      total: number;
+      passed: number;
+      failed: number;
+      pending: number;
+    }>;
+  } | null;
+  review: {
+    reviewType: 'product' | 'code';
+    generation: number;
+    activeFeatureId: string | null;
+    latestFindingCount: number;
+    blockingFindingCount: number;
+    passed: boolean | null;
+    summary?: string;
+  } | null;
+  retry: {
+    queued: Array<{
+      milestoneId: string;
+      featureId: string;
+      nextAttempt: number;
+      dueAt: string;
+      reason: string;
+    }>;
+  } | null;
+  git: {
+    activeBranch: string | null;
+    missionBranch: string | null;
+    pullRequest: PullRequestState | null;
+    quietUntil: string | null;
+    lastExternalActivityAt: string | null;
+  } | null;
   pendingPrompt: string | null;
   lastEvent: {
     seq: number;
@@ -514,12 +644,19 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   let activeFeatureId: string | null = null;
   let totalIterations = 0;
   let pendingPrompt: string | null = null;
+  let validation: MissionStatusPayload['validation'] = null;
+  let qa: MissionStatusPayload['qa'] = null;
+  let review: MissionStatusPayload['review'] = null;
+  let retry: MissionStatusPayload['retry'] = null;
+  let git: MissionStatusPayload['git'] = null;
   let missionFromTask = false;
   let initialized = false;
+  let missionPlanForReview: MissionPlan | null = null;
 
   if (existsSync(missionFilePath)) {
     try {
       const mission = await loadMissionPlan(missionFilePath);
+      missionPlanForReview = mission;
       missionFromTask = true;
       missionState = mission.state;
       const totalFeatures = mission.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
@@ -550,6 +687,7 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   } else {
     const snapshotPlan = snapshot.state?.kernel?.missionPlan;
     if (!missionFromTask && snapshotPlan) {
+      missionPlanForReview = snapshotPlan;
       missionState = snapshotPlan.state;
       const totalFeatures = snapshotPlan.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
       const completedFeatures = snapshotPlan.milestones.reduce(
@@ -568,7 +706,15 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
       totalIterations = snapshotPlan.totalIterations;
       initialized = true;
     }
-  if (!pendingPrompt && snapshot.state?.kernel?.logEntries) {
+    appendRuntimeStatusWarnings(warnings, snapshot.state?.kernel?.warnings);
+    validation = buildMissionStatusValidation(snapshot.state?.kernel?.latestValidationReport ?? null);
+    qa = buildMissionStatusQa(missionPlanForReview);
+    review = buildMissionStatusReview(
+      missionPlanForReview,
+      snapshot.state?.kernel?.latestReviewReport ?? null
+    );
+    retry = buildMissionStatusRetry(snapshot.state?.kernel?.featureRetries ?? []);
+    if (!pendingPrompt && snapshot.state?.kernel?.logEntries) {
       const entries = snapshot.state.kernel.logEntries;
       for (let idx = entries.length - 1; idx >= 0; idx -= 1) {
         const line = entries[idx];
@@ -580,7 +726,12 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
     }
   }
 
+  const gitStrategy = snapshot?.state?.kernel?.gitStrategy ?? await loadGitStrategyState(melosDir);
+  git = buildMissionStatusGit(gitStrategy);
+  qa = qa ?? buildMissionStatusQa(missionPlanForReview);
+
   const events = readEventFile(join(melosDir, 'events.jsonl'));
+  appendRuntimeWarningsFromEvents(warnings, events);
   const last = events[events.length - 1] ?? null;
   const maxSeq = last?.seq ?? 0;
   pendingPrompt = resolvePendingPromptFromEvents(events) ?? pendingPrompt;
@@ -589,6 +740,7 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   }
 
   return {
+    schemaVersion: 1,
     initialized,
     warnings,
     running: runAlive,
@@ -606,6 +758,11 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
       activeFeatureId,
       totalIterations,
     },
+    validation,
+    qa,
+    review,
+    retry,
+    git,
     pendingPrompt,
     lastEvent: last
       ? {
@@ -629,6 +786,40 @@ function formatStatusPlain(status: MissionStatusPayload): string {
     `lastEvent=${status.lastEvent ? `${status.lastEvent.seq}:${status.lastEvent.type}` : '-'}`,
     `nextSeq=${status.cursor.nextSeq}`,
   ];
+  if (status.review) {
+    lines.push(
+      `review=${status.review.reviewType} g${status.review.generation} active=${status.review.activeFeatureId ?? '-'} findings=${status.review.latestFindingCount} blocking=${status.review.blockingFindingCount} passed=${status.review.passed === null ? '-' : status.review.passed ? 'yes' : 'no'}`
+    );
+  }
+  if (status.validation) {
+    lines.push(
+      `validation=${status.validation.milestoneId} attempt=${status.validation.attempt} passed=${status.validation.passed ? 'yes' : 'no'} failedChecks=${status.validation.failedCheckCount} warnings=${status.validation.warningCount}`
+    );
+  }
+  if (status.qa) {
+    for (const summary of status.qa.summaries) {
+      lines.push(
+        `qa=${summary.milestoneId} total=${summary.total} passed=${summary.passed} failed=${summary.failed} pending=${summary.pending}`
+      );
+    }
+  }
+  if (status.retry && status.retry.queued.length > 0) {
+    for (const item of status.retry.queued) {
+      lines.push(
+        `retry=${item.milestoneId}/${item.featureId} nextAttempt=${item.nextAttempt} dueAt=${item.dueAt} reason=${item.reason}`
+      );
+    }
+  }
+  if (status.git) {
+    lines.push(
+      `git=active=${status.git.activeBranch ?? '-'} mission=${status.git.missionBranch ?? '-'} quietUntil=${status.git.quietUntil ?? '-'}`
+    );
+    if (status.git.pullRequest) {
+      lines.push(
+        `pr=#${status.git.pullRequest.number ?? '-'} action=${status.git.pullRequest.action} url=${status.git.pullRequest.url}`
+      );
+    }
+  }
   if (status.pendingPrompt) {
     lines.push(`pending=${status.pendingPrompt}`);
   }
@@ -645,6 +836,7 @@ export interface MissionLogRecord {
   actor: Exclude<LogActorFilter, 'all'>;
   kind: string;
   message: string;
+  detailLines?: string[];
   eventType: string;
 }
 
@@ -703,7 +895,7 @@ export async function applyApprovalDecision(cwd: string, decision: 'approve' | '
   }
 
   const next = decision === 'approve'
-    ? transitionMissionState(mission, 'running', { approvalMethod: 'interactive' })
+    ? transitionMissionState(mission, 'running')
     : transitionMissionState(mission, 'planning');
   await saveMissionPlan(missionFilePath, next);
   return decision === 'approve'
@@ -789,6 +981,40 @@ function readEventFile(path: string): MissionEvent[] {
     .sort((a, b) => a.seq - b.seq);
 }
 
+function appendRuntimeStatusWarnings(
+  target: string[],
+  warnings: MissionKernelState['warnings']
+): void {
+  if (!Array.isArray(warnings)) {
+    return;
+  }
+
+  for (const warning of warnings) {
+    if (!warning) {
+      continue;
+    }
+    appendWarningLine(target, formatRuntimeWarningRecord(warning));
+  }
+}
+
+function appendRuntimeWarningsFromEvents(target: string[], events: MissionEvent[]): void {
+  for (const event of events) {
+    const warning = runtimeWarningRecordFromEvent(event);
+    if (!warning) {
+      continue;
+    }
+    appendWarningLine(target, formatRuntimeWarningRecord(warning));
+  }
+}
+
+function appendWarningLine(target: string[], message: string): void {
+  const normalized = message.trim();
+  if (normalized.length === 0 || target.includes(normalized)) {
+    return;
+  }
+  target.push(normalized);
+}
+
 function resolvePendingPromptFromEvents(events: MissionEvent[]): string | null {
   for (let idx = events.length - 1; idx >= 0; idx -= 1) {
     const event = events[idx];
@@ -819,6 +1045,19 @@ function deriveLogActor(event: MissionEvent): Exclude<LogActorFilter, 'all'> {
   if (event.type.startsWith('validation_')) {
     return 'validator';
   }
+  if (event.type.startsWith('review_')) {
+    return 'worker';
+  }
+  if (event.type === 'warning_emitted') {
+    const source = event.payload?.source;
+    if (source === 'validation') {
+      return 'validator';
+    }
+    if (source === 'worker') {
+      return 'worker';
+    }
+    return 'system';
+  }
   if (event.type.startsWith('plan_')) {
     return 'planning';
   }
@@ -836,7 +1075,7 @@ function deriveLogActor(event: MissionEvent): Exclude<LogActorFilter, 'all'> {
 
 function normalizeMissionLogRecord(event: MissionEvent): MissionLogRecord {
   const actor = deriveLogActor(event);
-  const { kind, message } = normalizeKindAndMessage(event);
+  const { kind, message, detailLines } = normalizeKindAndMessage(event);
   return {
     seq: event.seq,
     timestamp: event.timestamp,
@@ -844,20 +1083,23 @@ function normalizeMissionLogRecord(event: MissionEvent): MissionLogRecord {
     actor,
     kind,
     message,
+    detailLines,
     eventType: event.type,
   };
 }
 
-function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: string } {
-  const payloadMessage = typeof event.payload?.message === 'string' ? event.payload.message.trim() : '';
-  if (payloadMessage.length > 0) {
-    const tagged = payloadMessage.match(/^\[([A-Z0-9_]+)\]\s*(.*)$/);
-    if (tagged) {
-      return {
-        kind: tagged[1],
-        message: tagged[2]?.trim() || tagged[1],
-      };
-    }
+function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: string; detailLines?: string[] } {
+  const warning = runtimeWarningRecordFromEvent(event);
+  if (warning) {
+    return {
+      kind: 'WARN',
+      message: formatRuntimeWarningRecord(warning),
+    };
+  }
+
+  const payloadMessage = typeof event.payload?.message === 'string' ? event.payload.message : '';
+  if (payloadMessage.trim().length > 0) {
+    return normalizeLogMessage(payloadMessage, resolveDefaultKind(event));
   }
 
   if (event.type === 'command_executed') {
@@ -889,6 +1131,25 @@ function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: 
       message: payloadMessage || event.type,
     };
   }
+  if (event.type === 'review_started') {
+    const reviewType = typeof event.payload?.reviewType === 'string' ? event.payload.reviewType : 'review';
+    const generation = typeof event.payload?.generation === 'number' ? event.payload.generation : 1;
+    return {
+      kind: 'REVIEW',
+      message: `${reviewType} review g${generation} started`,
+    };
+  }
+  if (event.type === 'review_result') {
+    const summary = typeof event.payload?.summary === 'string' ? event.payload.summary : 'review completed';
+    const blockingFindingCount = typeof event.payload?.blockingFindingCount === 'number'
+      ? event.payload.blockingFindingCount
+      : 0;
+    const passed = event.payload?.passed === true;
+    return {
+      kind: passed ? 'DONE' : 'REVIEW',
+      message: `${summary} [${passed ? 'passed' : `${blockingFindingCount} blocking`}]`,
+    };
+  }
   if (event.type === 'validation_started') {
     return { kind: 'VALIDATE', message: payloadMessage || 'validation started' };
   }
@@ -907,11 +1168,43 @@ function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: 
   };
 }
 
+function resolveDefaultKind(event: MissionEvent): string {
+  if (event.type === 'command_executed') {
+    return 'BASH';
+  }
+  if (event.type === 'warning_emitted') {
+    return 'WARN';
+  }
+  if (event.type === 'worker_started') {
+    return 'STARTED';
+  }
+  if (event.type === 'worker_finished') {
+    return 'DONE';
+  }
+  if (event.type === 'worker_error' || event.type === 'manager_error' || event.type === 'error' || event.type === 'mission_failed') {
+    return 'ERR';
+  }
+  if (event.type === 'review_started' || event.type === 'review_result') {
+    return 'REVIEW';
+  }
+  if (event.type === 'validation_started' || event.type === 'validation_result') {
+    return 'VALIDATE';
+  }
+  if (event.type === 'plan_created' || event.type === 'plan_updated') {
+    return 'PLAN';
+  }
+  if (event.type === 'manager_decision') {
+    return 'INFO';
+  }
+  return event.type.toUpperCase();
+}
+
 interface RunPreflightInput {
   cwd: string;
   melosDir: string;
   missionFilePath: string;
   prdFilePath: string;
+  hasRunSpecInput: boolean;
   resume: boolean;
 }
 
@@ -922,7 +1215,9 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
 
   const messages: string[] = [];
 
-  if (!existsSync(input.prdFilePath)) {
+  if (input.hasRunSpecInput) {
+    // RunSpec input supplies the mission content directly, so PRD.md is optional here.
+  } else if (!existsSync(input.prdFilePath)) {
     throw new Error([
       `PRD.md が見つからないためミッションを開始できません: ${input.prdFilePath}`,
       '先に PRD.md を作成してから `melos run` を実行してください。',
@@ -949,7 +1244,7 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
   }
   throw new Error([
     `TASK.json は終了状態 (${missionPlan.state}) のため、そのままでは新規ミッションを開始しません。`,
-    'TASK.json を手動で更新してから再実行してください。',
+    buildTerminalStateGuidance(missionPlan.state),
   ].join('\n'));
 }
 
@@ -965,11 +1260,34 @@ export async function detectResumableMissionState(missionFilePath: string): Prom
   }
 }
 
-function resolveGitStrategy(
+function buildTerminalStateGuidance(state: MissionState): string {
+  switch (state) {
+    case 'completed':
+      return [
+        '前回のミッションは完了済みです。結果確認は `melos status --plain` / `melos logs --plain` を使ってください。',
+        '新規ミッションを開始するには、既存の TASK.json を退避または更新し、必要なら PRD.md も見直してから再実行してください。',
+      ].join('\n');
+    case 'failed':
+      return [
+        '前回のミッションは失敗状態で終了しています。詳細確認は `melos status --plain` / `melos logs --plain` を使ってください。',
+        '再開ではなく新規ミッションとして始める場合は、TASK.json を退避または更新してから再実行してください。',
+      ].join('\n');
+    case 'aborted':
+      return [
+        '前回のミッションは中断されています。通常は `melos resume` で再開できます。',
+        '新規ミッションを開始する場合は、TASK.json を退避または更新してから再実行してください。',
+      ].join('\n');
+    default:
+      return 'TASK.json を手動で更新してから再実行してください。';
+  }
+}
+
+export function resolveGitStrategy(
   options: CLIOptions,
   config: MelosConfig
 ): OrchestratorConfig['gitStrategy'] {
-  const enabled = options.gitStrategy ?? config.git?.enabled ?? false;
+  const pullRequestEnabled = options.createPr ?? config.git?.pullRequest?.enabled ?? false;
+  const enabled = options.gitStrategy ?? config.git?.enabled ?? pullRequestEnabled;
   if (!enabled) {
     return undefined;
   }
@@ -982,23 +1300,19 @@ function resolveGitStrategy(
     autoPush: config.git?.autoPush ?? false,
     preMergeValidation: config.git?.preMergeValidation ?? true,
     validationCommands: config.git?.validationCommands ?? ['npm run typecheck', 'npm test'],
+    pullRequestEnabled,
   };
 }
 
 function resolveModels(options: CLIOptions, config: MelosConfig): {
   planner: string;
   worker: string;
-  validator: string;
-  research: string;
 } {
-  const fallback = options.model ?? config.models?.planner ?? 'opus';
-  const workerFallback = options.model ?? config.models?.worker ?? 'gpt-5.3-codex';
+  const fallback = normalizeModelName(options.model) ?? CODEX_LATEST_ALIAS;
 
   return {
-    planner: options.plannerModel ?? config.models?.planner ?? fallback,
-    worker: options.workerModel ?? config.models?.worker ?? workerFallback,
-    validator: options.validatorModel ?? config.models?.validator ?? 'gpt-5.3-codex',
-    research: options.researchModel ?? config.models?.research ?? 'opus',
+    planner: normalizeModelName(options.plannerModel ?? config.models?.planner) ?? fallback,
+    worker: normalizeModelName(options.workerModel ?? config.models?.worker) ?? fallback,
   };
 }
 
@@ -1054,6 +1368,120 @@ function inferMissionIdFromCwd(cwd: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     || 'mission';
+}
+
+function buildMissionStatusValidation(
+  latestValidationReport: MissionKernelState['latestValidationReport']
+): MissionStatusPayload['validation'] {
+  if (!latestValidationReport) {
+    return null;
+  }
+
+  return {
+    milestoneId: latestValidationReport.milestoneId,
+    attempt: latestValidationReport.attempt,
+    passed: latestValidationReport.passed,
+    failedCheckCount: latestValidationReport.results.filter((result) => !result.passed).length,
+    warningCount: latestValidationReport.results.filter((result) => typeof result.warning === 'string' && result.warning.trim().length > 0).length,
+  };
+}
+
+function buildMissionStatusQa(
+  missionPlan: MissionPlan | null
+): MissionStatusPayload['qa'] {
+  if (!missionPlan) {
+    return null;
+  }
+
+  const summaries = missionPlan.milestones
+    .map((milestone) => {
+      const qaChecks = milestone.validationContract.qaChecks ?? [];
+      if (qaChecks.length === 0) {
+        return null;
+      }
+
+      const passed = qaChecks.filter((check) => check.passed).length;
+      const failed = qaChecks.filter((check) => !check.passed && check.failureCount > 0).length;
+      return {
+        milestoneId: milestone.id,
+        total: qaChecks.length,
+        passed,
+        failed,
+        pending: qaChecks.length - passed - failed,
+      };
+    })
+    .filter((summary): summary is NonNullable<typeof summary> => summary !== null);
+
+  return summaries.length > 0 ? { summaries } : null;
+}
+
+function buildMissionStatusRetry(
+  featureRetries: MissionKernelState['featureRetries']
+): MissionStatusPayload['retry'] {
+  if (!Array.isArray(featureRetries) || featureRetries.length === 0) {
+    return null;
+  }
+
+  return {
+    queued: featureRetries.map((retry) => ({
+      milestoneId: retry.milestoneId,
+      featureId: retry.featureId,
+      nextAttempt: retry.nextAttempt,
+      dueAt: retry.dueAt,
+      reason: retry.reason,
+    })),
+  };
+}
+
+function buildMissionStatusGit(
+  gitStrategy: MissionKernelState['gitStrategy'] | null | undefined
+): MissionStatusPayload['git'] {
+  if (!gitStrategy) {
+    return null;
+  }
+
+  return {
+    activeBranch: gitStrategy.activeBranch,
+    missionBranch: gitStrategy.missionBranch,
+    pullRequest: gitStrategy.pullRequest,
+    quietUntil: gitStrategy.quietUntil,
+    lastExternalActivityAt: gitStrategy.lastExternalActivityAt,
+  };
+}
+
+function buildMissionStatusReview(
+  missionPlan: MissionPlan | null,
+  latestReviewReport: MissionKernelState['latestReviewReport']
+): MissionStatusPayload['review'] {
+  const activeReviewFeature = findActiveReviewFeature(missionPlan);
+  if (!activeReviewFeature && !latestReviewReport) {
+    return null;
+  }
+
+  return {
+    reviewType: activeReviewFeature?.reviewType ?? latestReviewReport?.reviewType ?? 'code',
+    generation: activeReviewFeature?.reviewGeneration ?? latestReviewReport?.generation ?? 1,
+    activeFeatureId: activeReviewFeature?.id ?? null,
+    latestFindingCount: latestReviewReport?.findings.length ?? 0,
+    blockingFindingCount: latestReviewReport?.blockingFindingCount ?? 0,
+    passed: latestReviewReport?.passed ?? null,
+    summary: latestReviewReport?.summary,
+  };
+}
+
+function findActiveReviewFeature(missionPlan: MissionPlan | null) {
+  if (!missionPlan?.activeFeatureId) {
+    return null;
+  }
+  for (const milestone of missionPlan.milestones) {
+    const feature = milestone.features.find((candidate) =>
+      candidate.id === missionPlan.activeFeatureId && candidate.kind === 'review'
+    );
+    if (feature) {
+      return feature;
+    }
+  }
+  return null;
 }
 
 async function handleCommandAction(action: () => Promise<void>): Promise<void> {

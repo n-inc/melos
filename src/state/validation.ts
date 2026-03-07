@@ -3,8 +3,13 @@ export type CheckType =
   | 'auto:lint'
   | 'auto:typecheck'
   | 'auto:test'
+  | 'browser'
   | 'e2e'
   | 'manual';
+
+export type ValidationRunner = 'playwright-interactive' | 'browser-test';
+
+export type ValidationArtifact = 'screenshot' | 'video';
 
 export interface ValidationCheck {
   id: string;
@@ -12,6 +17,8 @@ export interface ValidationCheck {
   type: CheckType;
   command?: string;
   expectedOutcome?: string;
+  requiredRunner?: ValidationRunner;
+  requiredArtifacts?: ValidationArtifact[];
   passed: boolean;
   failureCount: number;
   lastFailure?: string;
@@ -20,8 +27,7 @@ export interface ValidationCheck {
 export interface ValidationContract {
   staticChecks: ValidationCheck[];
   testSuites: ValidationCheck[];
-  e2eChecks?: ValidationCheck[];
-  manualSteps?: ValidationCheck[];
+  qaChecks?: ValidationCheck[];
 }
 
 export interface ValidationCheckFailure {
@@ -37,8 +43,16 @@ export interface ValidationCheckResult {
   exitCode?: number;
   durationMs?: number;
   output?: string;
+  warning?: string;
+  runner?: string;
+  screenshotPath?: string;
+  videoPath?: string;
+  screenshotUrl?: string;
+  videoUrl?: string;
   failure?: ValidationCheckFailure;
 }
+
+export type ValidationEvidenceMap = Record<string, Record<string, ValidationCheckResult>>;
 
 export interface ValidationReport {
   milestoneId: string;
@@ -66,8 +80,7 @@ export function getAllValidationChecks(contract: ValidationContract): Validation
   return [
     ...contract.staticChecks,
     ...contract.testSuites,
-    ...(contract.e2eChecks ?? []),
-    ...(contract.manualSteps ?? []),
+    ...(contract.qaChecks ?? []),
   ];
 }
 
@@ -75,18 +88,25 @@ export function cloneValidationContract(contract: ValidationContract): Validatio
   return {
     staticChecks: contract.staticChecks.map((check) => ({ ...check })),
     testSuites: contract.testSuites.map((check) => ({ ...check })),
-    e2eChecks: contract.e2eChecks?.map((check) => ({ ...check })),
-    manualSteps: contract.manualSteps?.map((check) => ({ ...check })),
+    qaChecks: contract.qaChecks?.map((check) => ({ ...check })),
   };
 }
 
 export function normalizeValidationCheck(input: Partial<ValidationCheck>, index: number): ValidationCheck {
+  const requiredArtifacts = Array.isArray(input.requiredArtifacts)
+    ? input.requiredArtifacts.filter((artifact): artifact is ValidationArtifact => artifact === 'screenshot' || artifact === 'video')
+    : [];
+
   return {
     id: input.id?.trim() || `check-${index + 1}`,
     description: input.description?.trim() || 'Unnamed validation check',
     type: input.type ?? 'command',
     command: input.command?.trim() || undefined,
     expectedOutcome: input.expectedOutcome?.trim() || undefined,
+    requiredRunner: input.requiredRunner === 'playwright-interactive' || input.requiredRunner === 'browser-test'
+      ? input.requiredRunner
+      : undefined,
+    requiredArtifacts: requiredArtifacts.length > 0 ? requiredArtifacts : undefined,
     passed: Boolean(input.passed),
     failureCount: typeof input.failureCount === 'number' && input.failureCount > 0
       ? Math.floor(input.failureCount)
@@ -106,8 +126,7 @@ export function normalizeValidationContract(contract: Partial<ValidationContract
   return {
     staticChecks: normalizeList(contract.staticChecks),
     testSuites: normalizeList(contract.testSuites),
-    e2eChecks: normalizeList(contract.e2eChecks),
-    manualSteps: normalizeList(contract.manualSteps),
+    qaChecks: normalizeList(contract.qaChecks),
   };
 }
 
@@ -140,8 +159,7 @@ export function mergeValidationResults(
   return {
     staticChecks: mergeList(contract.staticChecks),
     testSuites: mergeList(contract.testSuites),
-    e2eChecks: contract.e2eChecks ? mergeList(contract.e2eChecks) : undefined,
-    manualSteps: contract.manualSteps ? mergeList(contract.manualSteps) : undefined,
+    qaChecks: contract.qaChecks ? mergeList(contract.qaChecks) : undefined,
   };
 }
 

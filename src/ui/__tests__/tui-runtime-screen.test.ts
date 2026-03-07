@@ -10,7 +10,7 @@ function createSession(): SessionInfo {
     missionId: 'mission',
     missionTitle: 'テキスト統計ユーティリティの追加',
     planner: 'opus',
-    worker: 'gpt-5.3-codex',
+    worker: 'gpt-5.4',
   };
 }
 
@@ -36,7 +36,6 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         id: 'm1',
         title: 'Core',
         status: 'in_progress',
-        order: 1,
         features: [
           { id: 'm1-f1', description: 'parser', status: 'in_progress', attempts: 1 },
         ],
@@ -57,21 +56,13 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
         status: 'running',
         durationLabel: '0m 15s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [{ timestamp: '2026-02-28T09:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-marker-v1' }],
       },
     ],
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      validator: { role: 'validator', engine: 'codex', model: 'gpt-5.3-codex', effort: 'high' },
-      research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
-    },
-    tokenUsage: {
-      total: { input: 100, output: 50, cached: 20, cost: 0.01 },
-      byRole: {
-        worker: { model: 'gpt-5.3-codex', input: 100, output: 50, cached: 20, cost: 0.01 },
-      },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
     },
   };
   return {
@@ -228,6 +219,7 @@ function createHarness() {
   const onResume = jest.fn();
   const onSteer = jest.fn();
   const onCycleModel = jest.fn();
+  const onSetActiveFeatureModel = jest.fn();
   const ui = createRuntimeUI(
     'tui',
     output as unknown as NodeJS.WriteStream,
@@ -241,6 +233,7 @@ function createHarness() {
     onResume,
     onSteer,
     onCycleModel,
+    onSetActiveFeatureModel,
     screen: () => screen.snapshot(),
   };
 }
@@ -280,7 +273,7 @@ describe('ui/tui runtime screen contract', () => {
         status: 'running',
         durationLabel: '0m 16s',
         engine: 'codex',
-        model: 'gpt-5.3-codex',
+        model: 'gpt-5.4',
         log: [{ timestamp: '2026-02-28T09:00:12.000Z', actor: 'worker', kind: 'INFO', message: 'worker-marker-v2' }],
       }],
     }));
@@ -369,11 +362,32 @@ describe('ui/tui runtime screen contract', () => {
 
     h.input.write('M');
     h.input.write('1');
-    h.input.write('3');
+    h.input.write('2');
     expect(h.onCycleModel).toHaveBeenNthCalledWith(1, 'planner');
-    expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'validator');
+    expect(h.onCycleModel).toHaveBeenNthCalledWith(2, 'worker');
 
     h.ui.stop();
+  });
+
+  it('routes C/A/U keys to feature model selection only in features/task view', () => {
+    const h = createHarness();
+    h.ui.start(createSession(), {
+      onSetActiveFeatureModel: h.onSetActiveFeatureModel,
+    });
+    h.ui.updateState(createState());
+
+    h.input.write('F');
+    h.input.write('C');
+    h.input.write('A');
+    h.input.write('U');
+    h.input.write('M');
+    h.input.write('C');
+    h.ui.stop();
+
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(1, 'codex-latest');
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(2, 'claude-latest');
+    expect(h.onSetActiveFeatureModel).toHaveBeenNthCalledWith(3, null);
+    expect(h.onSetActiveFeatureModel).toHaveBeenCalledTimes(3);
   });
 
   it('supports scrolling in TASK view (including pending input)', () => {
@@ -442,14 +456,28 @@ describe('ui/tui runtime screen contract', () => {
     }));
 
     h.input.write('W');
-    expect(h.screen()).toContain('worker-log-1');
+    expect(h.screen()).toContain('LIVE');
+    expect(h.screen()).toContain('worker-log-40');
 
     h.input.write('\u001b');
-    h.input.write('[B');
-    expect(h.screen()).toContain('Lines 2-');
+    h.input.write('[1;2A');
+    expect(h.screen()).toContain('SCROLLBACK');
+    expect(h.screen()).toContain('worker-log-1');
 
-    h.input.write('\u001b[6~');
-    expect(h.screen()).toContain('Lines 14-');
+    h.ui.updateState(createState({
+      logEntries: Array.from({ length: 41 }, (_, idx) => ({
+        timestamp: `2026-02-28T09:00:${String(idx % 60).padStart(2, '0')}.000Z`,
+        actor: 'worker',
+        kind: 'INFO',
+        message: `worker-log-${idx + 1}`,
+      })),
+    }));
+    expect(h.screen()).toContain('SCROLLBACK +1 new');
+    expect(h.screen()).toContain('worker-log-1');
+
+    h.input.write('\u001b[1;2B');
+    expect(h.screen()).toContain('LIVE');
+    expect(h.screen()).toContain('worker-log-41');
 
     h.ui.stop();
   });

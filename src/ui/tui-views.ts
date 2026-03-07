@@ -1,13 +1,12 @@
 import type { ModelAssignment, ModelRole } from '../models/router.js';
 import type { FeatureStatus, MilestoneStatus, MissionState } from '../state/mission.js';
-import type { TokenUsageSnapshot } from '../state/token-tracker.js';
 import type { LogActor, UnifiedLogEntry } from '../state/log-entry.js';
 
 export type ViewId = 'overview' | 'features' | 'workers' | 'models' | 'prd' | 'task';
 
 export interface WorkerRunView {
   id: number;
-  type: 'implement' | 'validate' | 'research';
+  type: 'implement' | 'validate' | 'review' | 'research';
   featureId?: string;
   featureTitle?: string;
   milestoneId?: string;
@@ -23,13 +22,14 @@ export interface MissionFeatureView {
   description: string;
   status: FeatureStatus;
   attempts: number;
+  model?: string;
+  modelStateSource?: 'explicit' | 'default';
 }
 
 export interface MissionMilestoneView {
   id: string;
   title: string;
   status: MilestoneStatus;
-  order: number;
   features: MissionFeatureView[];
 }
 
@@ -53,8 +53,16 @@ export interface MissionControlState {
   managerLog?: Array<{ timestamp: string; message: string }>;
   workerRuns: WorkerRunView[];
   modelAssignments: Record<ModelRole, ModelAssignment>;
-  tokenUsage: TokenUsageSnapshot;
   pendingPrompt?: string | null;
+  reviewStatus?: {
+    reviewType: 'product' | 'code';
+    generation: number;
+    activeFeatureId: string | null;
+    latestFindingCount: number;
+    blockingFindingCount: number;
+    passed: boolean | null;
+    summary?: string;
+  } | null;
 }
 
 export interface ViewPort {
@@ -78,6 +86,8 @@ export interface TUIView {
       secondaryVisible?: boolean;
       sourceSwitchNotice?: string | null;
       useColor?: boolean;
+      workersFollowMode?: 'live' | 'scrollback';
+      workersUnreadCount?: number;
     }
   ): string[];
   handleKey?(key: KeyEvent, state: MissionControlState): boolean;

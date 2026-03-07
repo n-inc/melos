@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { writeFile, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
-import { ManagerAgent, type ManagerAgentConfig } from './agents/manager.js';
+import { ManagerAgent, MissionPlanningError, type ManagerAgentConfig } from './agents/manager.js';
 import { WorkerAgent, type WorkerAgentConfig } from './agents/worker.js';
 import type { ManagerInput, WorkerFeatureReport, WorkerInput, WorkerResult } from './agents/types.js';
 import {
@@ -10,10 +10,12 @@ import {
   type MissionState,
   type Milestone,
   type Feature,
+  createMissionPlan,
   missionFileExists,
   loadMissionPlan,
   saveMissionPlan,
   transitionMissionState,
+  ensurePullRequestFollowUpMilestone,
   getNextPendingMilestone,
   getNextPendingFeature,
   areAllMilestonesDone,
@@ -21,11 +23,17 @@ import {
   setActiveMilestone,
   setActiveFeature,
   updateFeatureStatus,
+  updateFeatureModel,
   updateMilestoneStatus,
   appendFeaturesToMilestone,
   incrementMissionIterations,
 } from './state/mission.js';
 import {
+  type ReviewReport,
+  isBlockingReviewFinding,
+} from './state/review.js';
+import {
+  type ValidationCheck,
   type ValidationReport,
   type ValidationCheckResult,
   getAllValidationChecks,
@@ -35,10 +43,14 @@ import {
 import {
   type GitStrategyState,
   createGitStrategyState,
+  createMissionBranchName,
   createFeatureBranchName,
   registerFeatureBranch,
   saveGitStrategyState,
   loadGitStrategyState,
+  setMissionBranch,
+  updatePullRequestState,
+  updatePullRequestFollowUpState,
   updateFeatureBranchStatus,
 } from './state/git-strategy.js';
 import {
@@ -56,13 +68,27 @@ import {
   replayMissionEvents,
   reduceMissionEvent,
   type MissionKernelState,
+  type FeatureRetryRecord,
   createInitialKernelState,
+  formatRuntimeWarningRecord,
+  type RuntimeWarningSource,
 } from './state/event-reducer.js';
 import { loadSnapshot, saveSnapshot } from './state/snapshot.js';
 import { Watchdog } from './state/watchdog.js';
-import { TokenTracker } from './state/token-tracker.js';
-import type { LogActor } from './state/log-entry.js';
+import { wrapLogText, type LogActor } from './state/log-entry.js';
 import { ModelRouter, type ModelRole } from './models/router.js';
+import {
+  CLAUDE_LATEST_ALIAS,
+  CODEX_LATEST_ALIAS,
+  getModelRotation,
+  normalizeModelName,
+  resolveDisplayModel,
+  resolveModel,
+  resolveModelEngine,
+  type ModelEngine,
+} from './models/registry.js';
+import { getDefaultPromptsDir } from './prompts/index.js';
+import type { RunIdentity } from './run-spec.js';
 import type { MissionControlState, MissionMilestoneView, WorkerRunView } from './ui/tui-views.js';
 
 export interface OrchestratorConfig {
@@ -73,13 +99,25 @@ export interface OrchestratorConfig {
   melosDir: string;
   plannerModel?: string;
   workerModel?: string;
-  validatorModel?: string;
-  researchModel?: string;
+  execution?: {
+    maxFeatureAttempts?: number;
+    retryInitialDelayMs?: number;
+    retryMaxDelayMs?: number;
+    stallTimeoutMs?: number;
+  };
+  verification?: {
+    requireManualEvidence?: boolean;
+    requireE2EEvidence?: boolean;
+    failOnWorkerWarnings?: boolean;
+  };
   managerEffort?: 'low' | 'medium' | 'high' | 'max';
   workerReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   interactivePlanning?: boolean;
   autoApprove?: boolean;
   dryRun?: boolean;
+  quick?: boolean;
+  runIdentity?: RunIdentity;
+  prdOverride?: string;
   gitStrategy?: {
     enabled: boolean;
     baseBranch: string;
@@ -87,6 +125,7 @@ export interface OrchestratorConfig {
     autoPush: boolean;
     preMergeValidation: boolean;
     validationCommands: string[];
+    pullRequestEnabled: boolean;
   };
   resume?: boolean;
   missionId?: string;
@@ -108,20 +147,46 @@ interface RuntimeState {
   prd: string | null;
   latestValidationReport: ValidationReport | null;
   latestWorkerReport: WorkerFeatureReport | null;
+  latestReviewReport: ReviewReport | null;
   gitStrategy: GitStrategyState | null;
   startedAt: Date;
 }
 
-const MODEL_ROTATION: string[] = ['gpt-5.3-codex', 'opus', 'sonnet', 'haiku'];
+interface ResolvedExecutionConfig {
+  maxFeatureAttempts: number;
+  retryInitialDelayMs: number;
+  retryMaxDelayMs: number;
+  stallTimeoutMs: number;
+}
+
+interface ResolvedVerificationConfig {
+  requireManualEvidence: boolean;
+  requireE2EEvidence: boolean;
+  failOnWorkerWarnings: boolean;
+}
+
+const MODEL_ROTATION: string[] = getModelRotation();
+const DEFAULT_EXECUTION_CONFIG: ResolvedExecutionConfig = {
+  maxFeatureAttempts: 3,
+  retryInitialDelayMs: 10_000,
+  retryMaxDelayMs: 300_000,
+  stallTimeoutMs: 300_000,
+};
+const DEFAULT_VERIFICATION_CONFIG: ResolvedVerificationConfig = {
+  requireManualEvidence: true,
+  requireE2EEvidence: true,
+  failOnWorkerWarnings: false,
+};
 
 export class Orchestrator {
   private readonly config: OrchestratorConfig;
   private readonly manager: ManagerAgent;
   private readonly worker: WorkerAgent;
   private readonly modelRouter: ModelRouter;
-  private readonly tokenTracker: TokenTracker;
   private readonly eventLog: EventLog;
   private readonly watchdog: Watchdog;
+  private readonly executionConfig: ResolvedExecutionConfig;
+  private readonly verificationConfig: ResolvedVerificationConfig;
 
   private state: RuntimeState;
   private kernelState: MissionKernelState;
@@ -133,52 +198,71 @@ export class Orchestrator {
   private pendingPrompt: string | null = null;
   private activityLabel = '';
   private statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-  private managerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private fatalFailureReason: string | null = null;
+  private abortSignal: NodeJS.Signals | null = null;
+
+  private setGitStrategyState(next: GitStrategyState | null): void {
+    this.state.gitStrategy = next;
+    this.kernelState.gitStrategy = next;
+  }
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
+    this.executionConfig = {
+      maxFeatureAttempts: config.execution?.maxFeatureAttempts ?? DEFAULT_EXECUTION_CONFIG.maxFeatureAttempts,
+      retryInitialDelayMs: config.execution?.retryInitialDelayMs ?? DEFAULT_EXECUTION_CONFIG.retryInitialDelayMs,
+      retryMaxDelayMs: config.execution?.retryMaxDelayMs ?? DEFAULT_EXECUTION_CONFIG.retryMaxDelayMs,
+      stallTimeoutMs: config.execution?.stallTimeoutMs ?? DEFAULT_EXECUTION_CONFIG.stallTimeoutMs,
+    };
+    this.verificationConfig = {
+      requireManualEvidence: config.verification?.requireManualEvidence ?? DEFAULT_VERIFICATION_CONFIG.requireManualEvidence,
+      requireE2EEvidence: config.verification?.requireE2EEvidence ?? DEFAULT_VERIFICATION_CONFIG.requireE2EEvidence,
+      failOnWorkerWarnings: config.verification?.failOnWorkerWarnings ?? DEFAULT_VERIFICATION_CONFIG.failOnWorkerWarnings,
+    };
 
     this.modelRouter = new ModelRouter({
       assignments: {
-        planner: config.plannerModel ?? 'opus',
-        worker: config.workerModel ?? 'gpt-5.3-codex',
-        validator: config.validatorModel ?? 'gpt-5.3-codex',
-        research: config.researchModel ?? 'opus',
+        planner: normalizeModelName(config.plannerModel) ?? CODEX_LATEST_ALIAS,
+        worker: normalizeModelName(config.workerModel) ?? CODEX_LATEST_ALIAS,
       },
       escalationPolicy: {
         enabled: true,
         maxEscalations: 2,
         chain: {
           haiku: 'sonnet',
-          sonnet: 'opus',
+          sonnet: CLAUDE_LATEST_ALIAS,
         },
       },
     });
 
+    const promptsDir = getDefaultPromptsDir();
+
     const managerConfig: ManagerAgentConfig = {
       cwd: config.cwd,
-      promptsDir: join(config.cwd, 'prompts'),
+      promptsDir,
       model: this.modelRouter.getModel('planner'),
       effort: config.managerEffort ?? 'high',
       requestTimeoutMs: 900_000,
       suppressTerminalOutput: config.runtimeUIMode !== 'plain',
+      pullRequestAutomationEnabled: config.gitStrategy?.pullRequestEnabled === true,
     };
     this.manager = new ManagerAgent(managerConfig);
 
     const workerConfig: WorkerAgentConfig = {
       cwd: config.cwd,
-      promptsDir: join(config.cwd, 'prompts'),
+      promptsDir,
       model: this.modelRouter.getModel('worker'),
-      reasoningEffort: config.workerReasoningEffort ?? 'high',
+      reasoningEffort: config.workerReasoningEffort ?? 'xhigh',
       claudeModel: this.modelRouter.getModel('worker'),
       claudeEffort: config.managerEffort ?? 'high',
       suppressTerminalOutput: config.runtimeUIMode !== 'plain',
     };
     this.worker = new WorkerAgent(workerConfig);
 
-    this.tokenTracker = new TokenTracker();
     this.eventLog = new EventLog({ melosDir: config.melosDir });
-    this.watchdog = new Watchdog();
+    this.watchdog = new Watchdog({
+      timeoutMs: this.executionConfig.stallTimeoutMs,
+    });
 
     this.state = {
       missionPlan: null,
@@ -186,6 +270,7 @@ export class Orchestrator {
       prd: null,
       latestValidationReport: null,
       latestWorkerReport: null,
+      latestReviewReport: null,
       gitStrategy: config.gitStrategy?.enabled
         ? createGitStrategyState({
           missionId: config.gitStrategy.missionId,
@@ -193,12 +278,14 @@ export class Orchestrator {
           autoPush: config.gitStrategy.autoPush,
           preMergeValidation: config.gitStrategy.preMergeValidation,
           validationCommands: config.gitStrategy.validationCommands,
+          pullRequestEnabled: config.gitStrategy.pullRequestEnabled,
         })
         : null,
       startedAt: new Date(),
     };
 
     this.kernelState = createInitialKernelState();
+    this.kernelState.gitStrategy = this.state.gitStrategy;
     this.watchdog.onStuck(() => {
       this.emitEvent('error', 'system', {
         message: 'worker appears stuck (watchdog timeout)',
@@ -227,15 +314,32 @@ export class Orchestrator {
 
     try {
       while (!this.aborted) {
+        if (this.fatalFailureReason) {
+          return {
+            success: false,
+            reason: 'failed',
+            completedIterations: this.state.missionPlan?.totalIterations ?? 0,
+            error: this.fatalFailureReason,
+          };
+        }
+
         const missionPlan = this.state.missionPlan;
         if (!missionPlan) {
-          await this.runPlanningPhase();
+          if (this.config.quick) {
+            await this.createQuickMissionPlan();
+          } else {
+            await this.runPlanningPhase();
+          }
           continue;
         }
 
         switch (missionPlan.state) {
           case 'planning':
-            await this.runPlanningPhase();
+            if (this.config.quick) {
+              await this.createQuickMissionPlan();
+            } else {
+              await this.runPlanningPhase();
+            }
             break;
 
           case 'awaiting_approval':
@@ -286,8 +390,9 @@ export class Orchestrator {
 
       return {
         success: false,
-        reason: 'aborted',
+        reason: this.fatalFailureReason ? 'failed' : 'aborted',
         completedIterations: this.state.missionPlan?.totalIterations ?? 0,
+        error: this.fatalFailureReason ?? undefined,
       };
     } finally {
       this.watchdog.stop();
@@ -295,7 +400,6 @@ export class Orchestrator {
         clearTimeout(this.statusRefreshTimer);
         this.statusRefreshTimer = null;
       }
-      this.stopManagerHeartbeat();
       await this.persistRuntimeState();
       await this.emitStatusUpdate();
     }
@@ -330,20 +434,28 @@ export class Orchestrator {
     void this.emitStatusUpdate();
   }
 
-  abort(): void {
+  abort(signal?: NodeJS.Signals): void {
     this.aborted = true;
+    if (signal && this.abortSignal === null) {
+      this.abortSignal = signal;
+    }
     this.activityLabel = 'Abort requested. Stopping active work...';
     this.manager.abort();
     this.worker.abort();
 
     if (this.state.missionPlan && this.state.missionPlan.state !== 'completed') {
+      const reason = this.abortSignal
+        ? `aborted by signal ${this.abortSignal}`
+        : 'aborted by signal';
       this.state.missionPlan = {
         ...this.state.missionPlan,
         state: 'aborted',
-        lastTransitionAt: new Date().toISOString(),
       };
       void this.persistMissionPlan();
-      this.emitEvent('mission_failed', 'orchestrator', { reason: 'aborted by signal' });
+      this.emitEvent('mission_failed', 'orchestrator', {
+        reason,
+        signal: this.abortSignal ?? undefined,
+      });
     }
 
     if (this.resumePause) {
@@ -393,7 +505,7 @@ export class Orchestrator {
 
   async cycleModel(role: ModelRole): Promise<void> {
     const current = this.modelRouter.getModel(role);
-    const normalized = current.toLowerCase();
+    const normalized = normalizeModelName(current) ?? current.toLowerCase();
     const index = MODEL_ROTATION.findIndex((candidate) => candidate === normalized);
     const nextModel = index >= 0
       ? MODEL_ROTATION[(index + 1) % MODEL_ROTATION.length]
@@ -409,13 +521,76 @@ export class Orchestrator {
       action: 'model_changed',
       role,
       model: nextModel,
-      message: `model for ${role} changed to ${nextModel}`,
+      message: `model for ${role} changed to ${resolveDisplayModel(nextModel)}`,
     });
     await this.emitStatusUpdate();
   }
 
+  async setActiveFeatureModel(model: string | null): Promise<void> {
+    const missionPlan = this.state.missionPlan;
+    if (!missionPlan) {
+      return;
+    }
+
+    const activeMilestoneId = missionPlan.activeMilestoneId;
+    const activeFeatureId = missionPlan.activeFeatureId;
+    if (!activeMilestoneId || !activeFeatureId) {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_model_selection_ignored',
+        reason: 'no_active_feature',
+      });
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const milestone = missionPlan.milestones.find((item) => item.id === activeMilestoneId);
+    const feature = milestone?.features.find((item) => item.id === activeFeatureId);
+    if (!milestone || !feature) {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_model_selection_ignored',
+        reason: 'active_feature_not_found',
+        milestoneId: activeMilestoneId,
+        featureId: activeFeatureId,
+      });
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    if (feature.status === 'done') {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_model_selection_ignored',
+        reason: 'feature_done',
+        milestoneId: activeMilestoneId,
+        featureId: activeFeatureId,
+      });
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const normalizedModel = normalizeModelName(model);
+    this.state.missionPlan = updateFeatureModel(
+      missionPlan,
+      activeMilestoneId,
+      activeFeatureId,
+      normalizedModel ?? null
+    );
+    this.kernelState.missionPlan = this.state.missionPlan;
+
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'feature_model_selected',
+      milestoneId: activeMilestoneId,
+      featureId: activeFeatureId,
+      model: normalizedModel ?? null,
+      source: normalizedModel ? 'user' : 'unset',
+    });
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
   private async loadState(): Promise<void> {
-    if (existsSync(this.config.prdFile)) {
+    if (this.config.prdOverride) {
+      this.state.prd = this.config.prdOverride;
+    } else if (existsSync(this.config.prdFile)) {
       this.state.prd = await readFile(this.config.prdFile, 'utf-8');
     }
 
@@ -448,25 +623,92 @@ export class Orchestrator {
     if (this.state.gitStrategy && this.config.resume) {
       const persisted = await loadGitStrategyState(this.config.melosDir);
       if (persisted) {
-        this.state.gitStrategy = persisted;
+        this.setGitStrategyState(persisted);
       }
     }
 
+    if (this.state.missionPlan && this.state.gitStrategy?.config.pullRequestEnabled) {
+      const nextPlan = ensurePullRequestFollowUpMilestone(this.state.missionPlan);
+      if (nextPlan !== this.state.missionPlan) {
+        this.state.missionPlan = nextPlan;
+        await saveMissionPlan(this.config.missionFile, nextPlan);
+      }
+    }
+
+    this.state.latestValidationReport = this.kernelState.latestValidationReport ?? null;
+    this.state.latestReviewReport = this.kernelState.latestReviewReport ?? null;
     this.kernelState.missionPlan = this.state.missionPlan ?? null;
+    this.kernelState.gitStrategy = this.state.gitStrategy;
+    await this.emitStatusUpdate();
+  }
+
+  private async createQuickMissionPlan(): Promise<void> {
+    const prd = this.state.prd?.trim() ?? '';
+    const heading = prd
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('# '))
+      ?.replace(/^#\s+/, '')
+      .trim();
+    const objective = heading && heading.length > 0 ? heading : 'Quick mission';
+
+    let plan = createMissionPlan({
+      missionId: this.resolveMissionId(),
+      goal: objective,
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Quick Execution',
+          description: objective,
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: prd || objective,
+              status: 'pending',
+              attempts: 0,
+              model: this.modelRouter.getModel('worker'),
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    plan = setActiveMilestone(plan, 'm1');
+    plan = setActiveFeature(plan, 'm1-f1');
+
+    this.state.missionPlan = plan;
+    this.kernelState.missionPlan = plan;
+    this.activityLabel = 'Quick mission plan created. Starting execution...';
+
+    this.emitEvent('plan_created', 'manager', { plan, quick: true });
+    await this.persistMissionPlan();
     await this.emitStatusUpdate();
   }
 
   private async runPlanningPhase(): Promise<void> {
     const current = this.state.missionPlan;
+    const planningStream = createBufferedProgressEmitter((line) => {
+      this.emitEvent('manager_decision', 'manager', {
+        phase: 'planning',
+        message: `planning: ${line}`,
+      });
+    });
+    const planningCommandStream = createBufferedProgressEmitter((line) => {
+      this.emitEvent('manager_decision', 'manager', {
+        phase: 'planning',
+        message: `planning: [CMD] ${line}`,
+      });
+    });
 
     this.activityLabel = `Planning mission with ${this.modelRouter.getModel('planner')}...`;
     this.emitEvent('manager_started', 'manager', {
       phase: 'planning',
       message: `Planning mission with manager model (${this.modelRouter.getModel('planner')})`,
-    });
-    this.startManagerHeartbeat({
-      phase: 'planning',
-      message: 'Manager is planning mission',
     });
     await this.emitStatusUpdate();
 
@@ -476,8 +718,13 @@ export class Orchestrator {
         missionId: this.resolveMissionId(),
         prd: this.state.prd,
         interactiveGoal: this.config.interactivePlanning ? current?.mission.goal : undefined,
-        approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
-        prdFile: this.config.prdFile,
+        fallbackOnFailure: false,
+        onAgentMessageDelta: (chunk) => {
+          planningStream.push(chunk);
+        },
+        onCommandOutputDelta: (chunk) => {
+          planningCommandStream.push(chunk);
+        },
         onAppServerEvent: (method, params) => {
           const detail = formatAgentEventDetail(method, params);
           if (!detail) {
@@ -489,11 +736,35 @@ export class Orchestrator {
           });
         },
       });
+    } catch (error) {
+      if (error instanceof MissionPlanningError) {
+        this.activityLabel = `Planning failed: ${truncateMessage(error.detail, 180)}`;
+        this.emitEvent('manager_error', 'manager', {
+          phase: 'planning',
+          message: `planning failed: ${error.detail}`,
+          reason: error.reason,
+          detail: error.detail,
+          outputPreview: error.outputPreview ?? null,
+        });
+        this.emitEvent('mission_failed', 'orchestrator', {
+          reason: error.reason,
+          detail: error.detail,
+        });
+        this.fatalFailureReason = error.detail;
+        this.aborted = true;
+        await this.emitStatusUpdate();
+        return;
+      }
+      throw error;
     } finally {
-      this.stopManagerHeartbeat();
+      planningStream.flush();
+      planningCommandStream.flush();
     }
 
-    const withPhase = transitionMissionState(generated, 'awaiting_approval');
+    const planWithFollowUp = this.state.gitStrategy?.config.pullRequestEnabled
+      ? ensurePullRequestFollowUpMilestone(generated)
+      : generated;
+    const withPhase = transitionMissionState(planWithFollowUp, 'awaiting_approval');
     const activeMilestone = getNextPendingMilestone(withPhase);
     const activeFeature = activeMilestone ? getNextPendingFeature(activeMilestone) : null;
 
@@ -531,9 +802,7 @@ export class Orchestrator {
       return;
     }
 
-    this.state.missionPlan = transitionMissionState(missionPlan, 'running', {
-      approvalMethod: this.config.autoApprove ? 'auto' : 'interactive',
-    });
+    this.state.missionPlan = transitionMissionState(missionPlan, 'running');
     this.activityLabel = 'Mission approved. Starting execution...';
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
@@ -571,20 +840,34 @@ export class Orchestrator {
       return;
     }
 
+    missionPlan = this.releaseReadyFeatureRetries(missionPlan);
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
     missionPlan = setActiveMilestone(missionPlan, pendingMilestone.id);
     missionPlan = updateMilestoneStatus(missionPlan, pendingMilestone.id, 'in_progress');
     this.activityLabel = `Milestone ${pendingMilestone.id} in progress.`;
 
-    if (areMilestoneFeaturesDone(pendingMilestone)) {
+    const activeMilestone = missionPlan.milestones.find((milestone) => milestone.id === pendingMilestone.id);
+    if (!activeMilestone) {
+      throw new Error(`Milestone not found after activation: ${pendingMilestone.id}`);
+    }
+
+    if (areMilestoneFeaturesDone(activeMilestone)) {
       this.state.missionPlan = missionPlan;
       await this.runMilestoneValidation(pendingMilestone.id);
       return;
     }
 
-    const nextFeature = getNextPendingFeature(pendingMilestone);
+    const nextFeature = getNextPendingFeature(activeMilestone);
     if (!nextFeature) {
       this.state.missionPlan = missionPlan;
       await this.runMilestoneValidation(pendingMilestone.id);
+      return;
+    }
+
+    const scheduledRetry = this.findFeatureRetry(pendingMilestone.id, nextFeature.id);
+    if (scheduledRetry) {
+      await this.waitForScheduledFeatureRetry(scheduledRetry);
       return;
     }
 
@@ -610,113 +893,63 @@ export class Orchestrator {
       featureId: updatedFeature.id,
       message: `Manager started feature briefing for ${updatedFeature.id}`,
     });
-    this.startManagerHeartbeat({
-      phase: 'briefing',
-      milestoneId: updatedMilestone.id,
-      featureId: updatedFeature.id,
-      message: `Manager is preparing briefing for ${updatedFeature.id}`,
-    });
     let briefing: string | undefined;
-    try {
-      briefing = await this.manager.generateFeatureBriefing({
-        ...this.buildManagerInput(updatedMilestone, updatedFeature),
-        onAppServerEvent: (method, params) => {
-          const detail = formatAgentEventDetail(method, params);
-          if (!detail) {
-            return;
-          }
-          this.emitEvent('manager_decision', 'manager', {
-            action: 'briefing',
-            milestoneId: updatedMilestone.id,
-            featureId: updatedFeature.id,
-            message: detail,
-          });
-        },
-      });
-    } finally {
-      this.stopManagerHeartbeat();
-    }
+    briefing = await this.manager.generateFeatureBriefing({
+      ...this.buildManagerInput(updatedMilestone, updatedFeature),
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          action: 'briefing',
+          milestoneId: updatedMilestone.id,
+          featureId: updatedFeature.id,
+          message: detail,
+        });
+      },
+    });
     this.emitEvent('manager_decision', 'manager', {
       action: 'briefing',
       milestoneId: updatedMilestone.id,
       featureId: updatedFeature.id,
       message: `Manager finished feature briefing for ${updatedFeature.id}`,
     });
+    const dispatchModelState = resolveFeatureModelState(
+      updatedFeature,
+      normalizeModelName(this.modelRouter.getModel('worker')) ?? CODEX_LATEST_ALIAS
+    );
     this.emitEvent('manager_decision', 'manager', {
       action: 'dispatch_feature',
       milestoneId: updatedMilestone.id,
       featureId: updatedFeature.id,
-      model: updatedFeature.model ?? 'codex',
+      model: resolveDisplayModel(dispatchModelState.model),
+      modelSource: dispatchModelState.source,
     });
 
     this.activityLabel = `Worker executing ${updatedFeature.id}...`;
-    const result = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
+    const rawResult = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
+    await this.syncPullRequestStateFromReport(updatedFeature, rawResult.report);
+    const result = this.shouldApplyWorkerWarningPolicy(updatedFeature)
+      ? this.applyWorkerWarningPolicy(updatedMilestone.id, updatedFeature.id, rawResult)
+      : rawResult;
     this.state.latestWorkerReport = result.report;
+    this.recordValidationEvidence(updatedMilestone.id, result.report.checks);
+    this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
 
-    if (result.report.tokenUsage) {
-      this.tokenTracker.record({
-        role: 'worker',
-        model: this.modelRouter.getModel('worker'),
-        input: result.report.tokenUsage.input,
-        output: result.report.tokenUsage.output,
-        cached: result.report.tokenUsage.cached,
-      });
-      this.emitEvent('token_usage', 'worker', {
-        role: 'worker',
-        model: this.modelRouter.getModel('worker'),
-        ...result.report.tokenUsage,
-      });
+    if (updatedFeature.kind === 'review') {
+      await this.handleReviewFeatureResult(updatedMilestone, updatedFeature, result);
+      return;
     }
-
-    const status = result.type === 'success'
-      ? 'done'
-      : result.type === 'partial'
-        ? 'failed'
-        : result.type === 'blocked'
-          ? 'failed'
-          : 'failed';
-
-    missionPlan = this.requireMissionPlan();
-    missionPlan = updateFeatureStatus(
-      missionPlan,
-      updatedMilestone.id,
-      updatedFeature.id,
-      status,
-      {
-        lastReportSummary: result.report.summary,
-        briefing,
-      }
-    );
-
-    if (result.report.discoveredFeatures.length > 0) {
-      const followups = result.report.discoveredFeatures.map((discovered, index) => ({
-        id: `${updatedMilestone.id}-f${updatedMilestone.features.length + index + 1}`,
-        description: discovered.description,
-        status: 'pending' as const,
-        attempts: 0,
-        model: discovered.priority === 'high' ? 'codex' : updatedFeature.model ?? 'codex',
-      }));
-      missionPlan = appendFeaturesToMilestone(missionPlan, updatedMilestone.id, followups);
-      this.emitEvent('task_added', 'orchestrator', {
-        milestoneId: updatedMilestone.id,
-        features: followups,
-      });
+    if (updatedFeature.kind === 'qa') {
+      await this.handleQaFeatureResult(updatedMilestone, updatedFeature, result);
+      return;
     }
-
-    missionPlan = incrementMissionIterations(missionPlan);
-    this.state.missionPlan = missionPlan;
-    this.kernelState.missionPlan = missionPlan;
-
-    this.emitEvent('iteration_completed', 'orchestrator', {
-      iteration: missionPlan.totalIterations,
-      milestoneId: updatedMilestone.id,
-      featureId: updatedFeature.id,
-      status,
-    });
-    this.activityLabel = `Completed ${updatedFeature.id}.`;
-
-    await this.persistMissionPlan();
-    await this.emitStatusUpdate();
+    if (updatedFeature.kind === 'pull_request' || updatedFeature.kind === 'pr_followup') {
+      await this.handleOperationalFeatureResult(updatedMilestone, updatedFeature, result);
+      return;
+    }
+    await this.handleImplementationFeatureResult(updatedMilestone, updatedFeature, result);
   }
 
   private async runMilestoneValidation(milestoneId: string): Promise<void> {
@@ -735,13 +968,53 @@ export class Orchestrator {
     this.emitEvent('validation_started', 'orchestrator', { milestoneId });
     const checks = getAllValidationChecks(milestone.validationContract);
     const results: ValidationCheckResult[] = [];
+    const evidenceByCheckId = this.kernelState.validationEvidence?.[milestoneId] ?? {};
 
     for (const check of checks) {
+      if (check.type === 'browser') {
+        const result = evaluateBrowserValidationCheck(this.config.cwd, check, evidenceByCheckId[check.id]);
+        results.push(result);
+        if (result.warning) {
+          this.emitValidationWarning({
+            milestoneId,
+            checkId: check.id,
+            message: result.warning,
+          });
+        }
+        continue;
+      }
+
+      if (check.type === 'manual') {
+        const result = this.evaluateEvidenceValidationCheck(milestoneId, check, evidenceByCheckId[check.id]);
+        results.push(result);
+        if (result.warning) {
+          this.emitValidationWarning({
+            milestoneId,
+            checkId: check.id,
+            message: result.warning,
+          });
+        }
+        continue;
+      }
+
+      if (check.type === 'e2e') {
+        const result = this.evaluateEvidenceValidationCheck(milestoneId, check, evidenceByCheckId[check.id]);
+        results.push(result);
+        if (result.warning) {
+          this.emitValidationWarning({
+            milestoneId,
+            checkId: check.id,
+            message: result.warning,
+          });
+        }
+        continue;
+      }
+
       if (!check.command) {
         results.push({
           checkId: check.id,
-          passed: check.type === 'manual',
-          output: check.type === 'manual' ? 'manual check pending (treated as pass by default)' : 'no command',
+          passed: false,
+          output: 'no command',
         });
         continue;
       }
@@ -785,6 +1058,7 @@ export class Orchestrator {
     };
 
     this.state.latestValidationReport = report;
+    this.kernelState.latestValidationReport = report;
     await this.persistValidationReport(report);
 
     missionPlan = this.requireMissionPlan();
@@ -840,8 +1114,7 @@ export class Orchestrator {
             ...current.validationContract,
             staticChecks: current.validationContract.staticChecks.map((check) => ({ ...check, failureCount: 0 })),
             testSuites: current.validationContract.testSuites.map((check) => ({ ...check, failureCount: 0 })),
-            e2eChecks: current.validationContract.e2eChecks?.map((check) => ({ ...check, failureCount: 0 })),
-            manualSteps: current.validationContract.manualSteps?.map((check) => ({ ...check, failureCount: 0 })),
+            qaChecks: current.validationContract.qaChecks?.map((check) => ({ ...check, failureCount: 0 })),
           },
         }));
         missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
@@ -873,29 +1146,66 @@ export class Orchestrator {
       },
     });
 
-    const milestoneForFollowUps = missionPlan.milestones.find((item) => item.id === milestoneId);
-    const baseCount = milestoneForFollowUps?.features.length ?? 0;
-    const followUpFeatures: Feature[] = followUps.map((draft, index) => ({
-      id: `${milestoneId}-f${baseCount + index + 1}`,
-      description: draft.description,
-      status: 'pending',
-      attempts: 0,
-      model: draft.model ?? 'codex',
-    }));
-
-    missionPlan = appendFeaturesToMilestone(missionPlan, milestoneId, followUpFeatures);
+    const followUpResult = this.applyValidationFollowUps(missionPlan, milestoneId, followUps);
+    missionPlan = followUpResult.plan;
     missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
     this.state.missionPlan = missionPlan;
     this.kernelState.missionPlan = missionPlan;
     this.activityLabel = `Validation failed for ${milestoneId}. Generated follow-up features.`;
 
-    this.emitEvent('task_added', 'manager', {
-      milestoneId,
-      followUpFeatures,
-    });
+    if (followUpResult.addedFeatures.length > 0) {
+      this.emitEvent('task_added', 'manager', {
+        milestoneId,
+        features: followUpResult.addedFeatures,
+        followUpFeatures: followUpResult.addedFeatures,
+      });
+    }
 
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
+  }
+
+  private evaluateEvidenceValidationCheck(
+    milestoneId: string,
+    check: ValidationCheck,
+    evidence: ValidationCheckResult | undefined
+  ): ValidationCheckResult {
+    if (evidence) {
+      return {
+        ...evidence,
+        checkId: check.id,
+        output: evidence.output ?? `worker-reported ${check.type} validation ${evidence.passed ? 'passed' : 'failed'}`,
+      };
+    }
+
+    const warning = `${check.type} verification was not reported by the worker: ${check.description}`;
+    const evidenceRequired = check.type === 'manual'
+      ? this.verificationConfig.requireManualEvidence
+      : this.verificationConfig.requireE2EEvidence;
+    if (!evidenceRequired) {
+      return {
+        checkId: check.id,
+        passed: true,
+        output: `${check.type} validation evidence missing`,
+        warning,
+      };
+    }
+
+    return {
+      checkId: check.id,
+      passed: false,
+      output: `${check.type} validation evidence missing`,
+      warning,
+      failure: {
+        summary: `${check.type} validation was not reported by the worker`,
+        affectedFiles: [],
+        errorMessages: [
+          `milestone=${milestoneId}`,
+          check.description,
+        ],
+        rootCause: `${check.type}-evidence-missing`,
+      },
+    };
   }
 
   private async executeFeature(
@@ -903,51 +1213,129 @@ export class Orchestrator {
     feature: Feature,
     briefing?: string
   ): Promise<WorkerResult> {
-    const selectedWorkerModel = this.modelRouter.getModel('worker');
-    const selectedWorkerEngine = this.modelRouter.resolveEngine(selectedWorkerModel);
+    const selectedWorkerModel = normalizeModelName(this.modelRouter.getModel('worker')) ?? CODEX_LATEST_ALIAS;
+    let missionPlan = this.requireMissionPlan();
+    let runtimeFeature = missionPlan.milestones
+      .find((item) => item.id === milestone.id)
+      ?.features.find((item) => item.id === feature.id) ?? feature;
+
+    let modelState = resolveFeatureModelState(runtimeFeature, selectedWorkerModel);
+    if (!runtimeFeature.model) {
+      missionPlan = updateFeatureModel(
+        missionPlan,
+        milestone.id,
+        feature.id,
+        modelState.model
+      );
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+
+      runtimeFeature = missionPlan.milestones
+        .find((item) => item.id === milestone.id)
+        ?.features.find((item) => item.id === feature.id) ?? runtimeFeature;
+      modelState = resolveFeatureModelState(runtimeFeature, selectedWorkerModel);
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_model_selected',
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        model: resolveDisplayModel(modelState.model),
+        source: 'default',
+      });
+    }
+
+    const resolvedExecutionModel = resolveModel(modelState.model, selectedWorkerModel);
     const executionFeature: Feature = {
-      ...feature,
-      model: selectedWorkerEngine === 'claude' ? 'claude' : 'codex',
+      ...runtimeFeature,
+      model: modelState.model,
     };
-    this.worker.setRuntimeModel(selectedWorkerModel);
+    this.worker.setRuntimeModel(modelState.model);
 
     let branchName: string | null = null;
+    let currentBranch: string | null = null;
     let baseBranch: string | undefined;
+    let mergeTargetBranch: string | undefined;
 
     if (this.state.gitStrategy) {
       baseBranch = this.state.gitStrategy.config.baseBranch;
-      branchName = createFeatureBranchName(
-        this.state.gitStrategy.config.missionId,
-        feature.id,
-        feature.description
-      );
-
-      const baseCommitHash = getHeadCommitHash(this.config.cwd);
-      createBranch(this.config.cwd, branchName, baseBranch);
-      this.state.gitStrategy = registerFeatureBranch(this.state.gitStrategy, {
-        name: branchName,
-        taskId: feature.id,
-        baseCommitHash,
-      });
-
-      await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-      this.emitEvent('branch_created', 'system', {
-        branchName,
-        baseBranch,
-        baseCommitHash,
-      });
+      if (this.state.gitStrategy.config.pullRequestEnabled) {
+        const missionBranch = await this.ensureMissionBranch();
+        currentBranch = missionBranch;
+        if (this.requiresDedicatedFeatureBranch(feature)) {
+          branchName = createFeatureBranchName(
+            this.state.gitStrategy.config.missionId,
+            feature.id,
+            feature.description
+          );
+          mergeTargetBranch = missionBranch;
+          const baseCommitHash = getHeadCommitHash(this.config.cwd);
+          createBranch(this.config.cwd, branchName, missionBranch);
+          this.setGitStrategyState(registerFeatureBranch(this.state.gitStrategy, {
+            name: branchName,
+            taskId: feature.id,
+            baseCommitHash,
+          }));
+          currentBranch = branchName;
+          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+          this.emitEvent('branch_created', 'system', {
+            branchName,
+            baseBranch: missionBranch,
+            baseCommitHash,
+            branchType: 'feature',
+          });
+        }
+      } else {
+        if (this.requiresDedicatedFeatureBranch(feature)) {
+          branchName = createFeatureBranchName(
+            this.state.gitStrategy.config.missionId,
+            feature.id,
+            feature.description
+          );
+          mergeTargetBranch = baseBranch;
+          const baseCommitHash = getHeadCommitHash(this.config.cwd);
+          createBranch(this.config.cwd, branchName, baseBranch);
+          this.setGitStrategyState(registerFeatureBranch(this.state.gitStrategy, {
+            name: branchName,
+            taskId: feature.id,
+            baseCommitHash,
+          }));
+          currentBranch = branchName;
+          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+          this.emitEvent('branch_created', 'system', {
+            branchName,
+            baseBranch,
+            baseCommitHash,
+            branchType: 'feature',
+          });
+        }
+      }
     }
 
     const runId = ++this.workerRunCounter;
     const workerStartedAt = new Date();
+    const workerRunType = feature.kind === 'review'
+      ? 'review'
+      : feature.kind === 'qa'
+        ? 'qa'
+        : 'implement';
+    if (feature.kind === 'review') {
+      this.emitEvent('review_started', 'orchestrator', {
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        reviewType: feature.reviewType,
+        generation: feature.reviewGeneration ?? 1,
+      });
+    }
     this.emitEvent('worker_started', 'worker', {
       runId,
-      type: 'implement',
+      type: workerRunType,
       milestoneId: milestone.id,
       featureId: feature.id,
-      branch: branchName,
-      engine: selectedWorkerEngine,
-      model: selectedWorkerModel,
+      branch: currentBranch ?? branchName,
+      engine: resolvedExecutionModel.engine,
+      model: resolvedExecutionModel.displayModel,
+      modelSource: modelState.source,
     });
 
     if (this.config.dryRun) {
@@ -957,6 +1345,7 @@ export class Orchestrator {
         featureId: feature.id,
         status: 'SUCCESS',
         summary: '[dry-run] execution skipped',
+        warnings: [],
         filesChanged: [],
         validation: {
           testsRun: false,
@@ -971,6 +1360,16 @@ export class Orchestrator {
         requestsHelp: false,
         createdAt: new Date().toISOString(),
       };
+      if (feature.kind === 'review' && feature.reviewType) {
+        report.review = {
+          reviewType: feature.reviewType,
+          generation: feature.reviewGeneration ?? 1,
+          passed: true,
+          summary: '[dry-run] final review skipped',
+          findings: [],
+          artifacts: [],
+        };
+      }
       const result: WorkerResult = { type: 'success', report };
       this.emitEvent('worker_finished', 'worker', {
         runId,
@@ -988,7 +1387,7 @@ export class Orchestrator {
       feature: executionFeature,
       prd: this.state.prd,
       briefing,
-      currentBranch: branchName,
+      currentBranch,
       baseBranch,
       onAppServerEvent: (method, params) => {
         const detail = formatAgentEventDetail(method, params);
@@ -1002,9 +1401,26 @@ export class Orchestrator {
       },
     };
 
-    let result = await this.worker.run(workerInput);
-    this.watchdog.touch();
-    if (selectedWorkerEngine === 'codex') {
+    const workerReplyStream = createBufferedProgressEmitter((line) => {
+      this.emitEvent('worker_checkpoint', 'worker', {
+        runId,
+        message: `[REPLY] ${line}`,
+      });
+    });
+
+    workerInput.onAgentMessageDelta = (chunk) => {
+      workerReplyStream.push(chunk);
+    };
+
+    let result: WorkerResult;
+    try {
+      result = await this.worker.run(workerInput);
+      this.watchdog.touch();
+    } finally {
+      workerReplyStream.flush();
+    }
+
+    if (resolvedExecutionModel.engine === 'codex') {
       const activeThreadId = this.worker.getActiveThreadId();
       if (activeThreadId) {
         const missionId = this.requireMissionPlan().mission.id ?? this.resolveMissionId();
@@ -1015,7 +1431,7 @@ export class Orchestrator {
     if (branchName && this.state.gitStrategy) {
       const postProcess = await this.runGitPostProcess(
         branchName,
-        baseBranch ?? this.state.gitStrategy.config.baseBranch,
+        mergeTargetBranch ?? baseBranch ?? this.state.gitStrategy.config.baseBranch,
         result.report
       );
       result.report.summary = postProcess.summary;
@@ -1046,16 +1462,583 @@ export class Orchestrator {
     return result;
   }
 
+  private requiresDedicatedFeatureBranch(feature: Feature): boolean {
+    return feature.kind === 'implementation' || feature.kind === 'review_remediation';
+  }
+
+  private async ensureMissionBranch(): Promise<string> {
+    if (!this.state.gitStrategy) {
+      throw new Error('git strategy is not enabled');
+    }
+
+    const existingMissionBranch = this.state.gitStrategy.missionBranch
+      ?? createMissionBranchName(this.state.gitStrategy.config.missionId);
+
+    try {
+      checkoutBranch(this.config.cwd, existingMissionBranch);
+    } catch {
+      createBranch(this.config.cwd, existingMissionBranch, this.state.gitStrategy.config.baseBranch);
+      this.emitEvent('branch_created', 'system', {
+        branchName: existingMissionBranch,
+        baseBranch: this.state.gitStrategy.config.baseBranch,
+        baseCommitHash: getHeadCommitHash(this.config.cwd),
+        branchType: 'mission',
+      });
+    }
+
+    this.setGitStrategyState(setMissionBranch(this.state.gitStrategy, existingMissionBranch));
+    await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+    return existingMissionBranch;
+  }
+
+  private shouldApplyWorkerWarningPolicy(feature: Feature): boolean {
+    return feature.kind === 'implementation' || feature.kind === 'review_remediation';
+  }
+
+  private async syncPullRequestStateFromReport(
+    feature: Feature,
+    report: WorkerFeatureReport
+  ): Promise<void> {
+    if (!this.state.gitStrategy) {
+      return;
+    }
+
+    let next = this.state.gitStrategy;
+    let changed = false;
+
+    if (report.pullRequest) {
+      next = updatePullRequestState(next, report.pullRequest);
+      changed = true;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: report.pullRequest.action === 'created' ? 'pull_request_created' : 'pull_request_updated',
+        featureId: feature.id,
+        url: report.pullRequest.url,
+        number: report.pullRequest.number,
+        headBranch: report.pullRequest.headBranch,
+        baseBranch: report.pullRequest.baseBranch,
+        message: `${report.pullRequest.action} PR ${report.pullRequest.url}`,
+      });
+    }
+
+    if (report.pullRequestFollowUp) {
+      next = updatePullRequestFollowUpState(next, report.pullRequestFollowUp);
+      changed = true;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'pull_request_follow_up_progress',
+        featureId: feature.id,
+        quietUntil: report.pullRequestFollowUp.quietUntil,
+        lastExternalActivityAt: report.pullRequestFollowUp.lastExternalActivityAt,
+        handledFeedbackCount: report.pullRequestFollowUp.handledFeedbackIds.length,
+        message: report.pullRequestFollowUp.quietUntil
+          ? `PR follow-up waiting for quiet window until ${report.pullRequestFollowUp.quietUntil}`
+          : 'PR follow-up progress updated',
+      });
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    this.setGitStrategyState(next);
+    await saveGitStrategyState(this.config.melosDir, next);
+  }
+
+  private async handleOperationalFeatureResult(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): Promise<void> {
+    let missionPlan = this.requireMissionPlan();
+    missionPlan = incrementMissionIterations(missionPlan);
+
+    if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      missionPlan = transitionMissionState(missionPlan, 'paused');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.activityLabel = `${feature.id} blocked. Resolve the PR automation issue and resume.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    if (result.type === 'success') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'done',
+      });
+      this.activityLabel = `Completed ${feature.id}.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const runtimeFeature = missionPlan.milestones
+      .find((item) => item.id === milestone.id)
+      ?.features.find((item) => item.id === feature.id);
+    const attempts = runtimeFeature?.attempts ?? feature.attempts;
+
+    if (attempts < this.executionConfig.maxFeatureAttempts) {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      const retry = this.scheduleFeatureRetry(missionPlan, milestone.id, feature.id, attempts + 1, result.report);
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_retry_scheduled',
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        attempt: attempts,
+        nextAttempt: retry.nextAttempt,
+        dueAt: retry.dueAt,
+        message: `Retry ${feature.id} as attempt ${retry.nextAttempt} at ${retry.dueAt}`,
+      });
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'retry_pending',
+      });
+      this.activityLabel = `Retrying ${feature.id} at ${retry.dueAt}.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+    missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'failed');
+    missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'failed');
+    missionPlan = transitionMissionState(missionPlan, 'failed');
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+    this.emitEvent('iteration_completed', 'orchestrator', {
+      iteration: missionPlan.totalIterations,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      status: 'failed',
+    });
+    this.emitEvent('mission_failed', 'orchestrator', {
+      reason: `${feature.kind} feature failed`,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      summary: result.report.summary,
+    });
+    this.activityLabel = `${feature.id} failed.`;
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
+  private async handleQaFeatureResult(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): Promise<void> {
+    let missionPlan = this.requireMissionPlan();
+    missionPlan = incrementMissionIterations(missionPlan);
+
+    if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      missionPlan = transitionMissionState(missionPlan, 'paused');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.activityLabel = `${feature.id} blocked. Resolve the QA environment issue and resume.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+    missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+    this.emitEvent('iteration_completed', 'orchestrator', {
+      iteration: missionPlan.totalIterations,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      status: 'done',
+    });
+    this.activityLabel = result.type === 'success'
+      ? `Completed ${feature.id}.`
+      : `QA execution finished for ${feature.id}; milestone validation will determine pass/fail.`;
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
+  private applyWorkerWarningPolicy(
+    milestoneId: string,
+    featureId: string,
+    result: WorkerResult
+  ): WorkerResult {
+    if (!this.verificationConfig.failOnWorkerWarnings || result.report.warnings.length === 0) {
+      return result;
+    }
+    if (result.type === 'blocked') {
+      return result;
+    }
+
+    const warningSummary = result.report.warnings.join('; ');
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'worker_warning_blocked',
+      milestoneId,
+      featureId,
+      message: `Worker warnings are configured as blocking failures for ${featureId}: ${warningSummary}`,
+    });
+
+    return {
+      type: 'failed',
+      report: {
+        ...result.report,
+        status: 'FAILED',
+        summary: [
+          result.report.summary,
+          'Worker warnings are configured as blocking failures.',
+          warningSummary,
+        ].filter((line) => line.trim().length > 0).join('\n'),
+        requestsHelp: true,
+      },
+    };
+  }
+
+  private async handleImplementationFeatureResult(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): Promise<void> {
+    let missionPlan = this.requireMissionPlan();
+    missionPlan = incrementMissionIterations(missionPlan);
+
+    if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      missionPlan = transitionMissionState(missionPlan, 'paused');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.activityLabel = `${feature.id} blocked. Resolve the worker issue and resume.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    if (result.type === 'success') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'done',
+      });
+      this.activityLabel = `Completed ${feature.id}.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const runtimeFeature = missionPlan.milestones
+      .find((item) => item.id === milestone.id)
+      ?.features.find((item) => item.id === feature.id);
+    const attempts = runtimeFeature?.attempts ?? feature.attempts;
+
+    if (attempts < this.executionConfig.maxFeatureAttempts) {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      const retry = this.scheduleFeatureRetry(missionPlan, milestone.id, feature.id, attempts + 1, result.report);
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_retry_scheduled',
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        attempt: attempts,
+        nextAttempt: retry.nextAttempt,
+        dueAt: retry.dueAt,
+        message: `Retry ${feature.id} as attempt ${retry.nextAttempt} at ${retry.dueAt}`,
+      });
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'retry_pending',
+      });
+      this.activityLabel = `Retrying ${feature.id} at ${retry.dueAt}.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+    missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'failed');
+    const failures = this.createImplementationFailureResults(feature, result.report);
+    const followUps = await this.manager.generateImplementationFollowUpFeatures({
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      failures,
+      missionPlan,
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          action: 'execution_followup_planning',
+          milestoneId: milestone.id,
+          featureId: feature.id,
+          message: detail,
+        });
+      },
+    });
+    const followUpResult = this.applyValidationFollowUps(
+      missionPlan,
+      milestone.id,
+      followUps.length > 0
+        ? followUps
+        : [{
+          description: `Resolve exhausted execution failure for ${feature.description}`,
+          trackingKey: `feature-failure-${feature.id}`,
+          model: CODEX_LATEST_ALIAS,
+        }]
+    );
+    missionPlan = updateMilestoneStatus(followUpResult.plan, milestone.id, 'in_progress');
+    missionPlan = setActiveMilestone(missionPlan, milestone.id);
+    missionPlan = setActiveFeature(missionPlan, null);
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+
+    if (followUpResult.addedFeatures.length > 0 || followUpResult.updatedFeatures.length > 0) {
+      this.emitEvent('task_added', 'manager', {
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        features: [
+          ...followUpResult.updatedFeatures,
+          ...followUpResult.addedFeatures,
+        ],
+        followUpFeatures: followUpResult.addedFeatures,
+      });
+    }
+
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'feature_retry_exhausted',
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      attempts,
+      message: `Retry budget exhausted for ${feature.id} after ${attempts} attempt${attempts === 1 ? '' : 's'}`,
+    });
+    this.emitEvent('iteration_completed', 'orchestrator', {
+      iteration: missionPlan.totalIterations,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      status: 'failed',
+    });
+    this.activityLabel = `Retry budget exhausted for ${feature.id}. Generated remediation features.`;
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
+  private createImplementationFailureResults(
+    feature: Feature,
+    report: WorkerFeatureReport
+  ): ValidationCheckResult[] {
+    const errorMessages = truncateLines(
+      [
+        report.summary,
+        ...report.warnings,
+      ]
+        .flatMap((line) => line.split(/\r?\n/))
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0),
+      8
+    );
+
+    return [{
+      checkId: feature.id,
+      passed: false,
+      output: report.summary,
+      failure: {
+        summary: `feature execution failed: ${feature.description}`,
+        affectedFiles: report.filesChanged.map((file) => file.path),
+        errorMessages,
+        rootCause: errorMessages[0] ?? report.status,
+      },
+    }];
+  }
+
+  private scheduleFeatureRetry(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    featureId: string,
+    nextAttempt: number,
+    report: WorkerFeatureReport
+  ): FeatureRetryRecord {
+    const delayMs = this.computeFeatureRetryDelay(nextAttempt - 1);
+    const retry: FeatureRetryRecord = {
+      milestoneId,
+      featureId,
+      nextAttempt,
+      dueAt: new Date(Date.now() + delayMs).toISOString(),
+      lastStatus: report.status === 'PARTIAL' || report.status === 'BLOCKED' ? report.status : 'FAILED',
+      reason: this.extractFeatureRetryReason(report),
+      summary: report.summary,
+    };
+
+    const existing = this.kernelState.featureRetries ?? [];
+    this.kernelState.featureRetries = [
+      ...existing.filter((item) => !(item.milestoneId === milestoneId && item.featureId === featureId)),
+      retry,
+    ];
+
+    this.kernelState.missionPlan = missionPlan;
+    return retry;
+  }
+
+  private extractFeatureRetryReason(report: WorkerFeatureReport): string {
+    const candidates = [
+      report.warnings[0],
+      report.summary.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0),
+      report.status,
+    ];
+    return candidates.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? 'worker failure';
+  }
+
+  private computeFeatureRetryDelay(failedAttempt: number): number {
+    const exponent = Math.max(0, failedAttempt - 1);
+    const delayMs = this.executionConfig.retryInitialDelayMs * (2 ** exponent);
+    return Math.min(delayMs, this.executionConfig.retryMaxDelayMs);
+  }
+
+  private releaseReadyFeatureRetries(missionPlan: MissionPlan): MissionPlan {
+    const queue = this.kernelState.featureRetries ?? [];
+    if (queue.length === 0) {
+      return missionPlan;
+    }
+
+    const now = Date.now();
+    const remaining: FeatureRetryRecord[] = [];
+    const released: FeatureRetryRecord[] = [];
+    for (const item of queue) {
+      const dueAtMs = Date.parse(item.dueAt);
+      if (Number.isFinite(dueAtMs) && dueAtMs > now) {
+        remaining.push(item);
+        continue;
+      }
+      released.push(item);
+    }
+
+    if (released.length === 0) {
+      return missionPlan;
+    }
+
+    this.kernelState.featureRetries = remaining;
+    for (const retry of released) {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_retry_released',
+        milestoneId: retry.milestoneId,
+        featureId: retry.featureId,
+        nextAttempt: retry.nextAttempt,
+        message: `Retry ${retry.featureId} is ready to run (attempt ${retry.nextAttempt})`,
+      });
+    }
+
+    return missionPlan;
+  }
+
+  private clearFeatureRetry(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    featureId: string
+  ): MissionPlan {
+    const queue = this.kernelState.featureRetries ?? [];
+    if (queue.length === 0) {
+      return missionPlan;
+    }
+
+    this.kernelState.featureRetries = queue.filter((item) => !(item.milestoneId === milestoneId && item.featureId === featureId));
+    this.kernelState.missionPlan = missionPlan;
+    return missionPlan;
+  }
+
+  private findFeatureRetry(
+    milestoneId: string,
+    featureId: string
+  ): FeatureRetryRecord | null {
+    const queue = this.kernelState.featureRetries ?? [];
+    return queue.find((item) => item.milestoneId === milestoneId && item.featureId === featureId) ?? null;
+  }
+
+  private async waitForScheduledFeatureRetry(retry: FeatureRetryRecord): Promise<void> {
+    const dueAtMs = Date.parse(retry.dueAt);
+    if (!Number.isFinite(dueAtMs)) {
+      this.kernelState.featureRetries = (this.kernelState.featureRetries ?? [])
+        .filter((item) => !(item.milestoneId === retry.milestoneId && item.featureId === retry.featureId));
+      await this.persistRuntimeState();
+      return;
+    }
+
+    this.activityLabel = `Waiting to retry ${retry.featureId} (attempt ${retry.nextAttempt})...`;
+    await this.emitStatusUpdate();
+
+    while (!this.aborted) {
+      const remainingMs = dueAtMs - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      await delay(Math.min(remainingMs, 500));
+    }
+
+    if (this.aborted) {
+      return;
+    }
+
+    this.state.missionPlan = this.releaseReadyFeatureRetries(this.requireMissionPlan());
+    this.kernelState.missionPlan = this.state.missionPlan;
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
   private async runGitPostProcess(
     branchName: string,
-    baseBranch: string,
+    targetBranch: string,
     report: WorkerFeatureReport
   ): Promise<{ ok: boolean; summary: string }> {
     try {
       if (!isWorkingTreeClean(this.config.cwd)) {
         const message = [
           report.summary,
-          `Commit required before merge on ${branchName}.`,
+          `Commit required before merge into ${targetBranch} from ${branchName}.`,
           'Please commit the feature changes using the git-committer skill and retry.',
         ].join('\n');
         this.emitEvent('error', 'system', {
@@ -1063,11 +2046,11 @@ export class Orchestrator {
           featureId: report.featureId,
           message: 'git strategy requires committed changes before merge',
         });
-        this.state.gitStrategy = this.state.gitStrategy
-          ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned')
-          : this.state.gitStrategy;
-        await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
-        checkoutBranch(this.config.cwd, baseBranch);
+        if (this.state.gitStrategy) {
+          this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
+          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+        }
+        checkoutBranch(this.config.cwd, targetBranch);
         return {
           ok: false,
           summary: message,
@@ -1082,11 +2065,11 @@ export class Orchestrator {
             exitCode: result.exitCode,
           });
           if (result.exitCode !== 0) {
-            this.state.gitStrategy = this.state.gitStrategy
-              ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned')
-              : this.state.gitStrategy;
-            await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
-            checkoutBranch(this.config.cwd, baseBranch);
+            if (this.state.gitStrategy) {
+              this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
+              await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+            }
+            checkoutBranch(this.config.cwd, targetBranch);
             return {
               ok: false,
               summary: `${report.summary}\nPre-merge validation failed: ${command}`,
@@ -1095,7 +2078,7 @@ export class Orchestrator {
         }
       }
 
-      if (hasConflicts(this.config.cwd, branchName, baseBranch)) {
+      if (hasConflicts(this.config.cwd, branchName, targetBranch)) {
         const missionPlan = this.requireMissionPlan();
         const activeMilestoneId = missionPlan.activeMilestoneId;
         if (activeMilestoneId) {
@@ -1104,32 +2087,36 @@ export class Orchestrator {
           this.state.missionPlan = appendFeaturesToMilestone(missionPlan, activeMilestoneId, [{
             id: nextId,
             description: `Resolve merge conflict for ${branchName}`,
+            kind: 'implementation',
             status: 'pending',
             attempts: 0,
-            model: 'codex',
+            model: CODEX_LATEST_ALIAS,
           }]);
         }
-        this.state.gitStrategy = this.state.gitStrategy
-          ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned')
-          : this.state.gitStrategy;
-        await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
-        checkoutBranch(this.config.cwd, baseBranch);
+        if (this.state.gitStrategy) {
+          this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
+          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+        }
+        checkoutBranch(this.config.cwd, targetBranch);
         return {
           ok: false,
           summary: `${report.summary}\nMerge conflict detected for ${branchName}`,
         };
       }
 
-      mergeBranch(this.config.cwd, branchName, baseBranch);
+      mergeBranch(this.config.cwd, branchName, targetBranch);
       this.emitEvent('branch_merged', 'system', {
         branchName,
-        baseBranch,
+        baseBranch: targetBranch,
+        mergeTargetBranch: targetBranch,
       });
-      this.state.gitStrategy = this.state.gitStrategy
-        ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'merged', { mergedAt: new Date().toISOString() })
-        : this.state.gitStrategy;
-      await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
-      checkoutBranch(this.config.cwd, baseBranch);
+      if (this.state.gitStrategy) {
+        this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'merged', {
+          mergedAt: new Date().toISOString(),
+        }));
+        await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+      }
+      checkoutBranch(this.config.cwd, targetBranch);
 
       return {
         ok: true,
@@ -1137,7 +2124,7 @@ export class Orchestrator {
       };
     } catch (error) {
       try {
-        checkoutBranch(this.config.cwd, baseBranch);
+        checkoutBranch(this.config.cwd, targetBranch);
       } catch {
         // ignore cleanup failure
       }
@@ -1265,6 +2252,392 @@ export class Orchestrator {
     };
   }
 
+  private async handleReviewFeatureResult(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): Promise<void> {
+    const reviewReport = this.createReviewReport(milestone.id, feature, result.report);
+    this.state.latestReviewReport = reviewReport;
+    this.kernelState.latestReviewReport = reviewReport;
+    await this.persistReviewReport(reviewReport);
+
+    const blockingFindings = reviewReport.findings.filter((finding) => isBlockingReviewFinding(finding));
+    this.emitEvent('review_result', 'orchestrator', {
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      reviewType: reviewReport.reviewType,
+      generation: reviewReport.generation,
+      passed: reviewReport.passed,
+      blockingFindingCount: blockingFindings.length,
+      totalFindings: reviewReport.findings.length,
+      summary: reviewReport.summary,
+      report: reviewReport,
+    });
+
+    let missionPlan = this.requireMissionPlan();
+    missionPlan = incrementMissionIterations(missionPlan);
+
+    if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      missionPlan = transitionMissionState(missionPlan, 'paused');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.activityLabel = `${formatReviewLabel(feature)} blocked. Resolve the review environment or contract issue and resume.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    if (blockingFindings.length === 0 && reviewReport.passed) {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'done',
+      });
+      this.activityLabel = `${formatReviewLabel(feature)} passed.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const followUps = await this.manager.generateReviewFollowUpFeatures({
+      milestoneId: milestone.id,
+      reviewType: reviewReport.reviewType,
+      generation: reviewReport.generation,
+      findings: blockingFindings,
+      missionPlan,
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          action: 'review_followup_planning',
+          milestoneId: milestone.id,
+          featureId: feature.id,
+          message: detail,
+        });
+      },
+    });
+
+    const followUpResult = this.applyReviewFollowUps(
+      missionPlan,
+      milestone.id,
+      feature,
+      reviewReport,
+      followUps.length > 0
+        ? followUps
+        : [{
+          description: `Address blocking ${reviewReport.reviewType} review findings`,
+          trackingKey: `final-review-${reviewReport.reviewType}-g${reviewReport.generation}`,
+          model: CODEX_LATEST_ALIAS,
+        }]
+    );
+
+    missionPlan = updateMilestoneStatus(followUpResult.plan, milestone.id, 'in_progress');
+    missionPlan = setActiveMilestone(missionPlan, milestone.id);
+    missionPlan = setActiveFeature(missionPlan, null);
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+    this.emitEvent('iteration_completed', 'orchestrator', {
+      iteration: missionPlan.totalIterations,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      status: 'done',
+    });
+
+    if (followUpResult.addedFeatures.length > 0 || followUpResult.updatedFeatures.length > 0) {
+      this.emitEvent('task_added', 'manager', {
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        reviewType: reviewReport.reviewType,
+        generation: reviewReport.generation,
+        features: [
+          ...followUpResult.updatedFeatures,
+          ...followUpResult.addedFeatures,
+          ...followUpResult.addedReviewFeatures,
+        ],
+        followUpFeatures: followUpResult.addedFeatures,
+        rerunReviewFeatures: followUpResult.addedReviewFeatures,
+      });
+    }
+
+    const addedRemediations = followUpResult.addedFeatures.length + followUpResult.updatedFeatures.length;
+    this.activityLabel = [
+      `${formatReviewLabel(feature)} failed with ${blockingFindings.length} blocking finding${blockingFindings.length === 1 ? '' : 's'}.`,
+      `Added ${addedRemediations} remediation feature${addedRemediations === 1 ? '' : 's'} and scheduled ${followUpResult.addedReviewFeatures.length} review reruns.`,
+    ].join(' ');
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
+  private createReviewReport(
+    milestoneId: string,
+    feature: Feature,
+    report: WorkerFeatureReport
+  ): ReviewReport {
+    const fallbackReviewType = feature.reviewType ?? 'code';
+    const fallbackGeneration = feature.reviewGeneration ?? 1;
+    const findings = report.review?.findings ?? [];
+    const artifacts = report.review?.artifacts ?? [];
+    return {
+      milestoneId,
+      featureId: feature.id,
+      reviewType: report.review?.reviewType ?? fallbackReviewType,
+      generation: report.review?.generation ?? fallbackGeneration,
+      timestamp: new Date().toISOString(),
+      passed: report.review?.passed ?? findings.every((finding) => !isBlockingReviewFinding(finding)),
+      summary: report.review?.summary?.trim() || report.summary,
+      findings,
+      artifacts,
+      blockingFindingCount: findings.filter((finding) => isBlockingReviewFinding(finding)).length,
+    };
+  }
+
+  private applyReviewFollowUps(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    feature: Feature,
+    reviewReport: ReviewReport,
+    followUps: Array<{
+      description: string;
+      trackingKey?: string;
+      model?: string;
+    }>
+  ): {
+    plan: MissionPlan;
+    addedFeatures: Feature[];
+    updatedFeatures: Feature[];
+    addedReviewFeatures: Feature[];
+  } {
+    const milestone = missionPlan.milestones.find((item) => item.id === milestoneId);
+    if (!milestone) {
+      return {
+        plan: missionPlan,
+        addedFeatures: [],
+        updatedFeatures: [],
+        addedReviewFeatures: [],
+      };
+    }
+
+    const currentGeneration = reviewReport.generation;
+    const features = milestone.features.map((item) => {
+      if (item.id === feature.id) {
+        return { ...item, status: 'done' as const };
+      }
+      if (
+        feature.reviewType === 'product'
+        && item.kind === 'review'
+        && item.reviewGeneration === currentGeneration
+        && item.reviewType === 'code'
+        && (item.status === 'pending' || item.status === 'in_progress')
+      ) {
+        return { ...item, status: 'skipped' as const };
+      }
+      return { ...item };
+    });
+
+    const updatedFeatures: Feature[] = [];
+    const appendDrafts: Array<{ description: string; trackingKey?: string; model?: string }> = [];
+    for (const draft of followUps) {
+      const trackingKey = draft.trackingKey?.trim();
+      const matchIndex = trackingKey
+        ? features.findIndex((candidate) =>
+          candidate.kind !== 'review'
+          && candidate.trackingKey === trackingKey
+          && (candidate.status === 'pending' || candidate.status === 'in_progress' || candidate.status === 'failed')
+        )
+        : -1;
+
+      if (matchIndex >= 0) {
+        const existing = features[matchIndex];
+        const merged: Feature = {
+          ...existing,
+          kind: existing.kind === 'review' ? 'review_remediation' : existing.kind,
+          description: this.pickMoreSpecificFeatureDescription(existing.description, draft.description),
+          trackingKey: existing.trackingKey ?? trackingKey,
+          model: existing.model ?? normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+          status: existing.status === 'failed' ? 'pending' : existing.status,
+        };
+        features[matchIndex] = merged;
+        updatedFeatures.push(merged);
+        continue;
+      }
+
+      appendDrafts.push({
+        description: draft.description,
+        trackingKey,
+        model: normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+      });
+    }
+
+    let nextPlan = this.replaceMilestone(missionPlan, milestoneId, (current) => ({
+      ...current,
+      features,
+    }));
+
+    let addedFeatures: Feature[] = [];
+    if (appendDrafts.length > 0) {
+      const milestoneForAppend = nextPlan.milestones.find((item) => item.id === milestoneId);
+      const baseCount = milestoneForAppend?.features.length ?? 0;
+      addedFeatures = appendDrafts.map((draft, index) => ({
+        id: `${milestoneId}-f${baseCount + index + 1}`,
+        description: draft.description,
+        trackingKey: draft.trackingKey,
+        cwd: feature.cwd,
+        kind: 'review_remediation',
+        status: 'pending',
+        attempts: 0,
+        model: draft.model ?? CODEX_LATEST_ALIAS,
+      }));
+      nextPlan = appendFeaturesToMilestone(nextPlan, milestoneId, addedFeatures);
+    }
+
+    const nextGeneration = currentGeneration + 1;
+    const milestoneForReviews = nextPlan.milestones.find((item) => item.id === milestoneId);
+    const reviewBaseCount = milestoneForReviews?.features.length ?? 0;
+    const addedReviewFeatures: Feature[] = [
+      {
+        id: `${milestoneId}-f${reviewBaseCount + 1}`,
+        description: 'Re-run final product review after remediation',
+        cwd: feature.cwd,
+        kind: 'review',
+        reviewType: 'product',
+        reviewGeneration: nextGeneration,
+        status: 'pending',
+        attempts: 0,
+        model: CODEX_LATEST_ALIAS,
+      },
+      {
+        id: `${milestoneId}-f${reviewBaseCount + 2}`,
+        description: 'Re-run final code review after remediation',
+        kind: 'review',
+        reviewType: 'code',
+        reviewGeneration: nextGeneration,
+        status: 'pending',
+        attempts: 0,
+        model: CODEX_LATEST_ALIAS,
+      },
+    ];
+    nextPlan = appendFeaturesToMilestone(nextPlan, milestoneId, addedReviewFeatures);
+
+    return {
+      plan: nextPlan,
+      addedFeatures,
+      updatedFeatures,
+      addedReviewFeatures,
+    };
+  }
+
+  private applyValidationFollowUps(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    followUps: Array<{
+      description: string;
+      trackingKey?: string;
+      model?: string;
+    }>
+  ): {
+    plan: MissionPlan;
+    addedFeatures: Feature[];
+    updatedFeatures: Feature[];
+  } {
+    const milestone = missionPlan.milestones.find((item) => item.id === milestoneId);
+    if (!milestone || followUps.length === 0) {
+      return {
+        plan: missionPlan,
+        addedFeatures: [],
+        updatedFeatures: [],
+      };
+    }
+
+    const updatedFeatures: Feature[] = [];
+    const features = milestone.features.map((feature) => ({ ...feature }));
+    const appendDrafts: Array<{ description: string; trackingKey?: string; model?: string }> = [];
+
+    for (const draft of followUps) {
+      const trackingKey = draft.trackingKey?.trim();
+      const matchIndex = trackingKey
+        ? features.findIndex((feature) =>
+          feature.trackingKey === trackingKey
+          && (feature.status === 'pending' || feature.status === 'in_progress' || feature.status === 'failed')
+        )
+        : -1;
+
+      if (matchIndex >= 0) {
+        const existing = features[matchIndex];
+        const merged: Feature = {
+          ...existing,
+          description: this.pickMoreSpecificFeatureDescription(existing.description, draft.description),
+          trackingKey: existing.trackingKey ?? trackingKey,
+          model: existing.model ?? normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+          status: existing.status === 'failed' ? 'pending' : existing.status,
+        };
+        features[matchIndex] = merged;
+        updatedFeatures.push(merged);
+        continue;
+      }
+
+      appendDrafts.push({
+        description: draft.description,
+        trackingKey,
+        model: normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+      });
+    }
+
+    let nextPlan = this.replaceMilestone(missionPlan, milestoneId, (current) => ({
+      ...current,
+      features,
+    }));
+
+    if (appendDrafts.length === 0) {
+      return {
+        plan: nextPlan,
+        addedFeatures: [],
+        updatedFeatures,
+      };
+    }
+
+    const milestoneForAppend = nextPlan.milestones.find((item) => item.id === milestoneId);
+    const baseCount = milestoneForAppend?.features.length ?? 0;
+    const addedFeatures: Feature[] = appendDrafts.map((draft, index) => ({
+      id: `${milestoneId}-f${baseCount + index + 1}`,
+      description: draft.description,
+      trackingKey: draft.trackingKey,
+      kind: 'implementation',
+      status: 'pending',
+      attempts: 0,
+      model: draft.model ?? CODEX_LATEST_ALIAS,
+    }));
+
+    nextPlan = appendFeaturesToMilestone(nextPlan, milestoneId, addedFeatures);
+    return {
+      plan: nextPlan,
+      addedFeatures,
+      updatedFeatures,
+    };
+  }
+
+  private pickMoreSpecificFeatureDescription(left: string, right: string): string {
+    const normalizedLeft = left.trim();
+    const normalizedRight = right.trim();
+    return normalizedRight.length > normalizedLeft.length ? normalizedRight : normalizedLeft;
+  }
+
   private async promptPlanApproval(): Promise<boolean> {
     if (this.config.runtimeUIMode === 'headless') {
       const promptMessage = '承認待ち: `melos approve` で承認 / `melos reject` で差し戻し / `melos cancel` で中止';
@@ -1332,6 +2705,7 @@ export class Orchestrator {
   private ensureMelosDir(): void {
     mkdirSync(this.config.melosDir, { recursive: true });
     mkdirSync(join(this.config.melosDir, 'validations'), { recursive: true });
+    mkdirSync(join(this.config.melosDir, 'reviews'), { recursive: true });
   }
 
   private emitEvent(
@@ -1340,11 +2714,14 @@ export class Orchestrator {
     payload: Record<string, unknown>
   ): void {
     const iteration = this.state.missionPlan?.totalIterations ?? this.state.iteration;
+    const enrichedPayload = this.config.runIdentity
+      ? { ...payload, runIdentity: this.config.runIdentity }
+      : payload;
     const event = this.eventLog.emit({
       type,
       agent,
       iteration,
-      payload,
+      payload: enrichedPayload,
     });
     this.kernelState = reduceMissionEvent(this.kernelState, event);
     this.kernelState.missionPlan = this.state.missionPlan;
@@ -1353,7 +2730,7 @@ export class Orchestrator {
   }
 
   private scheduleStatusRefresh(): void {
-    if (!this.config.onStatusUpdate || !this.state.missionPlan) {
+    if (!this.config.onStatusUpdate) {
       return;
     }
     if (this.statusRefreshTimer) {
@@ -1366,32 +2743,80 @@ export class Orchestrator {
     this.statusRefreshTimer.unref();
   }
 
-  private startManagerHeartbeat(input: {
-    phase: 'planning' | 'briefing' | 'followup';
+  private recordValidationEvidence(milestoneId: string, checks: ValidationCheckResult[]): void {
+    if (checks.length === 0) {
+      return;
+    }
+
+    const nextMilestoneEvidence = {
+      ...(this.kernelState.validationEvidence?.[milestoneId] ?? {}),
+    };
+    for (const check of checks) {
+      nextMilestoneEvidence[check.checkId] = {
+        ...check,
+        failure: check.failure
+          ? {
+            ...check.failure,
+            affectedFiles: [...check.failure.affectedFiles],
+            errorMessages: [...check.failure.errorMessages],
+          }
+          : undefined,
+      };
+    }
+
+    this.kernelState.validationEvidence = {
+      ...(this.kernelState.validationEvidence ?? {}),
+      [milestoneId]: nextMilestoneEvidence,
+    };
+  }
+
+  private emitWorkerWarnings(milestoneId: string, featureId: string, warnings: string[]): void {
+    for (const warning of warnings) {
+      this.emitRuntimeWarning({
+        source: 'worker',
+        milestoneId,
+        featureId,
+        message: warning,
+      });
+    }
+  }
+
+  private emitValidationWarning(input: {
+    milestoneId: string;
+    checkId: string;
+    message: string;
+  }): void {
+    this.emitRuntimeWarning({
+      source: 'validation',
+      milestoneId: input.milestoneId,
+      checkId: input.checkId,
+      message: input.message,
+    });
+  }
+
+  private emitRuntimeWarning(input: {
+    source: RuntimeWarningSource;
     message: string;
     milestoneId?: string;
     featureId?: string;
+    checkId?: string;
   }): void {
-    this.stopManagerHeartbeat();
-    const startedAt = Date.now();
-    this.managerHeartbeatTimer = setInterval(() => {
-      const elapsedSec = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
-      this.emitEvent('manager_decision', 'manager', {
-        phase: input.phase,
-        milestoneId: input.milestoneId,
-        featureId: input.featureId,
-        message: `${input.message} (${elapsedSec}s elapsed)`,
-      });
-    }, 5_000);
-    this.managerHeartbeatTimer.unref();
-  }
-
-  private stopManagerHeartbeat(): void {
-    if (!this.managerHeartbeatTimer) {
+    const message = input.message.trim();
+    if (message.length === 0) {
       return;
     }
-    clearInterval(this.managerHeartbeatTimer);
-    this.managerHeartbeatTimer = null;
+
+    this.emitEvent(
+      'warning_emitted',
+      input.source === 'worker' ? 'worker' : 'orchestrator',
+      {
+        source: input.source,
+        message,
+        milestoneId: input.milestoneId,
+        featureId: input.featureId,
+        checkId: input.checkId,
+      }
+    );
   }
 
   private async emitStatusUpdate(): Promise<void> {
@@ -1405,6 +2830,7 @@ export class Orchestrator {
 
   private buildMissionControlState(missionPlan: MissionPlan | null): MissionControlState {
     const assignments = this.modelRouter.getAssignments();
+    const defaultWorkerModel = normalizeModelName(assignments.worker.model) ?? CODEX_LATEST_ALIAS;
     const elapsedLabel = formatElapsed(this.state.startedAt);
     const activeBranch = this.state.gitStrategy?.activeBranch
       ?? (getCurrentBranch(this.config.cwd) || null);
@@ -1449,7 +2875,7 @@ export class Orchestrator {
         managerLog: (this.kernelState.managerLog ?? []).slice(-120),
         workerRuns,
         modelAssignments: assignments,
-        tokenUsage: this.tokenTracker.getSnapshot(),
+        reviewStatus: buildReviewStatus(this.state.latestReviewReport, null),
         pendingPrompt: this.pendingPrompt,
       };
     }
@@ -1458,13 +2884,17 @@ export class Orchestrator {
       id: milestone.id,
       title: milestone.title,
       status: milestone.status,
-      order: milestone.order,
-      features: milestone.features.map((feature) => ({
-        id: feature.id,
-        description: feature.description,
-        status: feature.status,
-        attempts: feature.attempts,
-      })),
+      features: milestone.features.map((feature) => {
+        const modelState = resolveFeatureModelState(feature, defaultWorkerModel);
+        return {
+          id: feature.id,
+          description: feature.description,
+          status: feature.status,
+          attempts: feature.attempts,
+          model: modelState.model,
+          modelStateSource: modelState.source,
+        };
+      }),
     }));
 
     const totalFeatures = missionPlan.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
@@ -1482,7 +2912,7 @@ export class Orchestrator {
       missionTitle: missionPlan.mission.goal,
       missionState: missionPlan.state,
       prdPreviewLines: buildPrdPreviewLines(this.state.prd),
-      taskPreviewLines: buildTaskPreviewLines(missionPlan),
+      taskPreviewLines: buildTaskPreviewLines(missionPlan, defaultWorkerModel),
       activity,
       elapsedLabel,
       progressLabel,
@@ -1497,7 +2927,7 @@ export class Orchestrator {
       managerLog: (this.kernelState.managerLog ?? []).slice(-120),
       workerRuns,
       modelAssignments: assignments,
-      tokenUsage: this.tokenTracker.getSnapshot(),
+      reviewStatus: buildReviewStatus(this.state.latestReviewReport, missionPlan.activeFeatureId),
       pendingPrompt: this.pendingPrompt,
     };
   }
@@ -1515,9 +2945,16 @@ export class Orchestrator {
       case 'awaiting_approval':
         return 'Plan ready. Waiting for approval.';
       case 'running':
-        return missionPlan.activeFeatureId
-          ? `Running ${missionPlan.activeFeatureId}...`
-          : 'Running mission iteration...';
+        if (missionPlan.activeFeatureId) {
+          const activeReviewFeature = missionPlan.milestones
+            .flatMap((milestone) => milestone.features)
+            .find((feature) => feature.id === missionPlan.activeFeatureId && feature.kind === 'review');
+          if (activeReviewFeature) {
+            return `Running ${formatReviewLabel(activeReviewFeature)}...`;
+          }
+          return `Running ${missionPlan.activeFeatureId}...`;
+        }
+        return 'Running mission iteration...';
       case 'paused':
         return 'Mission paused. Press R to resume.';
       case 'completed':
@@ -1578,6 +3015,7 @@ export class Orchestrator {
   }
 
   private async persistRuntimeState(): Promise<void> {
+    this.kernelState.gitStrategy = this.state.gitStrategy;
     await saveSnapshot(this.config.melosDir, {
       seq: this.eventLog.getCurrentSeq(),
       savedAt: new Date().toISOString(),
@@ -1599,6 +3037,15 @@ export class Orchestrator {
     await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf-8');
   }
 
+  private async persistReviewReport(report: ReviewReport): Promise<void> {
+    const path = join(
+      this.config.melosDir,
+      'reviews',
+      `${report.featureId}.json`
+    );
+    await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf-8');
+  }
+
   private resolveMissionId(): string {
     if (this.config.missionId && this.config.missionId.trim().length > 0) {
       return this.config.missionId.trim();
@@ -1616,6 +3063,28 @@ export class Orchestrator {
         .filter((feature) => feature.status === 'done' || feature.status === 'skipped')
         .map((feature) => `- [x] ${feature.id}: ${feature.description}`)
     );
+    const warnings = uniqueRuntimeWarnings(this.kernelState.warnings ?? [])
+      .map((warning) => `- ${formatRuntimeWarningRecord(warning)}`);
+    const latestReview = this.state.latestReviewReport;
+    const reviewLines = latestReview
+      ? [
+        `Last review: ${latestReview.reviewType} g${latestReview.generation} (${latestReview.passed ? 'passed' : 'failed'})`,
+        `Summary: ${latestReview.summary}`,
+        `Blocking findings: ${latestReview.blockingFindingCount}`,
+      ]
+      : ['No final review report'];
+    const gitStrategy = this.state.gitStrategy;
+    const gitLines = gitStrategy
+      ? [
+        `Base branch: ${gitStrategy.config.baseBranch}`,
+        `Mission branch: ${gitStrategy.missionBranch ?? '-'}`,
+        `Active branch: ${gitStrategy.activeBranch ?? '-'}`,
+        `Pull request: ${gitStrategy.pullRequest ? `${gitStrategy.pullRequest.url} (${gitStrategy.pullRequest.action})` : '-'}`,
+        `Quiet until: ${gitStrategy.quietUntil ?? '-'}`,
+        `Last external activity: ${gitStrategy.lastExternalActivityAt ?? '-'}`,
+        `Handled feedback count: ${gitStrategy.handledFeedbackIds.length}`,
+      ]
+      : ['Git strategy disabled'];
 
     const content = [
       '# Melos Mission Handoff',
@@ -1634,9 +3103,17 @@ export class Orchestrator {
         ? `Last report: ${this.state.latestValidationReport.milestoneId} attempt ${this.state.latestValidationReport.attempt} (${this.state.latestValidationReport.passed ? 'passed' : 'failed'})`
         : 'No validation report',
       '',
-      '## Token Usage',
+      '## Final Review',
       '',
-      `Estimated cost: $${this.tokenTracker.getEstimatedCost().toFixed(4)}`,
+      ...reviewLines,
+      '',
+      '## Git / Pull Request',
+      '',
+      ...gitLines,
+      '',
+      '## Warnings',
+      '',
+      ...(warnings.length > 0 ? warnings : ['- none']),
     ].join('\n');
 
     const handoffPath = join(this.config.cwd, 'HANDOFF.md');
@@ -1686,7 +3163,10 @@ function buildPrdPreviewLines(prd: string | null): string[] {
   return rawLines.map((line) => line.replace(/\t/g, '  '));
 }
 
-function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
+function buildTaskPreviewLines(
+  missionPlan: MissionPlan,
+  defaultWorkerModel: string
+): string[] {
   const lines: string[] = [];
   lines.push('# Structured TASK View');
   lines.push(`state=${missionPlan.state}`);
@@ -1701,15 +3181,23 @@ function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
     lines.push(`${asMilestoneCheckbox(milestone.status)} ${milestone.id} ${milestone.title} [${milestone.status}]`);
     for (const feature of milestone.features) {
       const activeMark = missionPlan.activeFeatureId === feature.id ? '>' : ' ';
+      const modelState = resolveFeatureModelState(feature, defaultWorkerModel);
+      const badge = toFeatureModelBadge(feature, modelState.source);
+      const reviewMeta = feature.kind === 'review'
+        ? ` [review:${feature.reviewType ?? 'unknown'} g${feature.reviewGeneration ?? 1}]`
+        : feature.kind === 'qa'
+          ? ' [qa]'
+        : feature.kind === 'review_remediation'
+          ? ' [review-remediation]'
+          : '';
       lines.push(
-        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}] attempts=${feature.attempts} ${feature.description}`
+        `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}]${reviewMeta} [${badge}:${resolveDisplayModel(modelState.model)}] attempts=${feature.attempts} ${feature.description}`
       );
     }
     const validationChecks = [
       ...milestone.validationContract.staticChecks,
       ...milestone.validationContract.testSuites,
-      ...(milestone.validationContract.e2eChecks ?? []),
-      ...(milestone.validationContract.manualSteps ?? []),
+      ...(milestone.validationContract.qaChecks ?? []),
     ];
     if (validationChecks.length > 0) {
       lines.push('  validation checks:');
@@ -1722,8 +3210,19 @@ function buildTaskPreviewLines(missionPlan: MissionPlan): string[] {
           : null;
         const actionLabel = command
           ? command
-          : (check.type === 'manual' ? 'manual step (follow description)' : 'command not specified');
+          : (check.type === 'manual' || check.type === 'e2e'
+              ? 'manual step (follow description)'
+              : check.type === 'browser'
+                ? 'browser QA (worker evidence required)'
+                : 'command not specified');
         lines.push(`    - [${check.passed ? 'x' : ' '}] ${check.id} (${check.type}) ${description} :: ${actionLabel}`);
+      }
+      const qaChecks = milestone.validationContract.qaChecks ?? [];
+      if (qaChecks.length > 0) {
+        const qaPassed = qaChecks.filter((check) => check.passed).length;
+        const qaFailed = qaChecks.filter((check) => !check.passed && check.failureCount > 0).length;
+        const qaPending = qaChecks.length - qaPassed - qaFailed;
+        lines.push(`  qa summary: total=${qaChecks.length} passed=${qaPassed} failed=${qaFailed} pending=${qaPending}`);
       }
     }
     lines.push('');
@@ -1736,10 +3235,167 @@ function buildTaskPlanningLines(): string[] {
   return [
     '# TASK generation in progress',
     '',
+    'TASK.json has not been created yet.',
     'Manager is reading PRD.md and generating milestones/features/validation contracts.',
-    'No default placeholder task is shown during planning.',
     'TASK.json preview will appear here once the mission plan is generated.',
   ];
+}
+
+function evaluateBrowserValidationCheck(
+  cwd: string,
+  check: ValidationCheck,
+  evidence: ValidationCheckResult | undefined
+): ValidationCheckResult {
+  if (!evidence) {
+    return createBrowserValidationFailure(check.id, 'browser validation was not reported by the worker', [
+      check.description,
+    ]);
+  }
+
+  if (evidence.passed === false) {
+    return {
+      ...evidence,
+      checkId: check.id,
+      output: evidence.output ?? 'browser validation reported failure',
+    };
+  }
+
+  if (typeof evidence.warning === 'string' && evidence.warning.trim().length > 0) {
+    return createBrowserValidationFailure(check.id, 'browser validation reported warning', [
+      evidence.warning.trim(),
+    ], {
+      ...evidence,
+      warning: evidence.warning.trim(),
+    });
+  }
+
+  if (!evidence.runner || evidence.runner.trim().length === 0) {
+    return createBrowserValidationFailure(check.id, 'browser validation did not report a runner', [
+      check.description,
+    ], evidence);
+  }
+
+  if (check.requiredRunner && evidence.runner !== check.requiredRunner) {
+    return createBrowserValidationFailure(check.id, `browser validation used unexpected runner: ${evidence.runner}`, [
+      `expected runner: ${check.requiredRunner}`,
+    ], evidence);
+  }
+
+  const missingArtifacts = getMissingBrowserArtifacts(check, evidence);
+  if (missingArtifacts.length > 0) {
+    return createBrowserValidationFailure(check.id, 'browser validation is missing required evidence', missingArtifacts, evidence);
+  }
+
+  const missingPaths = getMissingBrowserArtifactPaths(cwd, evidence);
+  if (missingPaths.length > 0) {
+    return createBrowserValidationFailure(check.id, 'browser validation reported artifact paths that do not exist', missingPaths, evidence);
+  }
+
+  return {
+    ...evidence,
+    checkId: check.id,
+    passed: true,
+    output: evidence.output ?? `browser validation passed via ${evidence.runner}`,
+  };
+}
+
+function createBrowserValidationFailure(
+  checkId: string,
+  summary: string,
+  errorMessages: string[],
+  base?: ValidationCheckResult
+): ValidationCheckResult {
+  return {
+    ...base,
+    checkId,
+    passed: false,
+    output: base?.output ?? summary,
+    failure: {
+      summary,
+      affectedFiles: [],
+      errorMessages,
+    },
+  };
+}
+
+function getMissingBrowserArtifacts(check: ValidationCheck, evidence: ValidationCheckResult): string[] {
+  const requiredArtifacts = check.requiredArtifacts && check.requiredArtifacts.length > 0
+    ? check.requiredArtifacts
+    : undefined;
+  const available = new Set<string>();
+
+  if (hasNonEmptyValue(evidence.screenshotPath) || hasNonEmptyValue(evidence.screenshotUrl)) {
+    available.add('screenshot');
+  }
+  if (hasNonEmptyValue(evidence.videoPath) || hasNonEmptyValue(evidence.videoUrl)) {
+    available.add('video');
+  }
+
+  if (!requiredArtifacts) {
+    return available.size > 0
+      ? []
+      : ['expected at least one browser artifact: screenshot or video'];
+  }
+
+  return requiredArtifacts
+    .filter((artifact) => !available.has(artifact))
+    .map((artifact) => `missing ${artifact}`);
+}
+
+function getMissingBrowserArtifactPaths(cwd: string, evidence: ValidationCheckResult): string[] {
+  const missing: string[] = [];
+
+  if (hasNonEmptyValue(evidence.screenshotPath) && !existsSync(resolveArtifactPath(cwd, evidence.screenshotPath))) {
+    missing.push(`screenshotPath not found: ${evidence.screenshotPath}`);
+  }
+  if (hasNonEmptyValue(evidence.videoPath) && !existsSync(resolveArtifactPath(cwd, evidence.videoPath))) {
+    missing.push(`videoPath not found: ${evidence.videoPath}`);
+  }
+
+  return missing;
+}
+
+function resolveArtifactPath(cwd: string, artifactPath: string): string {
+  return isAbsolute(artifactPath) ? artifactPath : join(cwd, artifactPath);
+}
+
+function hasNonEmptyValue(value: string | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+type FeatureModelSource = 'explicit' | 'default';
+
+interface FeatureModelState {
+  model: string;
+  engine: ModelEngine;
+  source: FeatureModelSource;
+}
+
+function resolveFeatureModelState(
+  feature: Pick<Feature, 'model'>,
+  defaultModel: string
+): FeatureModelState {
+  const explicitModel = normalizeModelName(feature.model);
+  if (explicitModel) {
+    return {
+      model: explicitModel,
+      engine: resolveModelEngine(explicitModel),
+      source: 'explicit',
+    };
+  }
+
+  return {
+    model: normalizeModelName(defaultModel) ?? CODEX_LATEST_ALIAS,
+    engine: resolveModelEngine(defaultModel),
+    source: 'default',
+  };
+}
+
+function toFeatureModelBadge(
+  feature: Pick<Feature, 'model'>,
+  source: FeatureModelSource
+): 'E' | 'D' {
+  return feature.model || source === 'explicit' ? 'E' : 'D';
 }
 
 function asFeatureCheckbox(status: Feature['status']): string {
@@ -1771,6 +3427,14 @@ function asMilestoneCheckbox(status: Milestone['status']): string {
   }
 }
 
+function formatReviewLabel(feature: Pick<Feature, 'description' | 'reviewType' | 'reviewGeneration'>): string {
+  const generation = feature.reviewGeneration ?? 1;
+  if (feature.reviewType) {
+    return `${feature.reviewType} review g${generation}`;
+  }
+  return truncateMessage(feature.description, 80);
+}
+
 function formatElapsed(startedAt: Date): string {
   const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000));
   const hours = Math.floor(elapsedSeconds / 3600);
@@ -1780,6 +3444,24 @@ function formatElapsed(startedAt: Date): string {
     return `${hours}h ${minutes}m`;
   }
   return `${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+}
+
+function buildReviewStatus(
+  reviewReport: ReviewReport | null,
+  activeFeatureId: string | null
+): MissionControlState['reviewStatus'] {
+  if (!reviewReport) {
+    return null;
+  }
+  return {
+    reviewType: reviewReport.reviewType,
+    generation: reviewReport.generation,
+    activeFeatureId,
+    latestFindingCount: reviewReport.findings.length,
+    blockingFindingCount: reviewReport.blockingFindingCount,
+    passed: reviewReport.passed,
+    summary: reviewReport.summary,
+  };
 }
 
 function computeDurationLabel(startedAt: string, endedAt?: string): string {
@@ -1796,6 +3478,56 @@ function truncateMessage(value: string, maxLength: number): string {
     return value;
   }
   return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function createBufferedProgressEmitter(
+  emitLine: (line: string) => void,
+  maxLength = 180
+): {
+  push: (chunk: string) => void;
+  flush: () => void;
+} {
+  let buffer = '';
+
+  const emitBufferedLine = (line: string): void => {
+    const normalized = line.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').trim();
+    if (!normalized) {
+      return;
+    }
+    const wrapped = wrapLogText(normalized, maxLength, 8);
+    if (wrapped.length === 0) {
+      return;
+    }
+    emitLine(wrapped.join('\n'));
+  };
+
+  const flushLongBuffer = (): void => {
+    while (buffer.trim().length > maxLength) {
+      const splitAt = findStreamingSplitIndex(buffer, maxLength);
+      const prefix = buffer.slice(0, splitAt);
+      buffer = buffer.slice(splitAt).trimStart();
+      emitBufferedLine(prefix);
+    }
+  };
+
+  return {
+    push(chunk: string): void {
+      if (!chunk) {
+        return;
+      }
+      buffer += chunk.replace(/\r/g, '\n');
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        emitBufferedLine(line);
+      }
+      flushLongBuffer();
+    },
+    flush(): void {
+      emitBufferedLine(buffer);
+      buffer = '';
+    },
+  };
 }
 
 function truncateLines(lines: string[], maxLines: number): string[] {
@@ -1880,10 +3612,39 @@ function normalizeStreamingText(value: string): string | null {
   if (!compact) {
     return null;
   }
-  return truncateMessage(compact, 180);
+  return compact;
+}
+
+function findStreamingSplitIndex(value: string, maxLength: number): number {
+  const preferred = [
+    value.lastIndexOf('. ', maxLength),
+    value.lastIndexOf('。', maxLength),
+    value.lastIndexOf('、', maxLength),
+    value.lastIndexOf(', ', maxLength),
+    value.lastIndexOf(' ', maxLength),
+  ].find((index) => index >= Math.floor(maxLength * 0.55));
+
+  if (preferred === undefined || preferred < 0) {
+    return maxLength;
+  }
+  return preferred + (value[preferred] === ' ' ? 0 : 1);
+}
+
+interface AgentEventLogDetail {
+  kind: string;
+  message: string;
+  detailLines?: string[];
 }
 
 export function formatAgentEventDetail(method: string, params: unknown): string | null {
+  const detail = extractAgentEventLogDetail(method, params);
+  if (!detail) {
+    return null;
+  }
+  return [`[${detail.kind}] ${detail.message}`, ...(detail.detailLines ?? [])].join('\n');
+}
+
+function extractAgentEventLogDetail(method: string, params: unknown): AgentEventLogDetail | null {
   const safeMethod = method.trim();
   if (!safeMethod) {
     return null;
@@ -1893,23 +3654,33 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   if (safeMethodLower === 'manager/fallback') {
     const reason = extractString(params, 'reason');
     const detail = extractString(params, 'detail');
+    const outputPreview = extractString(params, 'outputPreview');
     if (reason && detail) {
-      return `[FALLBACK] ${reason} (${truncateMessage(detail, 120)})`;
+      return { kind: 'FALLBACK', message: `${reason} (${detail})` };
+    }
+    if (reason && outputPreview) {
+      return { kind: 'FALLBACK', message: `${reason} (${outputPreview})` };
     }
     if (reason) {
-      return `[FALLBACK] ${reason}`;
+      return { kind: 'FALLBACK', message: reason };
     }
-    return '[FALLBACK] manager fallback triggered';
+    return { kind: 'FALLBACK', message: 'manager fallback triggered' };
+  }
+
+  if (safeMethodLower.endsWith('/summarytextdelta')) {
+    const delta = extractString(params, 'delta');
+    const normalized = delta ? normalizeStreamingText(delta) : null;
+    return normalized && isMeaningfulLogFragment(normalized) ? { kind: 'THINK', message: normalized } : null;
+  }
+  if (safeMethodLower.includes('reasoning')) {
+    return null;
   }
 
   if (
-    safeMethodLower.includes('token_count')
-    || safeMethodLower.includes('ratelimits')
-    || safeMethodLower.includes('thread/tokenusage')
+    safeMethodLower.includes('ratelimits')
     || safeMethodLower.includes('agent_message_delta')
     || safeMethodLower.includes('agent_message_content_delta')
     || safeMethodLower.includes('agentmessage/delta')
-    || safeMethodLower.includes('reasoning')
     || safeMethodLower.includes('/task_complete')
     || safeMethodLower.includes('/turn/completed')
     || safeMethodLower.includes('/mcp_startup')
@@ -1926,35 +3697,30 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     const type = normalizeItemType(extractString(item, 'type') ?? '');
     if (type === 'commandexecution') {
       const command = extractString(item, 'command');
-      return command ? `[BASH] ${truncateMessage(command, 120)}` : '[BASH] (command)';
+      return { kind: 'BASH', message: command?.trim() || '(command)' };
     }
     if (type === 'fileread') {
       const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
       if (!filePath) {
-        return '[READ] (file)';
+        return { kind: 'READ', message: '(file)' };
       }
       const limit = extractNumber(item, 'limit');
-      return limit !== null ? `[READ] ${filePath} (${limit} lines)` : `[READ] ${filePath}`;
+      return { kind: 'READ', message: limit !== null ? `${filePath} (${limit} lines)` : filePath };
     }
     if (type === 'filewrite' || type === 'fileedit') {
       const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
-      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
+      return { kind: 'WRITE', message: filePath ?? '(file)' };
     }
     if (type === 'filechange') {
-      const filePath = extractFirstFileChangePath(item);
-      const summary = extractFileChangeSummary(item);
-      if (summary) {
-        return `[WRITE] ${summary.path} (+${summary.added} -${summary.removed})`;
-      }
-      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
+      return describeFileChangeLogDetail(item, 'WRITE');
     }
     if (type === 'mcptoolcall') {
       const server = extractString(item, 'server');
       const tool = extractString(item, 'tool');
       if (server && tool) {
-        return `[TOOL] ${server}/${tool}`;
+        return { kind: 'TOOL', message: `${server}/${tool}` };
       }
-      return tool ? `[TOOL] ${tool}` : null;
+      return tool ? { kind: 'TOOL', message: tool } : null;
     }
     return null;
   }
@@ -1973,23 +3739,18 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
         exitCode !== null ? `exit=${exitCode}` : null,
         durationMs !== null ? `${durationMs}ms` : null,
       ].filter((v): v is string => v !== null);
-      return parts.length > 0 ? `[DONE] ${parts.join(' ')}` : '[DONE] command finished';
+      return { kind: 'DONE', message: parts.length > 0 ? parts.join(' ') : 'command finished' };
     }
     if (type === 'filechange') {
-      const summary = extractFileChangeSummary(item);
-      if (summary) {
-        return `[DONE] write ${summary.path} (+${summary.added} -${summary.removed})`;
-      }
-      const filePath = extractFirstFileChangePath(item);
-      return filePath ? `[DONE] write ${filePath}` : '[DONE] write completed';
+      return describeFileChangeLogDetail(item, 'DONE');
     }
     if (type === 'mcptoolcall') {
       const tool = extractString(item, 'tool');
       const error = extractString(item, 'error');
       if (error) {
-        return tool ? `[ERR] tool failed ${tool}` : '[ERR] tool failed';
+        return { kind: 'ERR', message: tool ? `tool failed ${tool}` : 'tool failed' };
       }
-      return tool ? `[DONE] tool completed ${tool}` : '[DONE] tool completed';
+      return { kind: 'DONE', message: tool ? `tool completed ${tool}` : 'tool completed' };
     }
     return null;
   }
@@ -2001,10 +3762,10 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   if (safeMethod.endsWith('/delta')) {
     const delta = extractString(params, 'delta');
     if (delta && /tool_use_error|sibling tool call errored/i.test(delta)) {
-      return '[ERR] tool call failed';
+      return { kind: 'ERR', message: 'tool call failed' };
     }
     const normalized = delta ? normalizeStreamingText(delta) : null;
-    return normalized && isMeaningfulLogFragment(normalized) ? `[INFO] ${normalized}` : null;
+    return normalized && isMeaningfulLogFragment(normalized) ? { kind: 'INFO', message: normalized } : null;
   }
 
   if (safeMethod.endsWith('/tool_use')) {
@@ -2015,21 +3776,21 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     }
     if (name === 'Bash') {
       const command = extractString(input, 'command');
-      return command ? `[BASH] ${truncateMessage(command, 120)}` : '[BASH] (command)';
+      return { kind: 'BASH', message: command?.trim() || '(command)' };
     }
     if (name === 'Read') {
       const filePath = extractString(input, 'file_path');
       const limit = extractNumber(input, 'limit');
       if (!filePath) {
-        return '[READ] (file)';
+        return { kind: 'READ', message: '(file)' };
       }
-      return limit !== null ? `[READ] ${filePath} (${limit} lines)` : `[READ] ${filePath}`;
+      return { kind: 'READ', message: limit !== null ? `${filePath} (${limit} lines)` : filePath };
     }
     if (name === 'Write' || name === 'Edit') {
       const filePath = extractString(input, 'file_path');
-      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
+      return { kind: 'WRITE', message: filePath ?? '(file)' };
     }
-    return `[TOOL] ${name}`;
+    return { kind: 'TOOL', message: name };
   }
 
   if (safeMethod.endsWith('/tool_result')) {
@@ -2039,7 +3800,7 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     if (!normalized || !isMeaningfulLogFragment(normalized)) {
       return null;
     }
-    return `[INFO] ${normalized}`;
+    return { kind: 'INFO', message: normalized };
   }
 
   if (safeMethod.endsWith('/result')) {
@@ -2049,49 +3810,128 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   return null;
 }
 
-function extractFileChangeSummary(item: Record<string, unknown> | null): { path: string; added: number; removed: number } | null {
-  if (!item) {
-    return null;
+function describeFileChangeLogDetail(
+  item: Record<string, unknown> | null,
+  kind: 'WRITE' | 'DONE'
+): AgentEventLogDetail {
+  const previews = extractFileChangePreviews(item);
+  if (previews.length === 0) {
+    const filePath = extractFirstFileChangePath(item);
+    return {
+      kind,
+      message: filePath
+        ? (kind === 'DONE' ? `write ${filePath}` : filePath)
+        : (kind === 'DONE' ? 'write completed' : '(file)'),
+    };
   }
-  const changes = item.changes;
-  if (!Array.isArray(changes) || changes.length === 0) {
-    return null;
+
+  const totals = previews.reduce((acc, preview) => ({
+    added: acc.added + preview.added,
+    removed: acc.removed + preview.removed,
+  }), { added: 0, removed: 0 });
+
+  if (previews.length === 1) {
+    const preview = previews[0];
+    return {
+      kind,
+      message: kind === 'DONE'
+        ? `write ${preview.path} (+${preview.added} -${preview.removed})`
+        : `${preview.path} (+${preview.added} -${preview.removed})`,
+      detailLines: kind === 'DONE' ? preview.diffLines : undefined,
+    };
   }
-  const first = changes[0];
-  if (!first || typeof first !== 'object' || Array.isArray(first)) {
-    return null;
-  }
-  const firstRecord = first as Record<string, unknown>;
-  const path = typeof firstRecord.path === 'string' ? firstRecord.path : null;
-  if (!path) {
-    return null;
-  }
-  const diff = typeof firstRecord.diff === 'string' ? firstRecord.diff : '';
-  const parsed = parseUnifiedDiffSummary(diff);
+
+  const detailLines = buildMultiFileChangeDetailLines(previews);
   return {
-    path,
-    added: parsed.added,
-    removed: parsed.removed,
+    kind,
+    message: kind === 'DONE'
+      ? `write ${previews.length} files (+${totals.added} -${totals.removed})`
+      : `${previews.length} files (+${totals.added} -${totals.removed})`,
+    detailLines: kind === 'DONE' ? detailLines : undefined,
   };
 }
 
-function parseUnifiedDiffSummary(diff: string): { added: number; removed: number } {
+interface FileChangePreview {
+  path: string;
+  added: number;
+  removed: number;
+  diffLines: string[];
+}
+
+function extractFileChangePreviews(item: Record<string, unknown> | null): FileChangePreview[] {
+  if (!item) {
+    return [];
+  }
+  const changes = item.changes;
+  if (!Array.isArray(changes) || changes.length === 0) {
+    return [];
+  }
+
+  const previews: FileChangePreview[] = [];
+  for (const rawChange of changes) {
+    if (!rawChange || typeof rawChange !== 'object' || Array.isArray(rawChange)) {
+      continue;
+    }
+    const change = rawChange as Record<string, unknown>;
+    const path = typeof change.path === 'string' ? change.path : '(unknown)';
+    const diff = typeof change.diff === 'string' ? change.diff : '';
+    const parsed = parseUnifiedDiffPreview(diff);
+    previews.push({
+      path,
+      added: parsed.added,
+      removed: parsed.removed,
+      diffLines: parsed.lines,
+    });
+  }
+  return previews;
+}
+
+function buildMultiFileChangeDetailLines(previews: FileChangePreview[]): string[] {
+  const lines: string[] = [];
+  const maxFiles = 2;
+  for (const preview of previews.slice(0, maxFiles)) {
+    lines.push(`${preview.path} (+${preview.added} -${preview.removed})`);
+    lines.push(...preview.diffLines);
+  }
+  if (previews.length > maxFiles) {
+    lines.push(`... +${previews.length - maxFiles} more files`);
+  }
+  return lines;
+}
+
+function parseUnifiedDiffPreview(diff: string): { added: number; removed: number; lines: string[] } {
   let added = 0;
   let removed = 0;
+  const lines: string[] = [];
+  let omitted = 0;
+
   for (const rawLine of diff.split('\n')) {
     const line = rawLine.replace(/\r$/, '');
-    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
+    if (line.startsWith('+++') || line.startsWith('---')) {
       continue;
     }
     if (line.startsWith('+')) {
       added += 1;
-      continue;
-    }
-    if (line.startsWith('-')) {
+    } else if (line.startsWith('-')) {
       removed += 1;
     }
+
+    if (!(line.startsWith('@@') || line.startsWith('+') || line.startsWith('-') || line.startsWith(' ') || line.startsWith('\\'))) {
+      continue;
+    }
+
+    if (lines.length < 12) {
+      lines.push(truncateMessage(line, 220));
+    } else {
+      omitted += 1;
+    }
   }
-  return { added, removed };
+
+  if (omitted > 0) {
+    lines.push(`... +${omitted} more diff lines`);
+  }
+
+  return { added, removed, lines };
 }
 
 function extractString(value: unknown, key: string): string | null {
@@ -2219,11 +4059,9 @@ function isRecoverableResumeState(state: MissionState): boolean {
 }
 
 function recoverMissionPlanForResume(plan: MissionPlan): MissionPlan {
-  const now = new Date().toISOString();
   let recovered: MissionPlan = {
     ...plan,
     state: 'running',
-    lastTransitionAt: now,
     milestones: plan.milestones.map((milestone) => ({
       ...milestone,
       status: milestone.status === 'done' || milestone.status === 'skipped'
@@ -2255,6 +4093,17 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
   const progressLog = Array.isArray(kernel.progressLog) ? kernel.progressLog : [];
   const managerLog = Array.isArray(kernel.managerLog) ? kernel.managerLog : [];
   const logEntries = Array.isArray(kernel.logEntries) ? kernel.logEntries : [];
+  const warnings = Array.isArray(kernel.warnings)
+    ? kernel.warnings
+      .map((warning) => normalizeStoredRuntimeWarning(warning))
+      .filter((warning): warning is NonNullable<MissionKernelState['warnings']>[number] => warning !== null)
+    : [];
+  const validationEvidence = normalizeValidationEvidenceMap(kernel.validationEvidence);
+  const featureRetries = Array.isArray(kernel.featureRetries)
+    ? kernel.featureRetries
+      .map((retry) => normalizeStoredFeatureRetry(retry))
+      .filter((retry): retry is FeatureRetryRecord => retry !== null)
+    : [];
 
   return {
     ...base,
@@ -2263,7 +4112,140 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
     progressLog,
     managerLog,
     logEntries,
+    warnings,
+    validationEvidence,
+    latestValidationReport: kernel.latestValidationReport ?? null,
+    featureRetries,
     currentActor: kernel.currentActor ?? 'idle',
-    tokenUsage: kernel.tokenUsage ?? base.tokenUsage,
   };
+}
+
+function normalizeStoredRuntimeWarning(
+  value: unknown
+): NonNullable<MissionKernelState['warnings']>[number] | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const message = typeof record.message === 'string' ? record.message.trim() : '';
+  if (message.length === 0) {
+    return null;
+  }
+
+  const source = record.source === 'worker' || record.source === 'validation' || record.source === 'system'
+    ? record.source
+    : 'system';
+
+  return {
+    timestamp: typeof record.timestamp === 'string' ? record.timestamp : new Date().toISOString(),
+    iteration: typeof record.iteration === 'number' ? Math.max(0, Math.floor(record.iteration)) : 0,
+    source,
+    message,
+    milestoneId: typeof record.milestoneId === 'string' ? record.milestoneId : undefined,
+    featureId: typeof record.featureId === 'string' ? record.featureId : undefined,
+    checkId: typeof record.checkId === 'string' ? record.checkId : undefined,
+    seq: typeof record.seq === 'number' ? record.seq : undefined,
+  };
+}
+
+function normalizeStoredFeatureRetry(value: unknown): FeatureRetryRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const milestoneId = typeof record.milestoneId === 'string' ? record.milestoneId.trim() : '';
+  const featureId = typeof record.featureId === 'string' ? record.featureId.trim() : '';
+  const dueAt = typeof record.dueAt === 'string' ? record.dueAt : '';
+  const reason = typeof record.reason === 'string' ? record.reason.trim() : '';
+  if (milestoneId.length === 0 || featureId.length === 0 || dueAt.length === 0 || reason.length === 0) {
+    return null;
+  }
+
+  return {
+    milestoneId,
+    featureId,
+    nextAttempt: typeof record.nextAttempt === 'number' ? Math.max(1, Math.floor(record.nextAttempt)) : 1,
+    dueAt,
+    lastStatus: record.lastStatus === 'PARTIAL' || record.lastStatus === 'BLOCKED' ? record.lastStatus : 'FAILED',
+    reason,
+    summary: typeof record.summary === 'string' && record.summary.trim().length > 0
+      ? record.summary.trim()
+      : undefined,
+  };
+}
+
+function normalizeValidationEvidenceMap(
+  value: MissionKernelState['validationEvidence']
+): NonNullable<MissionKernelState['validationEvidence']> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const next: NonNullable<MissionKernelState['validationEvidence']> = {};
+  for (const [milestoneId, rawChecks] of Object.entries(value)) {
+    if (!rawChecks || typeof rawChecks !== 'object' || Array.isArray(rawChecks)) {
+      continue;
+    }
+
+    const normalizedChecks: Record<string, ValidationCheckResult> = {};
+    for (const [checkId, rawResult] of Object.entries(rawChecks)) {
+      if (!rawResult || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
+        continue;
+      }
+
+      const result = rawResult as ValidationCheckResult;
+      if (typeof result.passed !== 'boolean') {
+        continue;
+      }
+
+      normalizedChecks[checkId] = {
+        ...result,
+        checkId,
+        output: typeof result.output === 'string' ? result.output : undefined,
+        warning: typeof result.warning === 'string' ? result.warning : undefined,
+        runner: typeof result.runner === 'string' ? result.runner : undefined,
+        screenshotPath: typeof result.screenshotPath === 'string' ? result.screenshotPath : undefined,
+        videoPath: typeof result.videoPath === 'string' ? result.videoPath : undefined,
+        screenshotUrl: typeof result.screenshotUrl === 'string' ? result.screenshotUrl : undefined,
+        videoUrl: typeof result.videoUrl === 'string' ? result.videoUrl : undefined,
+        failure: result.failure
+          ? {
+            ...result.failure,
+            affectedFiles: Array.isArray(result.failure.affectedFiles) ? result.failure.affectedFiles : [],
+            errorMessages: Array.isArray(result.failure.errorMessages) ? result.failure.errorMessages : [],
+          }
+          : undefined,
+      };
+    }
+
+    next[milestoneId] = normalizedChecks;
+  }
+
+  return next;
+}
+
+function uniqueRuntimeWarnings(
+  warnings: NonNullable<MissionKernelState['warnings']>
+): NonNullable<MissionKernelState['warnings']> {
+  const seen = new Set<string>();
+  const next: NonNullable<MissionKernelState['warnings']> = [];
+
+  for (const warning of warnings) {
+    const key = [
+      warning.source,
+      warning.featureId ?? '',
+      warning.milestoneId ?? '',
+      warning.checkId ?? '',
+      warning.message,
+    ].join('\u0000');
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    next.push(warning);
+  }
+
+  return next;
 }

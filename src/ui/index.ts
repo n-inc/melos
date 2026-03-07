@@ -1,6 +1,3 @@
-export * from './display.js';
-export * from './interactive.js';
-export * from './sound.js';
 export * from './tui.js';
 export * from './tui-ansi.js';
 export * from './tui-layout.js';

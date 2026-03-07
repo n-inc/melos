@@ -1,5 +1,6 @@
 import type { TUIView, MissionControlState, ViewPort } from './tui-views.js';
 import { splitColumns, drawBox } from './tui-layout.js';
+import { selectRecentProgressEntries } from './tui-progress.js';
 
 function statusIcon(status: string): string {
   switch (status) {
@@ -41,6 +42,13 @@ export const overviewView: TUIView = {
     const expectedBehaviorLines = activeFeature
       ? wrapByCharCount(activeFeature.description, 42)
       : ['-'];
+    const reviewSummaryLines = state.reviewStatus
+      ? [
+        summaryLine('Review', `${state.reviewStatus.reviewType} g${state.reviewStatus.generation}`),
+        summaryLine('Findings', `${state.reviewStatus.blockingFindingCount}/${state.reviewStatus.latestFindingCount} blocking/total`),
+        summaryLine('Review OK', state.reviewStatus.passed === null ? '-' : state.reviewStatus.passed ? 'yes' : 'no'),
+      ]
+      : [];
     const leftLines = [
       'MISSION SUMMARY',
       `${statusIcon(activeFeature?.status ?? 'pending')} ${activeFeatureLabel}`,
@@ -50,6 +58,7 @@ export const overviewView: TUIView = {
       summaryLine('Activity', state.activity),
       summaryLine('Progress', state.progressLabel),
       summaryLine('Branch', state.activeBranch ?? '-'),
+      ...reviewSummaryLines,
       '',
       'Expected Behavior',
       ...expectedBehaviorLines.map((line) => `  ${line}`),
@@ -67,8 +76,7 @@ export const overviewView: TUIView = {
     }).slice(-maxFeatureRows);
 
     const maxProgressRows = Math.max(3, Math.min(7, viewport.height - 17));
-    const progressLines = state.progressLog
-      .slice(-maxProgressRows)
+    const progressLines = selectRecentProgressEntries(state.progressLog, maxProgressRows)
       .map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
     if (progressLines.length === 0) {
       progressLines.push(state.activity || 'No events yet');
