@@ -27,6 +27,7 @@ export const workersView: TUIView = {
       pendingPrompt: state.pendingPrompt,
       useColor,
       previousActor: null,
+      summarizeExploration: true,
     });
 
     const wrapped = streamLines.flatMap((line) => wrapPlainDisplay(line, width));
@@ -77,6 +78,7 @@ export function computeWorkersScrollMetrics(
     pendingPrompt: state.pendingPrompt,
     useColor: context?.useColor === true,
     previousActor: null,
+    summarizeExploration: true,
   });
   const wrapped = streamLines.flatMap((line) => wrapPlainDisplay(line, width));
   const reserved = 2;

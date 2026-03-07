@@ -12,6 +12,7 @@ import {
 import { createMissionPlan, loadMissionPlan, saveMissionPlan } from '../../state/mission.js';
 import { saveRuntime } from '../../state/runtime.js';
 import { saveSnapshot } from '../../state/snapshot.js';
+import { formatLogStreamLines } from '../../ui/log-stream.js';
 
 describe('cli headless operations', () => {
   let rootDir: string;
@@ -281,6 +282,88 @@ describe('cli headless operations', () => {
       message: '[validation] m1/manual-qa: manual verification was not reported by the worker',
       eventType: 'warning_emitted',
     });
+  });
+
+  it('formats plain logs with exploration summaries without changing JSON entries', async () => {
+    const eventsPath = join(rootDir, '.melos', 'events.jsonl');
+    writeFileSync(
+      eventsPath,
+      [
+        {
+          seq: 1,
+          type: 'manager_decision',
+          timestamp: '2026-03-03T00:00:01.000Z',
+          iteration: 0,
+          agent: 'manager',
+          payload: { message: '[READ] /repo/AGENTS.md (120 lines)' },
+        },
+        {
+          seq: 2,
+          type: 'manager_decision',
+          timestamp: '2026-03-03T00:00:02.000Z',
+          iteration: 0,
+          agent: 'manager',
+          payload: { message: '[BASH] rg -n "studentPageContent|students\\.lp\\.e2e|\\[\\.\\.\\.slug\\]" src tests pages' },
+        },
+        {
+          seq: 3,
+          type: 'manager_decision',
+          timestamp: '2026-03-03T00:00:03.000Z',
+          iteration: 0,
+          agent: 'manager',
+          payload: {
+            message: [
+              '[INFO] 120: studentPageContent.ts',
+              '188: students.lp.e2e.ts',
+              '201: [...slug].tsx',
+            ].join('\n'),
+          },
+        },
+        {
+          seq: 4,
+          type: 'manager_decision',
+          timestamp: '2026-03-03T00:00:04.000Z',
+          iteration: 0,
+          agent: 'manager',
+          payload: { message: 'Manager is preparing briefing for m1-f1 (5s elapsed)' },
+        },
+        {
+          seq: 5,
+          type: 'manager_decision',
+          timestamp: '2026-03-03T00:00:05.000Z',
+          iteration: 0,
+          agent: 'manager',
+          payload: { message: '[INFO] verbose tool output omitted (3797 chars)' },
+        },
+        {
+          seq: 6,
+          type: 'command_executed',
+          timestamp: '2026-03-03T00:00:06.000Z',
+          iteration: 1,
+          agent: 'system',
+          payload: { command: 'npm test', exitCode: 0 },
+        },
+      ].map((event) => JSON.stringify(event)).join('\n') + '\n',
+      'utf-8'
+    );
+
+    const logs = await readMissionLogs(rootDir, {
+      afterSeq: 0,
+      actor: 'all',
+    });
+    const plainLines = formatLogStreamLines(logs.entries, {
+      useColor: false,
+      showSeq: true,
+      showActor: true,
+      summarizeExploration: true,
+    });
+
+    expect(logs.entries).toHaveLength(6);
+    expect(plainLines).toContain('#0001 00:00:01 MANAGER    [EXPLORED] 1 file, 3 searches, 1 omitted output');
+    expect(plainLines).toContain('  │ Read: AGENTS.md');
+    expect(plainLines).toContain('  │ Search: studentPageContent, students.lp.e2e, [...slug]');
+    expect(plainLines).toContain('  │ Notes: 1 progress heartbeat');
+    expect(plainLines).toContain('#0006 00:00:06 WORKER     [BASH] npm test');
   });
 
   it('returns empty logs payload when events.jsonl is missing', async () => {

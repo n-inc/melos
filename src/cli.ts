@@ -223,6 +223,7 @@ export function createProgram(): Command {
               useColor: canUseColor(process.stdout.isTTY === true),
               showSeq: true,
               showActor: true,
+              summarizeExploration: true,
             });
             console.log(lines.join('\n'));
           }

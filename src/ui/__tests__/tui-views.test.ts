@@ -178,7 +178,8 @@ describe('ui/tui views', () => {
     const lines = workersView.render({ width: 100, height: 24 }, createState()).join('\n');
     expect(lines).toContain('NOW RUNNING');
     expect(lines).toContain('SWITCH: PLANNING -> WORKER');
-    expect(lines).toContain('[READ] src/middleware/auth.ts');
+    expect(lines).toContain('[EXPLORED] 1 file');
+    expect(lines).toContain('Read: auth.ts');
     expect(lines).toContain('m2-f3');
     expect(lines).toContain('[BASH] npm test -- auth');
   });

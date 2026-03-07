@@ -129,14 +129,14 @@ melos> Running m1-f2...  (Ctrl+G steer)                                         
 exports[`ui/tui visual snapshots workers frame snapshot 1`] = `
 "● Mission Control  テキスト統計ユーティリティの追加                                      Time 5m 42s
 ● RUNNING [███████████████░░░░░░░░░░░░░░░] 2/4 (50%) | WORKER m1-f2                                 
-NOW RUNNING  WORKER #1  m1-f2  model=gpt-5.4  elapsed=1m 12s  LIVE  Lines 1-5/5
+NOW RUNNING  WORKER #1  m1-f2  model=gpt-5.4  elapsed=1m 12s  LIVE  Lines 1-6/6
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ────────── LOG START: PLANNING ──────────
 09:00:00 [PLAN_CREATED] milestones=2 features=4
 ────────── SWITCH: PLANNING -> WORKER ──────────
-09:00:10 [READ] src/parser.ts
+09:00:10 [EXPLORED] 1 file
+  │ Read: parser.ts
 09:00:11 [BASH] npm test -- parser
-
 
 
 

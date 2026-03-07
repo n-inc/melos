@@ -346,7 +346,8 @@ describe('ui/tui v0.8', () => {
     ui.stop();
 
     expect(rendered).toContain('NOW RUNNING  WORKER');
-    expect(rendered).toContain('[READ] src/a.ts');
+    expect(rendered).toContain('[EXPLORED] 1 file');
+    expect(rendered).toContain('Read: a.ts');
   });
 
   it('pending input allows task/models navigation, but blocks run controls', () => {
