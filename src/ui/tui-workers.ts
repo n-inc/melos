@@ -9,6 +9,15 @@ export interface WorkersViewMetrics {
   maxOffset: number;
 }
 
+interface PreparedWorkersLogView {
+  signature: string;
+  wrapped: string[];
+  availableLogLines: number;
+  maxOffset: number;
+}
+
+let preparedWorkersLogCache: PreparedWorkersLogView | null = null;
+
 export const workersView: TUIView = {
   id: 'workers',
   render(viewport: ViewPort, state: MissionControlState, context): string[] {
@@ -19,21 +28,8 @@ export const workersView: TUIView = {
     const activeActor = resolveDisplayActor(state, lock);
     const nowRunning = buildNowRunningLine(state, activeActor);
     const separator = '─'.repeat(width);
-
-    const entries = filterLogEntriesByLock(state.logEntries, lock);
-    const streamLines = formatLogStreamLines(entries, {
-      lock,
-      switchNotice: context?.sourceSwitchNotice ?? null,
-      pendingPrompt: state.pendingPrompt,
-      useColor,
-      previousActor: null,
-      summarizeExploration: true,
-    });
-
-    const wrapped = streamLines.flatMap((line) => wrapPlainDisplay(line, width));
-    const reserved = 2;
-    const availableLogLines = Math.max(1, viewport.height - reserved);
-    const maxOffset = Math.max(0, wrapped.length - availableLogLines);
+    const prepared = prepareWorkersLogView(viewport, state, context);
+    const { wrapped, availableLogLines, maxOffset } = prepared;
     const safeOffset = scrollOffset >= Number.MAX_SAFE_INTEGER
       ? maxOffset
       : Math.min(scrollOffset, maxOffset);
@@ -69,8 +65,36 @@ export function computeWorkersScrollMetrics(
     useColor?: boolean;
   }
 ): WorkersViewMetrics {
+  const prepared = prepareWorkersLogView(viewport, state, context);
+  return {
+    totalLines: prepared.wrapped.length,
+    availableLogLines: prepared.availableLogLines,
+    maxOffset: prepared.maxOffset,
+  };
+}
+
+function prepareWorkersLogView(
+  viewport: ViewPort,
+  state: MissionControlState,
+  context?: {
+    logSourceLock?: 'auto' | 'worker' | 'manager';
+    sourceSwitchNotice?: string | null;
+    useColor?: boolean;
+  }
+): PreparedWorkersLogView {
   const width = Math.max(40, viewport.width);
+  const height = Math.max(1, viewport.height);
   const lock = context?.logSourceLock ?? 'auto';
+  const signature = buildWorkersLogSignature(width, height, state, {
+    logSourceLock: lock,
+    sourceSwitchNotice: context?.sourceSwitchNotice ?? null,
+    useColor: context?.useColor === true,
+  });
+
+  if (preparedWorkersLogCache?.signature === signature) {
+    return preparedWorkersLogCache;
+  }
+
   const entries = filterLogEntriesByLock(state.logEntries, lock);
   const streamLines = formatLogStreamLines(entries, {
     lock,
@@ -82,12 +106,56 @@ export function computeWorkersScrollMetrics(
   });
   const wrapped = streamLines.flatMap((line) => wrapPlainDisplay(line, width));
   const reserved = 2;
-  const availableLogLines = Math.max(1, viewport.height - reserved);
-  return {
-    totalLines: wrapped.length,
+  const availableLogLines = Math.max(1, height - reserved);
+  const prepared = {
+    signature,
+    wrapped,
     availableLogLines,
     maxOffset: Math.max(0, wrapped.length - availableLogLines),
   };
+  preparedWorkersLogCache = prepared;
+  return prepared;
+}
+
+function buildWorkersLogSignature(
+  width: number,
+  height: number,
+  state: MissionControlState,
+  context: {
+    logSourceLock: 'auto' | 'worker' | 'manager';
+    sourceSwitchNotice: string | null;
+    useColor: boolean;
+  }
+): string {
+  const first = state.logEntries[0];
+  const last = state.logEntries[state.logEntries.length - 1];
+  return [
+    width,
+    height,
+    context.logSourceLock,
+    context.useColor ? '1' : '0',
+    context.sourceSwitchNotice ?? '',
+    state.pendingPrompt ?? '',
+    state.logEntries.length,
+    serializeWorkersLogEdge(first),
+    serializeWorkersLogEdge(last),
+  ].join('\u0001');
+}
+
+function serializeWorkersLogEdge(
+  entry: MissionControlState['logEntries'][number] | undefined
+): string {
+  if (!entry) {
+    return '';
+  }
+  return [
+    entry.seq ?? '-',
+    entry.timestamp,
+    entry.actor,
+    entry.kind,
+    entry.message,
+    entry.detailLines?.length ?? 0,
+  ].join('\u0002');
 }
 
 function resolveDisplayActor(

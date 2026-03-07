@@ -170,6 +170,39 @@ describe('ui/tui views', () => {
     expect(scrolled).toContain('line-9');
   });
 
+  it('refreshes workers view when cloned state keeps the same log count but changes the latest line', () => {
+    const running = createState();
+    running.logEntries = [
+      { timestamp: '2026-02-28T12:00:00.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-1' },
+      { timestamp: '2026-02-28T12:00:01.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-2' },
+      { timestamp: '2026-02-28T12:00:02.000Z', actor: 'worker', kind: 'INFO', message: 'worker-log-3' },
+    ];
+
+    const done = {
+      ...running,
+      currentActor: 'manager' as const,
+      logEntries: [
+        { timestamp: '2026-02-28T12:00:00.000Z', actor: 'worker' as const, kind: 'INFO', message: 'worker-log-1' },
+        { timestamp: '2026-02-28T12:00:01.000Z', actor: 'worker' as const, kind: 'INFO', message: 'worker-log-2' },
+        { timestamp: '2026-02-28T12:00:02.000Z', actor: 'worker' as const, kind: 'DONE', message: 'worker finished cleanly' },
+      ],
+      workerRuns: [
+        {
+          ...running.workerRuns[0]!,
+          status: 'done' as const,
+          durationLabel: '1m 30s',
+        },
+      ],
+    };
+
+    const before = workersView.render({ width: 80, height: 12 }, running).join('\n');
+    const after = workersView.render({ width: 80, height: 12 }, done).join('\n');
+
+    expect(before).toContain('worker-log-3');
+    expect(after).toContain('worker finished cleanly');
+    expect(after).not.toContain('worker-log-3');
+  });
+
   it('renders waiting message when worker has no structured logs yet', () => {
     const state = createState();
     state.workerRuns = [
