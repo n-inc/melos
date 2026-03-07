@@ -94,8 +94,8 @@ try {
 if (!task || typeof task !== 'object' || Array.isArray(task)) {
   pushError('TASK.json must be a MissionPlan object');
 } else {
-  if (task.version !== 2) {
-    pushError(`version must be 2 (received=${String(task.version)})`);
+  if (task.version !== 3) {
+    pushError(`version must be 3 (received=${String(task.version)})`);
   }
 
   if (!task.mission || typeof task.mission !== 'object' || Array.isArray(task.mission)) {
