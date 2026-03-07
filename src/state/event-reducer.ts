@@ -2,7 +2,7 @@ import type { MissionPlan } from './mission.js';
 import type { MissionEvent } from './events.js';
 import type { GitStrategyState } from './git-strategy.js';
 import type { ReviewReport } from './review.js';
-import type { ValidationEvidenceMap } from './validation.js';
+import type { ValidationEvidenceMap, ValidationReport } from './validation.js';
 import { normalizeLogMessage, type LogActor, type UnifiedLogEntry } from './log-entry.js';
 
 export interface WorkerRunState {
@@ -31,6 +31,16 @@ export interface RuntimeWarningRecord {
   seq?: number;
 }
 
+export interface FeatureRetryRecord {
+  milestoneId: string;
+  featureId: string;
+  nextAttempt: number;
+  dueAt: string;
+  lastStatus: 'PARTIAL' | 'FAILED' | 'BLOCKED';
+  reason: string;
+  summary?: string;
+}
+
 export interface MissionKernelState {
   missionPlan: MissionPlan | null;
   iteration: number;
@@ -43,7 +53,9 @@ export interface MissionKernelState {
   gitStrategy: GitStrategyState | null;
   warnings?: RuntimeWarningRecord[];
   validationEvidence?: ValidationEvidenceMap;
+  latestValidationReport?: ValidationReport | null;
   latestReviewReport?: ReviewReport | null;
+  featureRetries?: FeatureRetryRecord[];
 }
 
 export function createInitialKernelState(): MissionKernelState {
@@ -59,7 +71,9 @@ export function createInitialKernelState(): MissionKernelState {
     gitStrategy: null,
     warnings: [],
     validationEvidence: {},
+    latestValidationReport: null,
     latestReviewReport: null,
+    featureRetries: [],
   };
 }
 

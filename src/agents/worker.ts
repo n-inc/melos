@@ -188,8 +188,8 @@ export class WorkerAgent implements Agent {
       .map((check) => {
         const action = typeof check.command === 'string' && check.command.trim().length > 0
           ? check.command.trim()
-          : (check.type === 'manual'
-              ? 'report structured evidence in `checks` if you actually performed the manual step'
+          : (check.type === 'manual' || check.type === 'e2e'
+              ? 'report structured evidence in `checks` if you actually performed the evidence-based step'
               : check.type === 'browser'
                 ? 'report structured browser evidence in `checks` with runner plus screenshot/video paths or URLs'
               : 'no command');
@@ -450,10 +450,12 @@ export class WorkerAgent implements Agent {
       createdAt: new Date().toISOString(),
     };
 
+    let parsedStructuredReport = false;
     const jsonBlock = extractJsonBlock(output);
     if (jsonBlock) {
       try {
         const parsed = JSON.parse(jsonBlock) as Partial<WorkerFeatureReport>;
+        parsedStructuredReport = true;
         if (parsed.status) {
           report.status = parsed.status;
         }
@@ -545,6 +547,12 @@ export class WorkerAgent implements Agent {
       if (report.status === 'SUCCESS' && report.review.findings.some((finding) => isBlockingReviewFinding(finding))) {
         report.status = 'FAILED';
       }
+    }
+
+    if (!input.feature.reviewType && !parsedStructuredReport) {
+      report.status = 'FAILED';
+      report.requestsHelp = true;
+      report.summary = 'worker did not return a structured JSON report';
     }
 
     if (!report.summary) {

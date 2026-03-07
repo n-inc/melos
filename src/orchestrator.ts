@@ -62,6 +62,7 @@ import {
   replayMissionEvents,
   reduceMissionEvent,
   type MissionKernelState,
+  type FeatureRetryRecord,
   createInitialKernelState,
   formatRuntimeWarningRecord,
   type RuntimeWarningSource,
@@ -91,6 +92,17 @@ export interface OrchestratorConfig {
   melosDir: string;
   plannerModel?: string;
   workerModel?: string;
+  execution?: {
+    maxFeatureAttempts?: number;
+    retryInitialDelayMs?: number;
+    retryMaxDelayMs?: number;
+    stallTimeoutMs?: number;
+  };
+  verification?: {
+    requireManualEvidence?: boolean;
+    requireE2EEvidence?: boolean;
+    failOnWorkerWarnings?: boolean;
+  };
   managerEffort?: 'low' | 'medium' | 'high' | 'max';
   workerReasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   interactivePlanning?: boolean;
@@ -129,7 +141,31 @@ interface RuntimeState {
   startedAt: Date;
 }
 
+interface ResolvedExecutionConfig {
+  maxFeatureAttempts: number;
+  retryInitialDelayMs: number;
+  retryMaxDelayMs: number;
+  stallTimeoutMs: number;
+}
+
+interface ResolvedVerificationConfig {
+  requireManualEvidence: boolean;
+  requireE2EEvidence: boolean;
+  failOnWorkerWarnings: boolean;
+}
+
 const MODEL_ROTATION: string[] = getModelRotation();
+const DEFAULT_EXECUTION_CONFIG: ResolvedExecutionConfig = {
+  maxFeatureAttempts: 3,
+  retryInitialDelayMs: 10_000,
+  retryMaxDelayMs: 300_000,
+  stallTimeoutMs: 300_000,
+};
+const DEFAULT_VERIFICATION_CONFIG: ResolvedVerificationConfig = {
+  requireManualEvidence: true,
+  requireE2EEvidence: true,
+  failOnWorkerWarnings: false,
+};
 
 export class Orchestrator {
   private readonly config: OrchestratorConfig;
@@ -138,6 +174,8 @@ export class Orchestrator {
   private readonly modelRouter: ModelRouter;
   private readonly eventLog: EventLog;
   private readonly watchdog: Watchdog;
+  private readonly executionConfig: ResolvedExecutionConfig;
+  private readonly verificationConfig: ResolvedVerificationConfig;
 
   private state: RuntimeState;
   private kernelState: MissionKernelState;
@@ -155,6 +193,17 @@ export class Orchestrator {
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
+    this.executionConfig = {
+      maxFeatureAttempts: config.execution?.maxFeatureAttempts ?? DEFAULT_EXECUTION_CONFIG.maxFeatureAttempts,
+      retryInitialDelayMs: config.execution?.retryInitialDelayMs ?? DEFAULT_EXECUTION_CONFIG.retryInitialDelayMs,
+      retryMaxDelayMs: config.execution?.retryMaxDelayMs ?? DEFAULT_EXECUTION_CONFIG.retryMaxDelayMs,
+      stallTimeoutMs: config.execution?.stallTimeoutMs ?? DEFAULT_EXECUTION_CONFIG.stallTimeoutMs,
+    };
+    this.verificationConfig = {
+      requireManualEvidence: config.verification?.requireManualEvidence ?? DEFAULT_VERIFICATION_CONFIG.requireManualEvidence,
+      requireE2EEvidence: config.verification?.requireE2EEvidence ?? DEFAULT_VERIFICATION_CONFIG.requireE2EEvidence,
+      failOnWorkerWarnings: config.verification?.failOnWorkerWarnings ?? DEFAULT_VERIFICATION_CONFIG.failOnWorkerWarnings,
+    };
 
     this.modelRouter = new ModelRouter({
       assignments: {
@@ -195,7 +244,9 @@ export class Orchestrator {
     this.worker = new WorkerAgent(workerConfig);
 
     this.eventLog = new EventLog({ melosDir: config.melosDir });
-    this.watchdog = new Watchdog();
+    this.watchdog = new Watchdog({
+      timeoutMs: this.executionConfig.stallTimeoutMs,
+    });
 
     this.state = {
       missionPlan: null,
@@ -549,6 +600,7 @@ export class Orchestrator {
       }
     }
 
+    this.state.latestValidationReport = this.kernelState.latestValidationReport ?? null;
     this.state.latestReviewReport = this.kernelState.latestReviewReport ?? null;
     this.kernelState.missionPlan = this.state.missionPlan ?? null;
     await this.emitStatusUpdate();
@@ -706,20 +758,34 @@ export class Orchestrator {
       return;
     }
 
+    missionPlan = this.releaseReadyFeatureRetries(missionPlan);
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
     missionPlan = setActiveMilestone(missionPlan, pendingMilestone.id);
     missionPlan = updateMilestoneStatus(missionPlan, pendingMilestone.id, 'in_progress');
     this.activityLabel = `Milestone ${pendingMilestone.id} in progress.`;
 
-    if (areMilestoneFeaturesDone(pendingMilestone)) {
+    const activeMilestone = missionPlan.milestones.find((milestone) => milestone.id === pendingMilestone.id);
+    if (!activeMilestone) {
+      throw new Error(`Milestone not found after activation: ${pendingMilestone.id}`);
+    }
+
+    if (areMilestoneFeaturesDone(activeMilestone)) {
       this.state.missionPlan = missionPlan;
       await this.runMilestoneValidation(pendingMilestone.id);
       return;
     }
 
-    const nextFeature = getNextPendingFeature(pendingMilestone);
+    const nextFeature = getNextPendingFeature(activeMilestone);
     if (!nextFeature) {
       this.state.missionPlan = missionPlan;
       await this.runMilestoneValidation(pendingMilestone.id);
+      return;
+    }
+
+    const scheduledRetry = this.findFeatureRetry(pendingMilestone.id, nextFeature.id);
+    if (scheduledRetry) {
+      await this.waitForScheduledFeatureRetry(scheduledRetry);
       return;
     }
 
@@ -790,51 +856,19 @@ export class Orchestrator {
     });
 
     this.activityLabel = `Worker executing ${updatedFeature.id}...`;
-    const result = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
+    const rawResult = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
+    const result = updatedFeature.kind === 'review'
+      ? rawResult
+      : this.applyWorkerWarningPolicy(updatedMilestone.id, updatedFeature.id, rawResult);
     this.state.latestWorkerReport = result.report;
-    if (result.type === 'success') {
-      this.recordValidationEvidence(updatedMilestone.id, result.report.checks);
-      this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
-    }
+    this.recordValidationEvidence(updatedMilestone.id, result.report.checks);
+    this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
 
     if (updatedFeature.kind === 'review') {
-      if (result.type !== 'success' && result.report.warnings.length > 0) {
-        this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
-      }
       await this.handleReviewFeatureResult(updatedMilestone, updatedFeature, result);
       return;
     }
-
-    const status = result.type === 'success'
-      ? 'done'
-      : result.type === 'partial'
-        ? 'failed'
-        : result.type === 'blocked'
-          ? 'failed'
-          : 'failed';
-
-    missionPlan = this.requireMissionPlan();
-    missionPlan = updateFeatureStatus(
-      missionPlan,
-      updatedMilestone.id,
-      updatedFeature.id,
-      status
-    );
-
-    missionPlan = incrementMissionIterations(missionPlan);
-    this.state.missionPlan = missionPlan;
-    this.kernelState.missionPlan = missionPlan;
-
-    this.emitEvent('iteration_completed', 'orchestrator', {
-      iteration: missionPlan.totalIterations,
-      milestoneId: updatedMilestone.id,
-      featureId: updatedFeature.id,
-      status,
-    });
-    this.activityLabel = `Completed ${updatedFeature.id}.`;
-
-    await this.persistMissionPlan();
-    await this.emitStatusUpdate();
+    await this.handleImplementationFeatureResult(updatedMilestone, updatedFeature, result);
   }
 
   private async runMilestoneValidation(milestoneId: string): Promise<void> {
@@ -870,36 +904,28 @@ export class Orchestrator {
       }
 
       if (check.type === 'manual') {
-        const evidence = evidenceByCheckId[check.id];
-        if (evidence) {
-          const result: ValidationCheckResult = {
-            ...evidence,
+        const result = this.evaluateEvidenceValidationCheck(milestoneId, check, evidenceByCheckId[check.id]);
+        results.push(result);
+        if (result.warning) {
+          this.emitValidationWarning({
+            milestoneId,
             checkId: check.id,
-            output: evidence.output ?? `worker-reported ${check.type} validation ${evidence.passed ? 'passed' : 'failed'}`,
-          };
-          results.push(result);
-          if (result.warning) {
-            this.emitValidationWarning({
-              milestoneId,
-              checkId: check.id,
-              message: result.warning,
-            });
-          }
-          continue;
+            message: result.warning,
+          });
         }
+        continue;
+      }
 
-        const warning = `${check.type} verification was not reported by the worker: ${check.description}`;
-        results.push({
-          checkId: check.id,
-          passed: true,
-          output: `${check.type} validation evidence missing`,
-          warning,
-        });
-        this.emitValidationWarning({
-          milestoneId,
-          checkId: check.id,
-          message: warning,
-        });
+      if (check.type === 'e2e') {
+        const result = this.evaluateEvidenceValidationCheck(milestoneId, check, evidenceByCheckId[check.id]);
+        results.push(result);
+        if (result.warning) {
+          this.emitValidationWarning({
+            milestoneId,
+            checkId: check.id,
+            message: result.warning,
+          });
+        }
         continue;
       }
 
@@ -951,6 +977,7 @@ export class Orchestrator {
     };
 
     this.state.latestValidationReport = report;
+    this.kernelState.latestValidationReport = report;
     await this.persistValidationReport(report);
 
     missionPlan = this.requireMissionPlan();
@@ -1056,6 +1083,49 @@ export class Orchestrator {
 
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
+  }
+
+  private evaluateEvidenceValidationCheck(
+    milestoneId: string,
+    check: ValidationCheck,
+    evidence: ValidationCheckResult | undefined
+  ): ValidationCheckResult {
+    if (evidence) {
+      return {
+        ...evidence,
+        checkId: check.id,
+        output: evidence.output ?? `worker-reported ${check.type} validation ${evidence.passed ? 'passed' : 'failed'}`,
+      };
+    }
+
+    const warning = `${check.type} verification was not reported by the worker: ${check.description}`;
+    const evidenceRequired = check.type === 'manual'
+      ? this.verificationConfig.requireManualEvidence
+      : this.verificationConfig.requireE2EEvidence;
+    if (!evidenceRequired) {
+      return {
+        checkId: check.id,
+        passed: true,
+        output: `${check.type} validation evidence missing`,
+        warning,
+      };
+    }
+
+    return {
+      checkId: check.id,
+      passed: false,
+      output: `${check.type} validation evidence missing`,
+      warning,
+      failure: {
+        summary: `${check.type} validation was not reported by the worker`,
+        affectedFiles: [],
+        errorMessages: [
+          `milestone=${milestoneId}`,
+          check.description,
+        ],
+        rootCause: `${check.type}-evidence-missing`,
+      },
+    };
   }
 
   private async executeFeature(
@@ -1273,6 +1343,346 @@ export class Orchestrator {
     );
 
     return result;
+  }
+
+  private applyWorkerWarningPolicy(
+    milestoneId: string,
+    featureId: string,
+    result: WorkerResult
+  ): WorkerResult {
+    if (!this.verificationConfig.failOnWorkerWarnings || result.report.warnings.length === 0) {
+      return result;
+    }
+    if (result.type === 'blocked') {
+      return result;
+    }
+
+    const warningSummary = result.report.warnings.join('; ');
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'worker_warning_blocked',
+      milestoneId,
+      featureId,
+      message: `Worker warnings are configured as blocking failures for ${featureId}: ${warningSummary}`,
+    });
+
+    return {
+      type: 'failed',
+      report: {
+        ...result.report,
+        status: 'FAILED',
+        summary: [
+          result.report.summary,
+          'Worker warnings are configured as blocking failures.',
+          warningSummary,
+        ].filter((line) => line.trim().length > 0).join('\n'),
+        requestsHelp: true,
+      },
+    };
+  }
+
+  private async handleImplementationFeatureResult(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): Promise<void> {
+    let missionPlan = this.requireMissionPlan();
+    missionPlan = incrementMissionIterations(missionPlan);
+
+    if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      missionPlan = transitionMissionState(missionPlan, 'paused');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.activityLabel = `${feature.id} blocked. Resolve the worker issue and resume.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    if (result.type === 'success') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'done',
+      });
+      this.activityLabel = `Completed ${feature.id}.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const runtimeFeature = missionPlan.milestones
+      .find((item) => item.id === milestone.id)
+      ?.features.find((item) => item.id === feature.id);
+    const attempts = runtimeFeature?.attempts ?? feature.attempts;
+
+    if (attempts < this.executionConfig.maxFeatureAttempts) {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      const retry = this.scheduleFeatureRetry(missionPlan, milestone.id, feature.id, attempts + 1, result.report);
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_retry_scheduled',
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        attempt: attempts,
+        nextAttempt: retry.nextAttempt,
+        dueAt: retry.dueAt,
+        message: `Retry ${feature.id} as attempt ${retry.nextAttempt} at ${retry.dueAt}`,
+      });
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'retry_pending',
+      });
+      this.activityLabel = `Retrying ${feature.id} at ${retry.dueAt}.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+    missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'failed');
+    const failures = this.createImplementationFailureResults(feature, result.report);
+    const followUps = await this.manager.generateImplementationFollowUpFeatures({
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      failures,
+      missionPlan,
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          action: 'execution_followup_planning',
+          milestoneId: milestone.id,
+          featureId: feature.id,
+          message: detail,
+        });
+      },
+    });
+    const followUpResult = this.applyValidationFollowUps(
+      missionPlan,
+      milestone.id,
+      followUps.length > 0
+        ? followUps
+        : [{
+          description: `Resolve exhausted execution failure for ${feature.description}`,
+          trackingKey: `feature-failure-${feature.id}`,
+          model: CODEX_LATEST_ALIAS,
+        }]
+    );
+    missionPlan = updateMilestoneStatus(followUpResult.plan, milestone.id, 'in_progress');
+    missionPlan = setActiveMilestone(missionPlan, milestone.id);
+    missionPlan = setActiveFeature(missionPlan, null);
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+
+    if (followUpResult.addedFeatures.length > 0 || followUpResult.updatedFeatures.length > 0) {
+      this.emitEvent('task_added', 'manager', {
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        features: [
+          ...followUpResult.updatedFeatures,
+          ...followUpResult.addedFeatures,
+        ],
+        followUpFeatures: followUpResult.addedFeatures,
+      });
+    }
+
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'feature_retry_exhausted',
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      attempts,
+      message: `Retry budget exhausted for ${feature.id} after ${attempts} attempt${attempts === 1 ? '' : 's'}`,
+    });
+    this.emitEvent('iteration_completed', 'orchestrator', {
+      iteration: missionPlan.totalIterations,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      status: 'failed',
+    });
+    this.activityLabel = `Retry budget exhausted for ${feature.id}. Generated remediation features.`;
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
+  private createImplementationFailureResults(
+    feature: Feature,
+    report: WorkerFeatureReport
+  ): ValidationCheckResult[] {
+    const errorMessages = truncateLines(
+      [
+        report.summary,
+        ...report.warnings,
+      ]
+        .flatMap((line) => line.split(/\r?\n/))
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0),
+      8
+    );
+
+    return [{
+      checkId: feature.id,
+      passed: false,
+      output: report.summary,
+      failure: {
+        summary: `feature execution failed: ${feature.description}`,
+        affectedFiles: report.filesChanged.map((file) => file.path),
+        errorMessages,
+        rootCause: errorMessages[0] ?? report.status,
+      },
+    }];
+  }
+
+  private scheduleFeatureRetry(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    featureId: string,
+    nextAttempt: number,
+    report: WorkerFeatureReport
+  ): FeatureRetryRecord {
+    const delayMs = this.computeFeatureRetryDelay(nextAttempt - 1);
+    const retry: FeatureRetryRecord = {
+      milestoneId,
+      featureId,
+      nextAttempt,
+      dueAt: new Date(Date.now() + delayMs).toISOString(),
+      lastStatus: report.status === 'PARTIAL' || report.status === 'BLOCKED' ? report.status : 'FAILED',
+      reason: this.extractFeatureRetryReason(report),
+      summary: report.summary,
+    };
+
+    const existing = this.kernelState.featureRetries ?? [];
+    this.kernelState.featureRetries = [
+      ...existing.filter((item) => !(item.milestoneId === milestoneId && item.featureId === featureId)),
+      retry,
+    ];
+
+    this.kernelState.missionPlan = missionPlan;
+    return retry;
+  }
+
+  private extractFeatureRetryReason(report: WorkerFeatureReport): string {
+    const candidates = [
+      report.warnings[0],
+      report.summary.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0),
+      report.status,
+    ];
+    return candidates.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? 'worker failure';
+  }
+
+  private computeFeatureRetryDelay(failedAttempt: number): number {
+    const exponent = Math.max(0, failedAttempt - 1);
+    const delayMs = this.executionConfig.retryInitialDelayMs * (2 ** exponent);
+    return Math.min(delayMs, this.executionConfig.retryMaxDelayMs);
+  }
+
+  private releaseReadyFeatureRetries(missionPlan: MissionPlan): MissionPlan {
+    const queue = this.kernelState.featureRetries ?? [];
+    if (queue.length === 0) {
+      return missionPlan;
+    }
+
+    const now = Date.now();
+    const remaining: FeatureRetryRecord[] = [];
+    const released: FeatureRetryRecord[] = [];
+    for (const item of queue) {
+      const dueAtMs = Date.parse(item.dueAt);
+      if (Number.isFinite(dueAtMs) && dueAtMs > now) {
+        remaining.push(item);
+        continue;
+      }
+      released.push(item);
+    }
+
+    if (released.length === 0) {
+      return missionPlan;
+    }
+
+    this.kernelState.featureRetries = remaining;
+    for (const retry of released) {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_retry_released',
+        milestoneId: retry.milestoneId,
+        featureId: retry.featureId,
+        nextAttempt: retry.nextAttempt,
+        message: `Retry ${retry.featureId} is ready to run (attempt ${retry.nextAttempt})`,
+      });
+    }
+
+    return missionPlan;
+  }
+
+  private clearFeatureRetry(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    featureId: string
+  ): MissionPlan {
+    const queue = this.kernelState.featureRetries ?? [];
+    if (queue.length === 0) {
+      return missionPlan;
+    }
+
+    this.kernelState.featureRetries = queue.filter((item) => !(item.milestoneId === milestoneId && item.featureId === featureId));
+    this.kernelState.missionPlan = missionPlan;
+    return missionPlan;
+  }
+
+  private findFeatureRetry(
+    milestoneId: string,
+    featureId: string
+  ): FeatureRetryRecord | null {
+    const queue = this.kernelState.featureRetries ?? [];
+    return queue.find((item) => item.milestoneId === milestoneId && item.featureId === featureId) ?? null;
+  }
+
+  private async waitForScheduledFeatureRetry(retry: FeatureRetryRecord): Promise<void> {
+    const dueAtMs = Date.parse(retry.dueAt);
+    if (!Number.isFinite(dueAtMs)) {
+      this.kernelState.featureRetries = (this.kernelState.featureRetries ?? [])
+        .filter((item) => !(item.milestoneId === retry.milestoneId && item.featureId === retry.featureId));
+      await this.persistRuntimeState();
+      return;
+    }
+
+    this.activityLabel = `Waiting to retry ${retry.featureId} (attempt ${retry.nextAttempt})...`;
+    await this.emitStatusUpdate();
+
+    while (!this.aborted) {
+      const remainingMs = dueAtMs - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+      await delay(Math.min(remainingMs, 500));
+    }
+
+    if (this.aborted) {
+      return;
+    }
+
+    this.state.missionPlan = this.releaseReadyFeatureRetries(this.requireMissionPlan());
+    this.kernelState.missionPlan = this.state.missionPlan;
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
   }
 
   private async runGitPostProcess(
@@ -2460,7 +2870,7 @@ function buildTaskPreviewLines(
           : null;
         const actionLabel = command
           ? command
-          : (check.type === 'manual'
+          : (check.type === 'manual' || check.type === 'e2e'
               ? 'manual step (follow description)'
               : check.type === 'browser'
                 ? 'browser QA (worker evidence required)'
@@ -3343,6 +3753,11 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
       .filter((warning): warning is NonNullable<MissionKernelState['warnings']>[number] => warning !== null)
     : [];
   const validationEvidence = normalizeValidationEvidenceMap(kernel.validationEvidence);
+  const featureRetries = Array.isArray(kernel.featureRetries)
+    ? kernel.featureRetries
+      .map((retry) => normalizeStoredFeatureRetry(retry))
+      .filter((retry): retry is FeatureRetryRecord => retry !== null)
+    : [];
 
   return {
     ...base,
@@ -3353,6 +3768,8 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
     logEntries,
     warnings,
     validationEvidence,
+    latestValidationReport: kernel.latestValidationReport ?? null,
+    featureRetries,
     currentActor: kernel.currentActor ?? 'idle',
   };
 }
@@ -3383,6 +3800,33 @@ function normalizeStoredRuntimeWarning(
     featureId: typeof record.featureId === 'string' ? record.featureId : undefined,
     checkId: typeof record.checkId === 'string' ? record.checkId : undefined,
     seq: typeof record.seq === 'number' ? record.seq : undefined,
+  };
+}
+
+function normalizeStoredFeatureRetry(value: unknown): FeatureRetryRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const milestoneId = typeof record.milestoneId === 'string' ? record.milestoneId.trim() : '';
+  const featureId = typeof record.featureId === 'string' ? record.featureId.trim() : '';
+  const dueAt = typeof record.dueAt === 'string' ? record.dueAt : '';
+  const reason = typeof record.reason === 'string' ? record.reason.trim() : '';
+  if (milestoneId.length === 0 || featureId.length === 0 || dueAt.length === 0 || reason.length === 0) {
+    return null;
+  }
+
+  return {
+    milestoneId,
+    featureId,
+    nextAttempt: typeof record.nextAttempt === 'number' ? Math.max(1, Math.floor(record.nextAttempt)) : 1,
+    dueAt,
+    lastStatus: record.lastStatus === 'PARTIAL' || record.lastStatus === 'BLOCKED' ? record.lastStatus : 'FAILED',
+    reason,
+    summary: typeof record.summary === 'string' && record.summary.trim().length > 0
+      ? record.summary.trim()
+      : undefined,
   };
 }
 

@@ -583,7 +583,7 @@ describe('Orchestrator v0.8', () => {
     expect(existsSync(join(melosDir, 'reviews', 'm2-f5.json'))).toBe(true);
   });
 
-  it('completes with warnings when manual validation evidence is missing', async () => {
+  it('fails manual validation when manual evidence is missing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-warning-handoff-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
@@ -633,6 +633,14 @@ describe('Orchestrator v0.8', () => {
 
     jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
     jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Capture the required manual verification evidence',
+        trackingKey: 'manual-evidence-missing',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
     jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
       type: 'success',
       report: {
@@ -660,7 +668,7 @@ describe('Orchestrator v0.8', () => {
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 10,
+      maxIterations: 2,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -672,10 +680,23 @@ describe('Orchestrator v0.8', () => {
 
     const result = await orchestrator.run();
 
-    expect(result.success).toBe(true);
-    const handoff = readFileSync(join(cwd, 'HANDOFF.md'), 'utf-8');
-    expect(handoff).toContain('## Warnings');
-    expect(handoff).toContain('[validation] m1/manual-qa: manual verification was not reported by the worker: Check browser flow');
+    expect(result.success).toBe(false);
+    expect(result.reason).toBe('max_iterations');
+
+    const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
+      passed: boolean;
+      results: Array<{ checkId: string; passed: boolean; failure?: { summary: string } }>;
+    };
+    expect(report.passed).toBe(false);
+    expect(report.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        checkId: 'manual-qa',
+        passed: false,
+        failure: expect.objectContaining({
+          summary: 'manual validation was not reported by the worker',
+        }),
+      }),
+    ]));
 
     const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8')
       .split(/\r?\n/)
@@ -813,6 +834,269 @@ describe('Orchestrator v0.8', () => {
         passed: false,
         failure: expect.objectContaining({
           summary: 'browser validation was not reported by the worker',
+        }),
+      }),
+    ]));
+  });
+
+  it('retries implementation features before generating remediation follow-ups', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-feature-retry-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Feature retry mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'feature-retry',
+      goal: 'Retry transient feature failures before remediation',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['transient worker failures retry in place'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and validate',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    const remediationSpy = jest.spyOn(ManagerAgent.prototype, 'generateImplementationFollowUpFeatures');
+    const workerRun = jest.spyOn(WorkerAgent.prototype, 'run');
+    workerRun
+      .mockResolvedValueOnce({
+        type: 'failed',
+        report: {
+          iteration: 1,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'FAILED',
+          summary: 'transient failure',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 0,
+            testsFailed: 1,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 2,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'SUCCESS',
+          summary: 'resolved after retry',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      execution: {
+        retryInitialDelayMs: 0,
+        retryMaxDelayMs: 0,
+      },
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(workerRun).toHaveBeenCalledTimes(2);
+    expect(remediationSpy).not.toHaveBeenCalled();
+
+    const saved = JSON.parse(readFileSync(missionPath, 'utf-8')) as {
+      milestones: Array<{ features: Array<{ id: string; status: string; attempts: number }> }>;
+    };
+    expect(saved.milestones[0]?.features).toEqual([
+      expect.objectContaining({
+        id: 'm1-f1',
+        status: 'done',
+        attempts: 2,
+      }),
+    ]);
+  });
+
+  it('can fail worker warnings and retry the same feature', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-warning-retry-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Warning retry mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'warning-retry',
+      goal: 'Treat worker warnings as blocking failures when configured',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['warning-only worker runs retry when configured'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and validate',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    const workerRun = jest.spyOn(WorkerAgent.prototype, 'run');
+    workerRun
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'SUCCESS',
+          summary: 'implemented with warning',
+          warnings: ['manual verification is still required'],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 2,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'SUCCESS',
+          summary: 'implemented cleanly',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      execution: {
+        retryInitialDelayMs: 0,
+        retryMaxDelayMs: 0,
+      },
+      verification: {
+        failOnWorkerWarnings: true,
+      },
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(workerRun).toHaveBeenCalledTimes(2);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8')
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { type: string; payload?: { action?: string } });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'manager_decision',
+        payload: expect.objectContaining({
+          action: 'worker_warning_blocked',
+        }),
+      }),
+      expect.objectContaining({
+        type: 'manager_decision',
+        payload: expect.objectContaining({
+          action: 'feature_retry_scheduled',
         }),
       }),
     ]));
@@ -1948,6 +2232,10 @@ describe('Orchestrator v0.8', () => {
       interactivePlanning: false,
       dryRun: false,
       resume: false,
+      execution: {
+        retryInitialDelayMs: 0,
+        retryMaxDelayMs: 0,
+      },
     });
 
     const result = await orchestrator.run();
@@ -2035,6 +2323,10 @@ describe('Orchestrator v0.8', () => {
       interactivePlanning: false,
       dryRun: false,
       resume: false,
+      execution: {
+        retryInitialDelayMs: 0,
+        retryMaxDelayMs: 0,
+      },
     });
 
     const result = await orchestrator.run();
@@ -2203,6 +2495,10 @@ describe('Orchestrator v0.8', () => {
       interactivePlanning: false,
       dryRun: false,
       resume: false,
+      execution: {
+        retryInitialDelayMs: 0,
+        retryMaxDelayMs: 0,
+      },
     });
 
     const result = await orchestrator.run();
@@ -2869,6 +3165,14 @@ describe('Orchestrator v0.8', () => {
 
     jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
     jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateImplementationFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Commit dirty branch before merge',
+        trackingKey: 'git-dirty-branch',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
     jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async () => {
       writeFileSync(join(cwd, 'dirty-change.txt'), 'dirty', 'utf-8');
       return {
@@ -2914,6 +3218,9 @@ describe('Orchestrator v0.8', () => {
         autoPush: false,
         preMergeValidation: false,
         validationCommands: [],
+      },
+      execution: {
+        maxFeatureAttempts: 1,
       },
     });
 

@@ -4,6 +4,7 @@ export type CheckType =
   | 'auto:typecheck'
   | 'auto:test'
   | 'browser'
+  | 'e2e'
   | 'manual';
 
 export type ValidationRunner = 'playwright-interactive' | 'browser-test';

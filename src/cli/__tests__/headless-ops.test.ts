@@ -92,6 +92,34 @@ describe('cli headless operations', () => {
             },
           ],
           validationEvidence: {},
+          latestValidationReport: {
+            milestoneId: 'm1',
+            timestamp: '2026-03-03T00:00:00.750Z',
+            passed: false,
+            attempt: 2,
+            results: [
+              {
+                checkId: 'manual-qa',
+                passed: false,
+                warning: 'manual verification is still required',
+                failure: {
+                  summary: 'manual validation was not reported by the worker',
+                  affectedFiles: [],
+                  errorMessages: ['Check browser flow'],
+                },
+              },
+            ],
+          },
+          featureRetries: [
+            {
+              milestoneId: 'm1',
+              featureId: 'm1-f2',
+              nextAttempt: 2,
+              dueAt: '2026-03-03T00:00:10.000Z',
+              lastStatus: 'FAILED',
+              reason: 'manual verification is still required',
+            },
+          ],
         },
       },
     });
@@ -105,6 +133,24 @@ describe('cli headless operations', () => {
     expect(status.lastEvent?.seq).toBe(11);
     expect(status.lastEvent?.type).toBe('manager_decision');
     expect(status.cursor.nextSeq).toBe(12);
+    expect(status.validation).toEqual({
+      milestoneId: 'm1',
+      attempt: 2,
+      passed: false,
+      failedCheckCount: 1,
+      warningCount: 1,
+    });
+    expect(status.retry).toEqual({
+      queued: [
+        {
+          milestoneId: 'm1',
+          featureId: 'm1-f2',
+          nextAttempt: 2,
+          dueAt: '2026-03-03T00:00:10.000Z',
+          reason: 'manual verification is still required',
+        },
+      ],
+    });
     expect(status.warnings).toContain('[worker] m1-f2: manual verification is still required');
   });
 

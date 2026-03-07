@@ -375,6 +375,59 @@ export class ManagerAgent implements Agent {
     return drafts;
   }
 
+  async generateImplementationFollowUpFeatures(input: {
+    milestoneId: string;
+    featureId: string;
+    failures: ValidationCheckResult[];
+    missionPlan: MissionPlan;
+    onAgentMessageDelta?: (chunk: string) => void;
+    onCommandOutputDelta?: (chunk: string) => void;
+    onAppServerEvent?: (method: string, params: unknown) => void;
+  }): Promise<FollowUpFeatureDraft[]> {
+    const failedChecks = input.failures.filter((result) => !result.passed);
+    if (failedChecks.length === 0) {
+      return [];
+    }
+
+    const prompt = [
+      'You are a technical manager.',
+      'Generate remediation implementation features after a worker execution exhausted its retry budget.',
+      'Group failures by root cause. Merge failures that should be fixed together into the same feature.',
+      'Prefer reusing the same tracking key for the same root cause.',
+      'Return JSON array only.',
+      '',
+      `Milestone ID: ${input.milestoneId}`,
+      `Feature ID: ${input.featureId}`,
+      'Execution failures:',
+      JSON.stringify(failedChecks, null, 2),
+      '',
+      'Schema:',
+      '[{"description":"...","trackingKey":"stable-root-cause-key","priority":"high|medium|low","affectedChecks":["check-id"],"rationale":"...","model":"codex-latest|claude-latest|explicit-model"}]',
+    ].join('\n');
+
+    const result = await this.executeWithConfiguredEngine(prompt, 'high', {
+      onAgentMessageDelta: input.onAgentMessageDelta,
+      onCommandOutputDelta: input.onCommandOutputDelta,
+      onAppServerEvent: input.onAppServerEvent,
+    });
+
+    if (!result.success) {
+      return this.fallbackFollowUpFeatures(failedChecks);
+    }
+
+    const parsed = this.parseJsonArray(result.output);
+    if (!parsed) {
+      return this.fallbackFollowUpFeatures(failedChecks);
+    }
+
+    const drafts = normalizeFollowUpDrafts(parsed, failedChecks);
+    if (drafts.length === 0) {
+      return this.fallbackFollowUpFeatures(failedChecks);
+    }
+
+    return drafts;
+  }
+
   async generateReviewFollowUpFeatures(input: {
     milestoneId: string;
     reviewType: ReviewType;

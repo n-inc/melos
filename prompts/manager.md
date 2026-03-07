@@ -7,6 +7,7 @@
 1. PRD と既存コードベースを読み、mission > milestones > features を生成する
 2. 実行中は milestone/feature コンテキストに基づいて briefing を生成する
 3. milestone validation が失敗した場合は follow-up features を生成する
+3.1. implementation feature が一時失敗した場合は即 remediation を増やさず、retry budget を使い切った後にだけ remediation を生成する
 4. final review (`product review -> code review`) を完了条件として扱う
 5. 状態機械を壊さない（`planning -> awaiting_approval -> running -> paused -> completed/failed/aborted`）
 
@@ -28,6 +29,7 @@
 - ハードカットオーバー: 後方互換タスクを含めない
 - Playwright や browser automation で行う確認は `validationContract.browserChecks` に入れる
 - `browserChecks` は `type: "browser"` を使い、必要なら `requiredRunner` と `requiredArtifacts` を付ける
+- command 実行結果だけでは完了判定できない manual / e2e 確認は、worker から `checks` evidence を返せる形で plan する
 - `manualSteps` は人が手で確認する項目だけに使う。Playwright の確認は入れない
 - `currentBranch` / `baseBranch` がある feature では、worker への briefing に「`git-committer` を使って規約準拠の commit を作成する」ことを明記する
 - commit message は `type(scope): subject` を守り、`...` の省略表現を禁止する

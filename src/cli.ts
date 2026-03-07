@@ -391,6 +391,8 @@ export async function executeWithOptions(
     melosDir,
     plannerModel: models.planner,
     workerModel: models.worker,
+    execution: fileConfig.execution,
+    verification: fileConfig.verification,
     managerEffort: options.effort ?? 'high',
     workerReasoningEffort: options.reasoningEffort ?? 'xhigh',
     interactivePlanning: options.interactive === true,
@@ -539,6 +541,13 @@ export interface MissionStatusPayload {
     activeFeatureId: string | null;
     totalIterations: number;
   };
+  validation: {
+    milestoneId: string;
+    attempt: number;
+    passed: boolean;
+    failedCheckCount: number;
+    warningCount: number;
+  } | null;
   review: {
     reviewType: 'product' | 'code';
     generation: number;
@@ -547,6 +556,15 @@ export interface MissionStatusPayload {
     blockingFindingCount: number;
     passed: boolean | null;
     summary?: string;
+  } | null;
+  retry: {
+    queued: Array<{
+      milestoneId: string;
+      featureId: string;
+      nextAttempt: number;
+      dueAt: string;
+      reason: string;
+    }>;
   } | null;
   pendingPrompt: string | null;
   lastEvent: {
@@ -572,7 +590,9 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   let activeFeatureId: string | null = null;
   let totalIterations = 0;
   let pendingPrompt: string | null = null;
+  let validation: MissionStatusPayload['validation'] = null;
   let review: MissionStatusPayload['review'] = null;
+  let retry: MissionStatusPayload['retry'] = null;
   let missionFromTask = false;
   let initialized = false;
   let missionPlanForReview: MissionPlan | null = null;
@@ -631,10 +651,12 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
       initialized = true;
     }
     appendRuntimeStatusWarnings(warnings, snapshot.state?.kernel?.warnings);
+    validation = buildMissionStatusValidation(snapshot.state?.kernel?.latestValidationReport ?? null);
     review = buildMissionStatusReview(
       missionPlanForReview,
       snapshot.state?.kernel?.latestReviewReport ?? null
     );
+    retry = buildMissionStatusRetry(snapshot.state?.kernel?.featureRetries ?? []);
     if (!pendingPrompt && snapshot.state?.kernel?.logEntries) {
       const entries = snapshot.state.kernel.logEntries;
       for (let idx = entries.length - 1; idx >= 0; idx -= 1) {
@@ -674,7 +696,9 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
       activeFeatureId,
       totalIterations,
     },
+    validation,
     review,
+    retry,
     pendingPrompt,
     lastEvent: last
       ? {
@@ -702,6 +726,18 @@ function formatStatusPlain(status: MissionStatusPayload): string {
     lines.push(
       `review=${status.review.reviewType} g${status.review.generation} active=${status.review.activeFeatureId ?? '-'} findings=${status.review.latestFindingCount} blocking=${status.review.blockingFindingCount} passed=${status.review.passed === null ? '-' : status.review.passed ? 'yes' : 'no'}`
     );
+  }
+  if (status.validation) {
+    lines.push(
+      `validation=${status.validation.milestoneId} attempt=${status.validation.attempt} passed=${status.validation.passed ? 'yes' : 'no'} failedChecks=${status.validation.failedCheckCount} warnings=${status.validation.warningCount}`
+    );
+  }
+  if (status.retry && status.retry.queued.length > 0) {
+    for (const item of status.retry.queued) {
+      lines.push(
+        `retry=${item.milestoneId}/${item.featureId} nextAttempt=${item.nextAttempt} dueAt=${item.dueAt} reason=${item.reason}`
+      );
+    }
   }
   if (status.pendingPrompt) {
     lines.push(`pending=${status.pendingPrompt}`);
@@ -1246,6 +1282,40 @@ function inferMissionIdFromCwd(cwd: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     || 'mission';
+}
+
+function buildMissionStatusValidation(
+  latestValidationReport: MissionKernelState['latestValidationReport']
+): MissionStatusPayload['validation'] {
+  if (!latestValidationReport) {
+    return null;
+  }
+
+  return {
+    milestoneId: latestValidationReport.milestoneId,
+    attempt: latestValidationReport.attempt,
+    passed: latestValidationReport.passed,
+    failedCheckCount: latestValidationReport.results.filter((result) => !result.passed).length,
+    warningCount: latestValidationReport.results.filter((result) => typeof result.warning === 'string' && result.warning.trim().length > 0).length,
+  };
+}
+
+function buildMissionStatusRetry(
+  featureRetries: MissionKernelState['featureRetries']
+): MissionStatusPayload['retry'] {
+  if (!Array.isArray(featureRetries) || featureRetries.length === 0) {
+    return null;
+  }
+
+  return {
+    queued: featureRetries.map((retry) => ({
+      milestoneId: retry.milestoneId,
+      featureId: retry.featureId,
+      nextAttempt: retry.nextAttempt,
+      dueAt: retry.dueAt,
+      reason: retry.reason,
+    })),
+  };
 }
 
 function buildMissionStatusReview(

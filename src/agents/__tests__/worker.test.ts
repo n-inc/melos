@@ -555,4 +555,25 @@ describe('WorkerAgent', () => {
       { description: 'Tune hero message match', priority: 'high', rationale: 'Improve CTR' },
     ]);
   });
+
+  it('fails implementation features when structured JSON report is missing', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: 'implemented changes but forgot the json block',
+        exitCode: 0,
+      });
+
+    const result = await agent.run(createRunInput());
+
+    expect(result.type).toBe('failed');
+    expect(result.report.status).toBe('FAILED');
+    expect(result.report.requestsHelp).toBe(true);
+    expect(result.report.summary).toContain('structured JSON report');
+  });
 });
