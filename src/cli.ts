@@ -384,7 +384,7 @@ export async function executeWithOptions(
     validatorModel: models.validator,
     researchModel: models.research,
     managerEffort: options.effort ?? 'high',
-    workerReasoningEffort: options.reasoningEffort ?? 'high',
+    workerReasoningEffort: options.reasoningEffort ?? 'xhigh',
     interactivePlanning: options.interactive === true,
     autoApprove: options.autoApprove === true,
     dryRun: options.dryRun === true,

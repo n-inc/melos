@@ -28,7 +28,7 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
   [CODEX_LATEST_ALIAS]: {
     runtimeModel: 'gpt-5.4',
     engine: 'codex',
-    effort: 'high',
+    effort: 'xhigh',
     displayLabel: 'gpt-5.4',
     pricingKey: 'gpt-5.4',
     isLatestAlias: true,
@@ -44,7 +44,7 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
   'gpt-5.4': {
     runtimeModel: 'gpt-5.4',
     engine: 'codex',
-    effort: 'high',
+    effort: 'xhigh',
     displayLabel: 'gpt-5.4',
     pricingKey: 'gpt-5.4',
     isLatestAlias: false,
@@ -52,7 +52,7 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
   'gpt-5.4-codex': {
     runtimeModel: 'gpt-5.4-codex',
     engine: 'codex',
-    effort: 'high',
+    effort: 'xhigh',
     displayLabel: 'gpt-5.4-codex',
     pricingKey: 'gpt-5.4',
     isLatestAlias: false,
@@ -209,7 +209,7 @@ function inferEngineFromUnknownModel(normalized: string): ModelEngine {
 
 function inferEffortForUnknownModel(normalized: string, engine: ModelEngine): string {
   if (engine === 'codex') {
-    return 'high';
+    return 'xhigh';
   }
   if (normalized.includes('haiku')) {
     return 'low';

@@ -26,7 +26,7 @@ import {
 import { CODEX_LATEST_ALIAS, resolveRuntimeModel } from '../models/registry.js';
 
 const DEFAULT_MODEL = CODEX_LATEST_ALIAS;
-const DEFAULT_REASONING_EFFORT = 'high';
+const DEFAULT_REASONING_EFFORT = 'xhigh';
 const DEFAULT_APPROVAL_POLICY: AppServerApprovalPolicy = 'never';
 const DEFAULT_SANDBOX_POLICY: AppServerSandboxPolicyOption = 'dangerFullAccess';
 const SERVER_OVERLOADED_ERROR_CODE = -32001;

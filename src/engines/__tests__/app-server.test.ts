@@ -149,6 +149,9 @@ describe('AppServerEngine', () => {
     expect(events).toEqual(['item/agentMessage/delta', 'item/agentMessage/delta', 'turn/completed']);
     expect(engine.getActiveThreadId()).toBe('thr_1');
     expect(transport.notifications.some((event) => event.method === 'initialized')).toBe(true);
+    const turnStartRequest = transport.requests.find((request) => request.method === 'turn/start');
+    expect(turnStartRequest).toBeDefined();
+    expect(turnStartRequest?.params).toMatchObject({ effort: 'xhigh' });
   });
 
   it('sends turn/interrupt on abort', async () => {

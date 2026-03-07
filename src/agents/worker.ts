@@ -364,7 +364,7 @@ export class WorkerAgent implements Agent {
     return {
       cwd: this.config.cwd,
       model: resolveRuntimeModel(this.config.model, CODEX_LATEST_ALIAS),
-      reasoningEffort: this.config.reasoningEffort || 'high',
+      reasoningEffort: this.config.reasoningEffort || 'xhigh',
       execMode: true,
       suppressTerminalOutput: this.config.suppressTerminalOutput === true,
       threadId,
