@@ -2,7 +2,7 @@ import type { MissionPlan } from './mission.js';
 import type { MissionEvent } from './events.js';
 import type { GitStrategyState } from './git-strategy.js';
 import type { TokenUsageSnapshot } from './token-tracker.js';
-import type { LogActor, UnifiedLogEntry } from './log-entry.js';
+import { normalizeLogMessage, type LogActor, type UnifiedLogEntry } from './log-entry.js';
 
 export interface WorkerRunState {
   id: number;
@@ -61,7 +61,8 @@ export function reduceMissionEvent(
         event.timestamp,
         message,
         'planning',
-        'INFO'
+        'INFO',
+        event.seq
       );
     }
 
@@ -77,7 +78,8 @@ export function reduceMissionEvent(
         event.timestamp,
         message,
         actor,
-        kind
+        kind,
+        event.seq
       );
     }
 
@@ -86,7 +88,7 @@ export function reduceMissionEvent(
       const missionPlan = (event.payload.plan as MissionPlan | undefined) ?? state.missionPlan;
       const message = `${event.type}`;
       return {
-        ...appendUnifiedProgress(state, event.timestamp, message, 'planning', event.type.toUpperCase()),
+        ...appendUnifiedProgress(state, event.timestamp, message, 'planning', event.type.toUpperCase(), event.seq),
         missionPlan,
         iteration: event.iteration,
       };
@@ -99,7 +101,8 @@ export function reduceMissionEvent(
         event.timestamp,
         `${event.type} #${event.iteration}`,
         'system',
-        event.type.toUpperCase()
+        event.type.toUpperCase(),
+        event.seq
       );
       return {
         ...next,
@@ -126,7 +129,8 @@ export function reduceMissionEvent(
         event.timestamp,
         'worker',
         `[STARTED] ${startSummary}`,
-        'STARTED'
+        'STARTED',
+        event.seq
       );
       return {
         ...appendUnifiedEntry(
@@ -148,7 +152,7 @@ export function reduceMissionEvent(
         ? 'worker'
         : (state.activeWorkerRunId ? 'worker' : 'system');
       const defaultKind = event.type === 'command_executed' ? 'BASH' : 'INFO';
-      const entry = createLogEntry(event.timestamp, actor, message, defaultKind);
+      const entry = createLogEntry(event.timestamp, actor, message, defaultKind, event.seq);
 
       const nextWorkerRuns = state.workerRuns.map((run) => {
         if (run.id !== state.activeWorkerRunId) {
@@ -182,7 +186,8 @@ export function reduceMissionEvent(
         event.timestamp,
         'worker',
         summary ? `[${success ? 'DONE' : 'ERR'}] ${summary}` : `[${success ? 'DONE' : 'ERR'}] ${completionMessage}`,
-        success ? 'DONE' : 'ERR'
+        success ? 'DONE' : 'ERR',
+        event.seq
       );
       return {
         ...appendUnifiedEntry(
@@ -202,7 +207,7 @@ export function reduceMissionEvent(
             status: success ? 'done' : 'failed',
             endedAt: event.timestamp,
             log: summary
-              ? [...run.log, createLogEntry(event.timestamp, 'worker', `[${success ? 'DONE' : 'ERR'}] ${summary}`, success ? 'DONE' : 'ERR')]
+              ? [...run.log, createLogEntry(event.timestamp, 'worker', `[${success ? 'DONE' : 'ERR'}] ${summary}`, success ? 'DONE' : 'ERR', event.seq)]
               : run.log,
           };
         }),
@@ -226,7 +231,7 @@ export function reduceMissionEvent(
       const message = `${event.type}: ${stringifyPayload(event.payload)}`;
       const actor = resolveActorFromEvent(event);
       const kind = event.type.toUpperCase();
-      return appendUnifiedProgress(state, event.timestamp, message, actor, kind);
+      return appendUnifiedProgress(state, event.timestamp, message, actor, kind, event.seq);
     }
 
     default:
@@ -270,10 +275,12 @@ function appendUnifiedProgress(
   timestamp: string,
   message: string,
   actor: LogActor,
-  defaultKind: string
+  defaultKind: string,
+  seq?: number
 ): MissionKernelState {
-  const next = appendProgress(state, timestamp, message);
-  return appendUnifiedEntry(next, createLogEntry(timestamp, actor, message, defaultKind));
+  const entry = createLogEntry(timestamp, actor, message, defaultKind, seq);
+  const next = appendProgress(state, timestamp, extractProgressHeadline(message, entry.message));
+  return appendUnifiedEntry(next, entry);
 }
 
 function appendManagerUnifiedProgress(
@@ -281,10 +288,12 @@ function appendManagerUnifiedProgress(
   timestamp: string,
   message: string,
   actor: LogActor,
-  defaultKind: string
+  defaultKind: string,
+  seq?: number
 ): MissionKernelState {
-  const next = appendManagerProgress(state, timestamp, message);
-  return appendUnifiedEntry(next, createLogEntry(timestamp, actor, message, defaultKind));
+  const entry = createLogEntry(timestamp, actor, message, defaultKind, seq);
+  const next = appendManagerProgress(state, timestamp, extractProgressHeadline(message, entry.message));
+  return appendUnifiedEntry(next, entry);
 }
 
 function appendLog(
@@ -317,36 +326,26 @@ function createLogEntry(
   timestamp: string,
   actor: LogActor,
   rawMessage: string,
-  defaultKind: string
+  defaultKind: string,
+  seq?: number
 ): UnifiedLogEntry {
-  const lines = rawMessage
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\s+$/g, ''))
-    .filter((line) => line.length > 0);
-  const first = lines[0] ?? '';
-  const parsed = parseKindAndMessage(first, defaultKind);
-  const detailLines = lines.length > 1 ? limitDetailLines(lines.slice(1)) : undefined;
+  const parsed = normalizeLogMessage(rawMessage, defaultKind);
   return {
+    seq,
     timestamp,
     actor,
     kind: parsed.kind,
     message: parsed.message,
-    detailLines,
+    detailLines: parsed.detailLines,
   };
 }
 
-function parseKindAndMessage(firstLine: string, defaultKind: string): { kind: string; message: string } {
-  const tagged = firstLine.match(/^\[([A-Z0-9_]+)\]\s*(.*)$/);
-  if (tagged) {
-    const kind = tagged[1];
-    const message = tagged[2] && tagged[2].trim().length > 0 ? tagged[2].trim() : kind;
-    return { kind, message };
-  }
-  const cleanMessage = firstLine.trim();
-  return {
-    kind: defaultKind,
-    message: cleanMessage.length > 0 ? cleanMessage : defaultKind,
-  };
+function extractProgressHeadline(rawMessage: string, fallback: string): string {
+  const first = rawMessage
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+$/g, ''))
+    .find((line) => line.trim().length > 0);
+  return first?.trim() || fallback;
 }
 
 function stringifyPayload(payload: Record<string, unknown>): string {
@@ -381,14 +380,4 @@ function resolveActorFromEvent(event: MissionEvent): LogActor {
     return 'worker';
   }
   return 'system';
-}
-
-function limitDetailLines(lines: string[]): string[] {
-  const clipped = lines
-    .slice(0, 3)
-    .map((line) => (line.length > 180 ? `${line.slice(0, 177)}...` : line));
-  if (lines.length > 3) {
-    clipped.push(`... +${lines.length - 3} more lines`);
-  }
-  return clipped;
 }

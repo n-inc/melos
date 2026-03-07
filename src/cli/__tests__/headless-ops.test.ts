@@ -150,6 +150,51 @@ describe('cli headless operations', () => {
     expect(tailOne.entries[0]?.seq).toBe(3);
   });
 
+  it('preserves multiline log details for human-readable log streams', async () => {
+    const eventsPath = join(rootDir, '.melos', 'events.jsonl');
+    writeFileSync(
+      eventsPath,
+      `${JSON.stringify({
+        seq: 7,
+        type: 'manager_decision',
+        timestamp: '2026-03-03T00:00:07.000Z',
+        iteration: 0,
+        agent: 'manager',
+        payload: {
+          message: [
+            '[WRITE] src/auth.ts (+1 -1)',
+            '@@ -10,3 +10,3 @@',
+            ' export function auth() {',
+            '-  return oldMode;',
+            '+  return newMode;',
+            ' }',
+          ].join('\n'),
+        },
+      })}\n`,
+      'utf-8'
+    );
+
+    const logs = await readMissionLogs(rootDir, {
+      afterSeq: 0,
+      actor: 'all',
+    });
+
+    expect(logs.entries).toHaveLength(1);
+    expect(logs.entries[0]).toMatchObject({
+      seq: 7,
+      actor: 'manager',
+      kind: 'WRITE',
+      message: 'src/auth.ts (+1 -1)',
+    });
+    expect(logs.entries[0]?.detailLines).toEqual([
+      '@@ -10,3 +10,3 @@',
+      ' export function auth() {',
+      '-  return oldMode;',
+      '+  return newMode;',
+      ' }',
+    ]);
+  });
+
   it('returns empty logs payload when events.jsonl is missing', async () => {
     const logs = await readMissionLogs(rootDir, {
       afterSeq: 0,

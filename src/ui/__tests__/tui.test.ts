@@ -152,6 +152,67 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toBe('');
   });
 
+  it('appends only new log entries in plain runtime mode', () => {
+    const output = new PassThrough();
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    const ui = createRuntimeUI('plain', output as unknown as NodeJS.WriteStream, input as unknown as NodeJS.ReadStream);
+    ui.start(createSessionInfo());
+
+    ui.updateState({
+      ...createState(),
+      logEntries: [
+        {
+          seq: 1,
+          timestamp: '2026-03-03T00:00:00.000Z',
+          actor: 'planning',
+          kind: 'WRITE',
+          message: 'src/auth.ts (+1 -1)',
+          detailLines: ['@@ -1,3 +1,3 @@', '-const oldMode = true;', '+const newMode = true;'],
+        },
+      ],
+      currentActor: 'planning',
+    });
+
+    ui.updateState({
+      ...createState(),
+      logEntries: [
+        {
+          seq: 1,
+          timestamp: '2026-03-03T00:00:00.000Z',
+          actor: 'planning',
+          kind: 'WRITE',
+          message: 'src/auth.ts (+1 -1)',
+          detailLines: ['@@ -1,3 +1,3 @@', '-const oldMode = true;', '+const newMode = true;'],
+        },
+        {
+          seq: 2,
+          timestamp: '2026-03-03T00:00:02.000Z',
+          actor: 'worker',
+          kind: 'BASH',
+          message: 'npm test -- auth',
+        },
+      ],
+      currentActor: 'worker',
+      activity: 'Running m1-f1 tests...',
+    });
+
+    ui.stop();
+
+    expect(rendered).toContain('[melos] Auth system');
+    expect(rendered).toContain('state=running progress=1/3 (33%) active=m1-f1 branch=melos/auth/m1-f1 actor=planning');
+    expect(rendered).toContain('LOG START: PLANNING');
+    expect(rendered).toContain('[WRITE] src/auth.ts (+1 -1)');
+    expect(rendered).toContain('│ @@ -1,3 +1,3 @@');
+    expect(rendered).toContain('SWITCH: PLANNING -> WORKER');
+    expect(rendered).toContain('[BASH] npm test -- auth');
+    expect(rendered.match(/src\/auth\.ts \(\+1 -1\)/g)).toHaveLength(1);
+  });
+
   it('pauses stdin stream on stop to avoid hanging process', () => {
     const output = new PassThrough();
     (output as unknown as { columns?: number }).columns = 100;

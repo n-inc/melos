@@ -61,7 +61,6 @@ import {
 } from './state/event-reducer.js';
 import { loadSnapshot, saveSnapshot } from './state/snapshot.js';
 import { Watchdog } from './state/watchdog.js';
-import { TokenTracker } from './state/token-tracker.js';
 import type { LogActor } from './state/log-entry.js';
 import { ModelRouter, type ModelRole } from './models/router.js';
 import {
@@ -130,7 +129,6 @@ export class Orchestrator {
   private readonly manager: ManagerAgent;
   private readonly worker: WorkerAgent;
   private readonly modelRouter: ModelRouter;
-  private readonly tokenTracker: TokenTracker;
   private readonly eventLog: EventLog;
   private readonly watchdog: Watchdog;
 
@@ -188,7 +186,6 @@ export class Orchestrator {
     };
     this.worker = new WorkerAgent(workerConfig);
 
-    this.tokenTracker = new TokenTracker();
     this.eventLog = new EventLog({ melosDir: config.melosDir });
     this.watchdog = new Watchdog();
 
@@ -778,22 +775,6 @@ export class Orchestrator {
     const { result, execution } = executionResult;
     this.state.latestWorkerReport = result.report;
 
-    if (result.report.tokenUsage) {
-      this.tokenTracker.record({
-        role: 'worker',
-        model: execution.displayModel,
-        pricingModel: execution.pricingModel,
-        input: result.report.tokenUsage.input,
-        output: result.report.tokenUsage.output,
-        cached: result.report.tokenUsage.cached,
-      });
-      this.emitEvent('token_usage', 'worker', {
-        role: 'worker',
-        model: execution.displayModel,
-        ...result.report.tokenUsage,
-      });
-    }
-
     const status = result.type === 'success'
       ? 'done'
       : result.type === 'partial'
@@ -1008,7 +989,6 @@ export class Orchestrator {
     execution: {
       engine: ModelEngine;
       runtimeModel: string;
-      pricingModel: string;
       displayModel: string;
       source: FeatureModelSource;
     };
@@ -1126,7 +1106,6 @@ export class Orchestrator {
         execution: {
           engine: resolvedExecutionModel.engine,
           runtimeModel,
-          pricingModel: resolvedExecutionModel.pricingKey,
           displayModel: resolvedExecutionModel.displayModel,
           source: modelState.source,
         },
@@ -1200,7 +1179,6 @@ export class Orchestrator {
       execution: {
         engine: resolvedExecutionModel.engine,
         runtimeModel,
-        pricingModel: resolvedExecutionModel.pricingKey,
         displayModel: resolvedExecutionModel.displayModel,
         source: modelState.source,
       },
@@ -1705,7 +1683,6 @@ export class Orchestrator {
         managerLog: (this.kernelState.managerLog ?? []).slice(-120),
         workerRuns,
         modelAssignments: assignments,
-        tokenUsage: this.tokenTracker.getSnapshot(),
         pendingPrompt: this.pendingPrompt,
       };
     }
@@ -1757,7 +1734,6 @@ export class Orchestrator {
       managerLog: (this.kernelState.managerLog ?? []).slice(-120),
       workerRuns,
       modelAssignments: assignments,
-      tokenUsage: this.tokenTracker.getSnapshot(),
       pendingPrompt: this.pendingPrompt,
     };
   }
@@ -1893,10 +1869,6 @@ export class Orchestrator {
       this.state.latestValidationReport
         ? `Last report: ${this.state.latestValidationReport.milestoneId} attempt ${this.state.latestValidationReport.attempt} (${this.state.latestValidationReport.passed ? 'passed' : 'failed'})`
         : 'No validation report',
-      '',
-      '## Token Usage',
-      '',
-      `Estimated cost: $${this.tokenTracker.getEstimatedCost().toFixed(4)}`,
     ].join('\n');
 
     const handoffPath = join(this.config.cwd, 'HANDOFF.md');
@@ -2244,9 +2216,7 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   }
 
   if (
-    safeMethodLower.includes('token_count')
-    || safeMethodLower.includes('ratelimits')
-    || safeMethodLower.includes('thread/tokenusage')
+    safeMethodLower.includes('ratelimits')
     || safeMethodLower.includes('agent_message_delta')
     || safeMethodLower.includes('agent_message_content_delta')
     || safeMethodLower.includes('agentmessage/delta')
@@ -2603,6 +2573,5 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
     managerLog,
     logEntries,
     currentActor: kernel.currentActor ?? 'idle',
-    tokenUsage: kernel.tokenUsage ?? base.tokenUsage,
   };
 }

@@ -1,10 +1,12 @@
 import { consumeKeyStream, parseKey } from './tui-keymap.js';
 import { truncateDisplay, padDisplay, getDisplayWidth, colorize, canUseColor } from './tui-ansi.js';
 import type { MissionControlState, TUIView, ViewId } from './tui-views.js';
+import type { LogActor } from '../state/log-entry.js';
 import type { ModelRole } from '../models/router.js';
 import { overviewView } from './tui-overview.js';
 import { featuresView } from './tui-features.js';
-import { workersView } from './tui-workers.js';
+import { formatLogStreamLines } from './log-stream.js';
+import { computeWorkersScrollMetrics, workersView } from './tui-workers.js';
 import { modelsView } from './tui-models.js';
 import { prdView } from './tui-prd.js';
 import { taskView } from './tui-task.js';
@@ -102,6 +104,8 @@ export function createRuntimeUI(
   let logSourceLock: 'auto' | 'worker' | 'manager' = 'auto';
   let secondaryVisible = true;
   let sourceSwitchNotice: string | null = null;
+  let workersFollowMode: 'live' | 'scrollback' = 'live';
+  let workersUnreadCount = 0;
   const viewScroll: Record<ViewId, number> = {
     overview: 0,
     features: 0,
@@ -118,9 +122,41 @@ export function createRuntimeUI(
   let keyStreamRemainder = '';
   let keyStreamFlushTimer: NodeJS.Timeout | null = null;
   const useColor = mode === 'tui' && canUseColor(output.isTTY === true);
+  const plainUseColor = canUseColor(output.isTTY === true);
+  let plainHeaderPrinted = false;
+  let plainLastStatusLine = '';
+  let plainLastRenderedSeq = 0;
+  let plainLastRenderedCount = 0;
+  let plainLastActor: LogActor | null = null;
 
   const getColumns = () => output.columns ?? process.stderr.columns ?? DEFAULT_TERMINAL_COLUMNS;
   const getRows = () => output.rows ?? process.stderr.rows ?? DEFAULT_TERMINAL_ROWS;
+  const getWorkersViewport = () => ({
+    width: getColumns(),
+    height: Math.max(1, getRows() - 4),
+  });
+  const getWorkersMetrics = () => {
+    if (!state) {
+      return {
+        totalLines: 0,
+        availableLogLines: 1,
+        maxOffset: 0,
+      };
+    }
+    return computeWorkersScrollMetrics(getWorkersViewport(), state, {
+      logSourceLock,
+      useColor,
+    });
+  };
+  const setWorkersLiveMode = () => {
+    workersFollowMode = 'live';
+    workersUnreadCount = 0;
+    viewScroll.workers = Number.MAX_SAFE_INTEGER;
+  };
+  const setWorkersScrollbackMode = (nextOffset: number) => {
+    workersFollowMode = 'scrollback';
+    viewScroll.workers = Math.max(0, nextOffset);
+  };
 
   const render = () => {
     if (!started || mode !== 'tui' || !session) {
@@ -139,6 +175,8 @@ export function createRuntimeUI(
         secondaryVisible,
         sourceSwitchNotice,
         useColor,
+        workersFollowMode,
+        workersUnreadCount,
       })
       : buildInitializingFrame(session, {
       width: getColumns(),
@@ -161,21 +199,132 @@ export function createRuntimeUI(
     previousFrame = frame;
   };
 
+  const buildPlainStatusLine = (nextState: MissionControlState) => {
+    const pending = nextState.pendingPrompt ? ` pending=${nextState.pendingPrompt}` : '';
+    return `state=${nextState.missionState} progress=${nextState.progressLabel} active=${nextState.activeFeatureId ?? '-'} branch=${nextState.activeBranch ?? '-'} actor=${nextState.currentActor}${pending}`;
+  };
+  const getLastEntrySeq = (entries: MissionControlState['logEntries']) => (
+    [...entries].reverse().find((entry) => typeof entry.seq === 'number')?.seq ?? 0
+  );
+  const writePlainStatusLine = (nextState: MissionControlState, force = false) => {
+    const statusLine = buildPlainStatusLine(nextState);
+    if (!force && statusLine === plainLastStatusLine) {
+      return;
+    }
+    output.write(`${statusLine}\n`);
+    plainLastStatusLine = statusLine;
+  };
+  const writePlainLogBatch = (
+    entries: MissionControlState['logEntries'],
+    options?: { previousActor?: LogActor | null; blankLineBefore?: boolean }
+  ) => {
+    if (entries.length === 0) {
+      return;
+    }
+    const lines = formatLogStreamLines(entries, {
+      useColor: plainUseColor,
+      previousActor: options?.previousActor ?? plainLastActor,
+    });
+    if (lines.length === 0) {
+      return;
+    }
+    if (options?.blankLineBefore) {
+      output.write('\n');
+    }
+    output.write(`${lines.join('\n')}\n`);
+    plainLastActor = entries[entries.length - 1]?.actor ?? plainLastActor;
+  };
+  const resolvePlainNewEntries = (nextState: MissionControlState) => {
+    if (nextState.logEntries.length === 0) {
+      return [];
+    }
+    if (plainLastRenderedSeq > 0) {
+      const bySeq = nextState.logEntries.filter((entry) => typeof entry.seq === 'number' && entry.seq > plainLastRenderedSeq);
+      if (bySeq.length > 0) {
+        return bySeq;
+      }
+    }
+    return nextState.logEntries.slice(Math.max(0, plainLastRenderedCount));
+  };
   const refreshPlain = () => {
     if (!started || mode !== 'plain' || !state) {
       return;
     }
-    const lines = [
-      `[melos] ${state.missionTitle}`,
-      `state=${state.missionState} progress=${state.progressLabel} branch=${state.activeBranch ?? '-'}`,
-      `active=${state.activeFeatureId ?? '-'} log=${state.progressLog[state.progressLog.length - 1]?.message ?? '-'}`,
-    ];
-    output.write(`${lines.join('\n')}\n`);
+
+    if (!plainHeaderPrinted) {
+      plainHeaderPrinted = true;
+      output.write(`[melos] ${state.missionTitle}\n`);
+      writePlainStatusLine(state, true);
+      const initialEntries = state.logEntries.slice(-20);
+      if (state.logEntries.length > initialEntries.length) {
+        output.write(`... ${state.logEntries.length - initialEntries.length} earlier log entries omitted\n`);
+      }
+      writePlainLogBatch(initialEntries, {
+        previousActor: null,
+        blankLineBefore: initialEntries.length > 0,
+      });
+      plainLastRenderedCount = state.logEntries.length;
+      plainLastRenderedSeq = getLastEntrySeq(state.logEntries);
+      return;
+    }
+
+    const statusChanged = buildPlainStatusLine(state) !== plainLastStatusLine;
+    const newEntries = resolvePlainNewEntries(state);
+    if (newEntries.length === 0) {
+      if (statusChanged) {
+        output.write('\n');
+        writePlainStatusLine(state, true);
+      }
+      return;
+    }
+
+    if (statusChanged) {
+      output.write('\n');
+      writePlainStatusLine(state, true);
+    }
+    writePlainLogBatch(newEntries, { blankLineBefore: true });
+    plainLastRenderedCount = state.logEntries.length;
+    plainLastRenderedSeq = getLastEntrySeq(state.logEntries);
   };
 
   const applyViewScrollAction = (actionType: string): boolean => {
     if (currentView !== 'prd' && currentView !== 'task' && currentView !== 'workers') {
       return false;
+    }
+    if (currentView === 'workers') {
+      const metrics = getWorkersMetrics();
+      const maxOffset = metrics.maxOffset;
+      const currentOffset = viewScroll.workers >= Number.MAX_SAFE_INTEGER
+        ? maxOffset
+        : Math.min(viewScroll.workers, maxOffset);
+      switch (actionType) {
+        case 'cursor_up':
+          setWorkersScrollbackMode(Math.max(0, currentOffset - 1));
+          return true;
+        case 'page_up':
+          setWorkersScrollbackMode(Math.max(0, currentOffset - 12));
+          return true;
+        case 'scroll_top':
+          setWorkersScrollbackMode(0);
+          return true;
+        case 'cursor_down':
+        case 'page_down':
+        case 'select': {
+          const step = actionType === 'cursor_down' ? 1 : 12;
+          const nextOffset = Math.min(maxOffset, currentOffset + step);
+          if (nextOffset >= maxOffset) {
+            setWorkersLiveMode();
+          } else {
+            setWorkersScrollbackMode(nextOffset);
+          }
+          return true;
+        }
+        case 'scroll_bottom':
+          setWorkersLiveMode();
+          return true;
+        default:
+          return false;
+      }
     }
     switch (actionType) {
       case 'cursor_up':
@@ -482,10 +631,17 @@ export function createRuntimeUI(
     userChangedView = false;
     viewScroll.overview = 0;
     viewScroll.features = 0;
-    viewScroll.workers = 0;
+    viewScroll.workers = Number.MAX_SAFE_INTEGER;
     viewScroll.models = 0;
     viewScroll.prd = 0;
     viewScroll.task = 0;
+    workersFollowMode = 'live';
+    workersUnreadCount = 0;
+    plainHeaderPrinted = false;
+    plainLastStatusLine = '';
+    plainLastRenderedSeq = 0;
+    plainLastRenderedCount = 0;
+    plainLastActor = null;
     keyStreamRemainder = '';
     clearKeyStreamFlushTimer();
 
@@ -510,32 +666,44 @@ export function createRuntimeUI(
     }
 
     if (mode === 'plain') {
-      refreshTimer = setInterval(refreshPlain, 3000);
-      refreshTimer.unref();
+      return;
     }
   };
 
   const updateState = (nextState: MissionControlState) => {
     const firstStateUpdate = state === null;
+    const previousLogCount = state?.logEntries.length ?? 0;
+    const nextLogCount = nextState.logEntries.length;
     state = nextState;
     if (firstStateUpdate) {
-    currentView = 'overview';
-    userChangedView = false;
-    logSourceLock = 'auto';
-    secondaryVisible = true;
-    sourceSwitchNotice = null;
+      currentView = 'overview';
+      userChangedView = false;
+      logSourceLock = 'auto';
+      secondaryVisible = true;
+      sourceSwitchNotice = null;
       viewScroll.overview = 0;
       viewScroll.features = 0;
-      viewScroll.workers = 0;
+      viewScroll.workers = Number.MAX_SAFE_INTEGER;
       viewScroll.models = 0;
       viewScroll.prd = 0;
       viewScroll.task = 0;
+      workersFollowMode = 'live';
+      workersUnreadCount = 0;
     } else if (nextState.pendingPrompt) {
       if (currentView !== 'models' && currentView !== 'prd' && currentView !== 'task') {
         currentView = 'overview';
       }
     } else if (!userChangedView) {
       currentView = 'overview';
+    }
+    if (!firstStateUpdate) {
+      const newEntries = Math.max(0, nextLogCount - previousLogCount);
+      if (workersFollowMode === 'live') {
+        viewScroll.workers = Number.MAX_SAFE_INTEGER;
+        workersUnreadCount = 0;
+      } else if (newEntries > 0) {
+        workersUnreadCount += newEntries;
+      }
     }
     if (mode === 'tui') {
       render();
@@ -594,6 +762,8 @@ export function renderTUIFrameForTest(input: {
   logSourceLock?: 'auto' | 'worker' | 'manager';
   secondaryVisible?: boolean;
   sourceSwitchNotice?: string | null;
+  workersFollowMode?: 'live' | 'scrollback';
+  workersUnreadCount?: number;
 }): string[] {
   if (!input.state) {
     return buildInitializingFrame(input.session, {
@@ -616,6 +786,8 @@ export function renderTUIFrameForTest(input: {
     secondaryVisible: input.secondaryVisible ?? true,
     sourceSwitchNotice: input.sourceSwitchNotice ?? null,
     useColor: false,
+    workersFollowMode: input.workersFollowMode ?? 'live',
+    workersUnreadCount: input.workersUnreadCount ?? 0,
   });
 }
 
@@ -633,6 +805,8 @@ function buildFrame(
     secondaryVisible: boolean;
     sourceSwitchNotice: string | null;
     useColor: boolean;
+    workersFollowMode: 'live' | 'scrollback';
+    workersUnreadCount: number;
   }
 ): string[] {
   const width = Math.max(options.width, 60);
@@ -662,6 +836,8 @@ function buildFrame(
       secondaryVisible: options.secondaryVisible,
       sourceSwitchNotice: options.sourceSwitchNotice,
       useColor: options.useColor,
+      workersFollowMode: options.workersFollowMode,
+      workersUnreadCount: options.workersUnreadCount,
     }
   );
   const clipped = contentLines.slice(0, contentHeight).map((line) => truncateDisplay(line, width));
@@ -680,9 +856,9 @@ function buildFrame(
             ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  Enter=More`
             : options.view === 'features'
               ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=gpt-5.4[Latest] A=claude-opus-4.6[Latest] U=Auto  P Pause  R Resume  Ctrl+G Steer`
-          : options.view === 'workers'
-            ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  L Focus  P Pause  R Resume  Ctrl+G Steer`
-            : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
+              : options.view === 'workers'
+                ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn Scroll  Shift+↑ Oldest  Shift+↓ Latest  L Focus`
+                : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
 

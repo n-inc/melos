@@ -24,8 +24,10 @@ export type KeyAction =
 const ESCAPE_SEQUENCES = [
   '\u001b[1;2Z',
   '\u001b[Z',
+  '\u001b[1;2A',
   '\u001b[A',
   '\u001bOA',
+  '\u001b[1;2B',
   '\u001b[B',
   '\u001bOB',
   '\u001b[5~',
@@ -87,11 +89,15 @@ export function parseKey(chunk: string): KeyAction {
       return { type: 'steer_mode' };
     case '\u001b':
       return { type: 'overview' };
+    case '\u001b[1;2A':
+      return { type: 'scroll_top' };
     case '\u001b[A':
     case '\u001bOA':
     case 'k':
     case 'K':
       return { type: 'cursor_up' };
+    case '\u001b[1;2B':
+      return { type: 'scroll_bottom' };
     case '\u001b[B':
     case '\u001bOB':
     case 'j':

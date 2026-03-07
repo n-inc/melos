@@ -79,6 +79,8 @@ export interface TUIView {
       secondaryVisible?: boolean;
       sourceSwitchNotice?: string | null;
       useColor?: boolean;
+      workersFollowMode?: 'live' | 'scrollback';
+      workersUnreadCount?: number;
     }
   ): string[];
   handleKey?(key: KeyEvent, state: MissionControlState): boolean;

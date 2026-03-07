@@ -13,6 +13,8 @@ export type ColorToken =
   | 'kind_done'
   | 'kind_err'
   | 'kind_info'
+  | 'kind_reply'
+  | 'kind_think'
   | 'kind_switch'
   | 'label_dim';
 
@@ -27,6 +29,8 @@ const COLOR_CODE: Record<ColorToken, string> = {
   kind_done: '\x1b[32m',
   kind_err: '\x1b[31m',
   kind_info: '\x1b[2m',
+  kind_reply: '\x1b[36m',
+  kind_think: '\x1b[35m',
   kind_switch: '\x1b[35m',
   label_dim: '\x1b[2m',
 };

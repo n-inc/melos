@@ -1,8 +1,13 @@
 import type { TUIView, MissionControlState, ViewPort } from './tui-views.js';
-import type { LogActor, UnifiedLogEntry } from '../state/log-entry.js';
+import type { LogActor } from '../state/log-entry.js';
 import { truncateDisplay, wrapPlainDisplay, colorize } from './tui-ansi.js';
+import { filterLogEntriesByLock, formatLogStreamLines } from './log-stream.js';
 
-const SWITCH_BAR = '─'.repeat(10);
+export interface WorkersViewMetrics {
+  totalLines: number;
+  availableLogLines: number;
+  maxOffset: number;
+}
 
 export const workersView: TUIView = {
   id: 'workers',
@@ -15,12 +20,13 @@ export const workersView: TUIView = {
     const nowRunning = buildNowRunningLine(state, activeActor);
     const separator = '─'.repeat(width);
 
-    const entries = selectLogEntries(state.logEntries, lock);
+    const entries = filterLogEntriesByLock(state.logEntries, lock);
     const streamLines = formatLogStreamLines(entries, {
       lock,
       switchNotice: context?.sourceSwitchNotice ?? null,
       pendingPrompt: state.pendingPrompt,
       useColor,
+      previousActor: null,
     });
 
     const wrapped = streamLines.flatMap((line) => wrapPlainDisplay(line, width));
@@ -31,17 +37,56 @@ export const workersView: TUIView = {
       ? maxOffset
       : Math.min(scrollOffset, maxOffset);
     const visibleLogLines = wrapped.slice(safeOffset, safeOffset + availableLogLines);
+    const followMode = context?.workersFollowMode
+      ?? (scrollOffset >= Number.MAX_SAFE_INTEGER ? 'live' : 'scrollback');
+    const unreadCount = Math.max(0, context?.workersUnreadCount ?? 0);
+    const modeLabel = followMode === 'live'
+      ? colorize('LIVE', 'kind_done', useColor)
+      : colorize(
+        unreadCount > 0 ? `SCROLLBACK +${unreadCount} new` : 'SCROLLBACK',
+        unreadCount > 0 ? 'kind_write' : 'label_dim',
+        useColor
+      );
     const lineSummary = wrapped.length === 0
       ? 'Lines 0/0'
       : `Lines ${safeOffset + 1}-${Math.min(wrapped.length, safeOffset + availableLogLines)}/${wrapped.length}`;
 
     return [
-      truncateDisplay(`${nowRunning}  ${lineSummary}`, width),
+      truncateDisplay(`${nowRunning}  ${modeLabel}  ${lineSummary}`, width),
       separator,
       ...visibleLogLines.map((line) => truncateDisplay(line, width)),
     ];
   },
 };
+
+export function computeWorkersScrollMetrics(
+  viewport: ViewPort,
+  state: MissionControlState,
+  context?: {
+    logSourceLock?: 'auto' | 'worker' | 'manager';
+    sourceSwitchNotice?: string | null;
+    useColor?: boolean;
+  }
+): WorkersViewMetrics {
+  const width = Math.max(40, viewport.width);
+  const lock = context?.logSourceLock ?? 'auto';
+  const entries = filterLogEntriesByLock(state.logEntries, lock);
+  const streamLines = formatLogStreamLines(entries, {
+    lock,
+    switchNotice: context?.sourceSwitchNotice ?? null,
+    pendingPrompt: state.pendingPrompt,
+    useColor: context?.useColor === true,
+    previousActor: null,
+  });
+  const wrapped = streamLines.flatMap((line) => wrapPlainDisplay(line, width));
+  const reserved = 2;
+  const availableLogLines = Math.max(1, viewport.height - reserved);
+  return {
+    totalLines: wrapped.length,
+    availableLogLines,
+    maxOffset: Math.max(0, wrapped.length - availableLogLines),
+  };
+}
 
 function resolveDisplayActor(
   state: MissionControlState,
@@ -85,101 +130,4 @@ function buildNowRunningLine(state: MissionControlState, actor: LogActor): strin
     return `NOW RUNNING  VALIDATION  ${target}`;
   }
   return `NOW RUNNING  IDLE  ${state.activity}`;
-}
-
-function selectLogEntries(
-  entries: UnifiedLogEntry[],
-  lock: 'auto' | 'worker' | 'manager'
-): UnifiedLogEntry[] {
-  if (lock === 'auto') {
-    return entries;
-  }
-  if (lock === 'worker') {
-    return entries.filter((entry) => entry.actor === 'worker');
-  }
-  return entries.filter((entry) => entry.actor === 'manager' || entry.actor === 'planning');
-}
-
-function formatLogStreamLines(
-  entries: UnifiedLogEntry[],
-  options: {
-    lock: 'auto' | 'worker' | 'manager';
-    switchNotice: string | null;
-    pendingPrompt?: string | null;
-    useColor: boolean;
-  }
-): string[] {
-  const lines: string[] = [];
-
-  if (options.switchNotice) {
-    lines.push(formatSwitchLine(options.switchNotice, options.useColor));
-  }
-
-  let previousActor: LogActor | null = null;
-  for (const entry of entries) {
-    if (!previousActor) {
-      lines.push(formatSwitchLine(`LOG START: ${actorName(entry.actor)}`, options.useColor));
-    } else if (options.lock === 'auto' && previousActor !== entry.actor) {
-      lines.push(formatSwitchLine(`SWITCH: ${actorName(previousActor)} -> ${actorName(entry.actor)}`, options.useColor));
-    }
-    previousActor = entry.actor;
-
-    const kindTag = formatKindTag(entry.kind, options.useColor);
-    lines.push(`${entry.timestamp.slice(11, 19)} ${kindTag} ${entry.message}`);
-    for (const detail of entry.detailLines ?? []) {
-      lines.push(`         ${detail}`);
-    }
-  }
-
-  if (lines.length === 0) {
-    if (options.pendingPrompt) {
-      return [`[APPROVAL_WAIT] ${options.pendingPrompt}`];
-    }
-    return ['No logs yet. Waiting for next event...'];
-  }
-
-  return lines;
-}
-
-function formatSwitchLine(message: string, useColor: boolean): string {
-  const body = `${SWITCH_BAR} ${message} ${SWITCH_BAR}`;
-  return colorize(body, 'kind_switch', useColor);
-}
-
-function actorName(actor: LogActor): string {
-  switch (actor) {
-    case 'planning':
-      return 'PLANNING';
-    case 'manager':
-      return 'MANAGER';
-    case 'worker':
-      return 'WORKER';
-    case 'validator':
-      return 'VALIDATION';
-    case 'system':
-      return 'SYSTEM';
-    default:
-      return 'IDLE';
-  }
-}
-
-function formatKindTag(kind: string, useColor: boolean): string {
-  const tag = `[${kind}]`;
-  const normalized = kind.trim().toUpperCase();
-  if (normalized === 'READ') {
-    return colorize(tag, 'kind_read', useColor);
-  }
-  if (normalized === 'WRITE') {
-    return colorize(tag, 'kind_write', useColor);
-  }
-  if (normalized === 'BASH' || normalized === 'EXEC') {
-    return colorize(tag, 'kind_bash', useColor);
-  }
-  if (normalized === 'DONE') {
-    return colorize(tag, 'kind_done', useColor);
-  }
-  if (normalized === 'ERR' || normalized === 'ERROR') {
-    return colorize(tag, 'kind_err', useColor);
-  }
-  return colorize(tag, 'kind_info', useColor);
 }

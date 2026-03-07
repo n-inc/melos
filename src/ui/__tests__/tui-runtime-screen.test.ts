@@ -464,14 +464,28 @@ describe('ui/tui runtime screen contract', () => {
     }));
 
     h.input.write('W');
-    expect(h.screen()).toContain('worker-log-1');
+    expect(h.screen()).toContain('LIVE');
+    expect(h.screen()).toContain('worker-log-40');
 
     h.input.write('\u001b');
-    h.input.write('[B');
-    expect(h.screen()).toContain('Lines 2-');
+    h.input.write('[1;2A');
+    expect(h.screen()).toContain('SCROLLBACK');
+    expect(h.screen()).toContain('worker-log-1');
 
-    h.input.write('\u001b[6~');
-    expect(h.screen()).toContain('Lines 14-');
+    h.ui.updateState(createState({
+      logEntries: Array.from({ length: 41 }, (_, idx) => ({
+        timestamp: `2026-02-28T09:00:${String(idx % 60).padStart(2, '0')}.000Z`,
+        actor: 'worker',
+        kind: 'INFO',
+        message: `worker-log-${idx + 1}`,
+      })),
+    }));
+    expect(h.screen()).toContain('SCROLLBACK +1 new');
+    expect(h.screen()).toContain('worker-log-1');
+
+    h.input.write('\u001b[1;2B');
+    expect(h.screen()).toContain('LIVE');
+    expect(h.screen()).toContain('worker-log-41');
 
     h.ui.stop();
   });
