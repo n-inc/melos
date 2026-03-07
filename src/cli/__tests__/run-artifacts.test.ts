@@ -175,4 +175,53 @@ describe('cli run artifacts', () => {
     expect(combinedOutput).toContain('TASK.json の状態 aborted を検出したため、自動で再開モードに切り替えます。');
     expect(combinedOutput).toContain('起動時点では state=aborted でしたが、自動再開後の最終状態は state=completed です');
   });
+
+  it('starts from RunSpec input without PRD.md and records run identity in events', async () => {
+    const runSpecPath = join(rootDir, 'run-spec.json');
+    writeFileSync(runSpecPath, JSON.stringify({
+      version: 1,
+      runId: 'run_cli_001',
+      createdAt: '2026-03-07T00:00:00.000Z',
+      source: {
+        tracker: 'github',
+        issueId: '456',
+        issueUrl: 'https://github.com/example/repo/issues/456',
+        title: 'RunSpec launch mission',
+      },
+      target: {
+        repo: 'example/repo',
+      },
+      objective: 'Launch a quick mission from RunSpec',
+      options: {
+        quick: true,
+      },
+    }), 'utf-8');
+
+    await executeWithOptions(
+      {
+        input: runSpecPath,
+        plain: true,
+        dryRun: true,
+      },
+      { resume: false }
+    );
+
+    const savedMission = await loadMissionPlan(join(rootDir, 'TASK.json'));
+    expect(savedMission.state).toBe('completed');
+
+    const events = readFileSync(join(rootDir, '.melos', 'events.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as {
+        type: string;
+        payload?: { runIdentity?: { runId: string; sourceIssueId: string; attempt: number } };
+      });
+    const planCreated = events.find((event) => event.type === 'plan_created');
+
+    expect(planCreated?.payload?.runIdentity).toMatchObject({
+      runId: 'run_cli_001',
+      sourceIssueId: '456',
+      attempt: 0,
+    });
+  });
 });

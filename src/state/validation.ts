@@ -27,8 +27,7 @@ export interface ValidationCheck {
 export interface ValidationContract {
   staticChecks: ValidationCheck[];
   testSuites: ValidationCheck[];
-  browserChecks?: ValidationCheck[];
-  manualSteps?: ValidationCheck[];
+  qaChecks?: ValidationCheck[];
 }
 
 export interface ValidationCheckFailure {
@@ -81,8 +80,7 @@ export function getAllValidationChecks(contract: ValidationContract): Validation
   return [
     ...contract.staticChecks,
     ...contract.testSuites,
-    ...(contract.browserChecks ?? []),
-    ...(contract.manualSteps ?? []),
+    ...(contract.qaChecks ?? []),
   ];
 }
 
@@ -90,8 +88,7 @@ export function cloneValidationContract(contract: ValidationContract): Validatio
   return {
     staticChecks: contract.staticChecks.map((check) => ({ ...check })),
     testSuites: contract.testSuites.map((check) => ({ ...check })),
-    browserChecks: contract.browserChecks?.map((check) => ({ ...check })),
-    manualSteps: contract.manualSteps?.map((check) => ({ ...check })),
+    qaChecks: contract.qaChecks?.map((check) => ({ ...check })),
   };
 }
 
@@ -129,8 +126,7 @@ export function normalizeValidationContract(contract: Partial<ValidationContract
   return {
     staticChecks: normalizeList(contract.staticChecks),
     testSuites: normalizeList(contract.testSuites),
-    browserChecks: normalizeList(contract.browserChecks),
-    manualSteps: normalizeList(contract.manualSteps),
+    qaChecks: normalizeList(contract.qaChecks),
   };
 }
 
@@ -163,8 +159,7 @@ export function mergeValidationResults(
   return {
     staticChecks: mergeList(contract.staticChecks),
     testSuites: mergeList(contract.testSuites),
-    browserChecks: contract.browserChecks ? mergeList(contract.browserChecks) : undefined,
-    manualSteps: contract.manualSteps ? mergeList(contract.manualSteps) : undefined,
+    qaChecks: contract.qaChecks ? mergeList(contract.qaChecks) : undefined,
   };
 }
 

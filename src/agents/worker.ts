@@ -175,107 +175,16 @@ export class WorkerAgent implements Agent {
     if (input.feature.kind === 'review' && input.feature.reviewType === 'code') {
       return this.buildCodeReviewPrompt(input);
     }
-
-    const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
-    const featureChecks = input.feature.checks?.map((check) => `- ${check.text}`).join('\n') || '- none';
-    const executionCwd = this.resolveExecutionCwd(input);
-    const validationChecks = [
-      ...input.milestone.validationContract.staticChecks,
-      ...input.milestone.validationContract.testSuites,
-      ...(input.milestone.validationContract.browserChecks ?? []),
-      ...(input.milestone.validationContract.manualSteps ?? []),
-    ]
-      .map((check) => {
-        const action = typeof check.command === 'string' && check.command.trim().length > 0
-          ? check.command.trim()
-          : (check.type === 'manual' || check.type === 'e2e'
-              ? 'report structured evidence in `checks` if you actually performed the evidence-based step'
-              : check.type === 'browser'
-                ? 'report structured browser evidence in `checks` with runner plus screenshot/video paths or URLs'
-              : 'no command');
-        return `- ${check.id} [${check.type}] ${check.description} :: ${action}`;
-      })
-      .join('\n');
-    const validationCommands = [
-      ...input.milestone.validationContract.staticChecks,
-      ...input.milestone.validationContract.testSuites,
-    ]
-      .map((check) => check.command)
-      .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
-      .join('\n');
-
-    const sections = [
-      promptTemplate.trim(),
-      '',
-      '## Runtime Context',
-      `- Mission goal: ${input.missionPlan.mission.goal}`,
-      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
-      `- Feature: ${input.feature.id} ${input.feature.description}`,
-      `- Execution cwd: ${executionCwd}`,
-      `- Current branch: ${input.currentBranch ?? '(not set)'}`,
-      `- Base branch: ${input.baseBranch ?? '(not set)'}`,
-      '',
-      '## Feature Checks',
-      featureChecks,
-      '',
-      '## Manager Briefing',
-      input.briefing?.trim() || '(none)',
-      '',
-      '## PRD',
-      input.prd?.trim() || '(PRD not found)',
-      '',
-      '## Milestone Validation Checks',
-      validationChecks || '- none',
-      '',
-      '## Milestone Validation Commands',
-      validationCommands || '(none)',
-    ];
-
-    if (input.currentBranch && input.baseBranch) {
-      sections.push(
-        '',
-        '## Commit Workflow',
-        `- Use the git-committer skill at: ${this.resolveGitCommitterSkillPath()}`,
-        '- Before committing, inspect: `git status --porcelain`, `git log --oneline -20`, `git diff --staged`',
-        '- Create the commit only after implementation and validation are complete for this feature branch',
-        '- Use `type(scope): subject` for the commit subject',
-        '- Do not use `...` or other abbreviated placeholders in the commit message',
-        '- If you add a commit body, briefly explain why the change is needed'
-      );
+    if (input.feature.kind === 'pull_request') {
+      return this.buildPullRequestPrompt(input);
     }
-
-    sections.push(
-      '',
-      '## Output JSON Schema',
-      JSON.stringify({
-        status: 'SUCCESS',
-        summary: 'what was done',
-        filesChanged: [{ path: 'src/file.ts', additions: 10, deletions: 2 }],
-        validation: {
-          testsRun: true,
-          testsPassed: 0,
-          testsFailed: 0,
-          lintPassed: true,
-          typecheckPassed: true,
-        },
-        checks: [
-          {
-            checkId: 'm1-browser-1',
-            passed: true,
-            runner: 'playwright-interactive',
-            screenshotPath: 'artifacts/screenshots/example.png',
-          },
-        ],
-        warnings: ['describe any fallback, unverified scope, or required user follow-up'],
-        discoveredFeatures: [],
-        learnings: [],
-        requestsHelp: false,
-      }, null, 2),
-      '',
-      'Return only one fenced json block.'
-    );
-
-    return sections.join('\n');
+    if (input.feature.kind === 'pr_followup') {
+      return this.buildPullRequestFollowUpPrompt(input);
+    }
+    if (input.feature.kind === 'qa') {
+      return this.buildQaPrompt(input);
+    }
+    return this.buildImplementationPrompt(input);
   }
 
   private async buildProductReviewPrompt(input: WorkerInput): Promise<string> {
@@ -394,6 +303,298 @@ export class WorkerAgent implements Agent {
     ].join('\n');
   }
 
+  private async buildPullRequestPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolvePullRequestPromptPath());
+    const executionCwd = this.resolveExecutionCwd(input);
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
+      `- Current branch: ${input.currentBranch ?? '(not set)'}`,
+      `- Base branch: ${input.baseBranch ?? '(not set)'}`,
+      `- git-new-pull-request skill: ${this.resolveGitNewPullRequestSkillPath()}`,
+      '- Use non-interactive GitHub CLI commands such as `gh pr create` or `gh pr edit`',
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'created or updated PR',
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        warnings: [],
+        pullRequest: {
+          number: 123,
+          url: 'https://github.com/owner/repo/pull/123',
+          title: 'feat: PR title',
+          baseBranch: input.baseBranch ?? 'main',
+          headBranch: input.currentBranch ?? 'melos/mission/mission',
+          draft: false,
+          action: 'created',
+        },
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
+  private async buildPullRequestFollowUpPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolvePullRequestFollowUpPromptPath());
+    const executionCwd = this.resolveExecutionCwd(input);
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
+      `- Current branch: ${input.currentBranch ?? '(not set)'}`,
+      `- Base branch: ${input.baseBranch ?? '(not set)'}`,
+      `- melos-ci-fix-loop skill: ${this.resolveMelosCiFixLoopSkillPath()}`,
+      `- git-committer skill: ${this.resolveGitCommitterSkillPath()}`,
+      '- Gather PR state with `gh pr view --json ...`, `gh api graphql`, and `gh pr checks --required`',
+      '- Never invoke nested `npx melos` from this follow-up step',
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'handled actionable PR feedback and waited for quiet window',
+        filesChanged: [{ path: 'src/file.ts', additions: 10, deletions: 2 }],
+        validation: {
+          testsRun: true,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        warnings: ['ignored off-target feedback: explain why it was skipped'],
+        pullRequest: {
+          number: 123,
+          url: 'https://github.com/owner/repo/pull/123',
+          title: 'feat: PR title',
+          baseBranch: input.baseBranch ?? 'main',
+          headBranch: input.currentBranch ?? 'melos/mission/mission',
+          draft: false,
+          action: 'updated',
+        },
+        pullRequestFollowUp: {
+          handledFeedbackIds: ['PRRC_kwDO_example'],
+          lastExternalActivityAt: '2026-03-07T09:00:00.000Z',
+          quietUntil: '2026-03-07T09:30:00.000Z',
+        },
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
+  private async buildImplementationPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
+    const featureChecks = input.feature.checks?.map((check) => `- ${check.text}`).join('\n') || '- none';
+    const executionCwd = this.resolveExecutionCwd(input);
+    const validationChecks = [
+      ...input.milestone.validationContract.staticChecks,
+      ...input.milestone.validationContract.testSuites,
+    ]
+      .map((check) => {
+        const action = typeof check.command === 'string' && check.command.trim().length > 0
+          ? check.command.trim()
+          : 'no command';
+        return `- ${check.id} [${check.type}] ${check.description} :: ${action}`;
+      })
+      .join('\n');
+    const validationCommands = [
+      ...input.milestone.validationContract.staticChecks,
+      ...input.milestone.validationContract.testSuites,
+    ]
+      .map((check) => check.command)
+      .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
+      .join('\n');
+    const qaChecks = this.formatQaChecks(input);
+
+    const sections = [
+      promptTemplate.trim(),
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- Feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
+      `- Current branch: ${input.currentBranch ?? '(not set)'}`,
+      `- Base branch: ${input.baseBranch ?? '(not set)'}`,
+      '',
+      '## Feature Checks',
+      featureChecks,
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Milestone Validation Checks',
+      validationChecks || '- none',
+      '',
+      '## Milestone Validation Commands',
+      validationCommands || '(none)',
+      '',
+      '## Dedicated QA Handoff',
+      qaChecks,
+      'QA evidence is handled by the dedicated qa feature. Do not pre-emptively report qaChecks from this implementation feature unless you actually ran the QA step.',
+    ];
+
+    if (this.shouldIncludeCommitWorkflow(input)) {
+      sections.push(
+        '',
+        '## Commit Workflow',
+        `- Use the git-committer skill at: ${this.resolveGitCommitterSkillPath()}`,
+        '- Before committing, inspect: `git status --porcelain`, `git log --oneline -20`, `git diff --staged`',
+        '- Create the commit only after implementation and validation are complete for this feature branch',
+        '- Use `type(scope): subject` for the commit subject',
+        '- Do not use `...` or other abbreviated placeholders in the commit message',
+        '- If you add a commit body, briefly explain why the change is needed'
+      );
+    }
+
+    sections.push(
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'what was done',
+        filesChanged: [{ path: 'src/file.ts', additions: 10, deletions: 2 }],
+        validation: {
+          testsRun: true,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        warnings: ['describe any fallback, unverified scope, or required user follow-up'],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.'
+    );
+
+    return sections.join('\n');
+  }
+
+  private async buildQaPrompt(input: WorkerInput): Promise<string> {
+    const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
+    const executionCwd = this.resolveExecutionCwd(input);
+    const qaChecks = this.formatQaChecks(input);
+    const validationCommands = [
+      ...input.milestone.validationContract.staticChecks,
+      ...input.milestone.validationContract.testSuites,
+    ]
+      .map((check) => check.command)
+      .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
+      .join('\n');
+
+    return [
+      promptTemplate.trim(),
+      '',
+      '## QA Mode',
+      '- This feature is the dedicated milestone QA execution step.',
+      '- Do not change code unless the QA environment is completely blocked and the manager explicitly briefed a setup-only change.',
+      '- Do not create commits or branches from this step.',
+      '- Execute the qaChecks below and report every checkId in `checks`.',
+      '- If a qaCheck fails, keep that failure inside `checks`. Return feature status `SUCCESS` once the QA checklist itself was executed and evidence was captured.',
+      '- Return `BLOCKED` only when QA could not be executed due to environment, credentials, startup, or tooling blockers.',
+      '',
+      '## Runtime Context',
+      `- Mission goal: ${input.missionPlan.mission.goal}`,
+      `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
+      `- QA feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
+      '',
+      '## Manager Briefing',
+      input.briefing?.trim() || '(none)',
+      '',
+      '## PRD',
+      input.prd?.trim() || '(PRD not found)',
+      '',
+      '## QA Checks',
+      qaChecks,
+      '',
+      '## Reference Validation Commands',
+      validationCommands || '(none)',
+      '',
+      '## Output JSON Schema',
+      JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'qa checklist executed',
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [
+          {
+            checkId: 'm1-qa-1',
+            passed: true,
+            runner: 'playwright-interactive',
+            screenshotPath: 'artifacts/screenshots/example.png',
+          },
+          {
+            checkId: 'm1-qa-2',
+            passed: false,
+            failure: {
+              summary: 'qa observation failed',
+              affectedFiles: [],
+              errorMessages: ['describe what failed'],
+            },
+          },
+        ],
+        warnings: ['describe any fallback or caveat that affected the QA run'],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+      }, null, 2),
+      '',
+      'Return only one fenced json block.',
+    ].join('\n');
+  }
+
   private resolveWorkerPromptPath(): string {
     const promptsDir = isAbsolute(this.config.promptsDir)
       ? this.config.promptsDir
@@ -415,12 +616,61 @@ export class WorkerAgent implements Agent {
     return join(promptsDir, 'code-review.md');
   }
 
+  private resolvePullRequestPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'pull-request.md');
+  }
+
+  private resolvePullRequestFollowUpPromptPath(): string {
+    const promptsDir = isAbsolute(this.config.promptsDir)
+      ? this.config.promptsDir
+      : resolve(this.config.cwd, this.config.promptsDir);
+    return join(promptsDir, 'pr-followup.md');
+  }
+
   private resolveProductReviewContract(input: WorkerInput): ProductReviewContract | undefined {
     return input.missionPlan.productReviewContract;
   }
 
   private resolveGitCommitterSkillPath(): string {
     return join(this.config.cwd, '.claude', 'skills', 'git-committer', 'SKILL.md');
+  }
+
+  private resolveGitNewPullRequestSkillPath(): string {
+    return join(this.config.cwd, '.claude', 'skills', 'git-new-pull-request', 'SKILL.md');
+  }
+
+  private resolveMelosCiFixLoopSkillPath(): string {
+    return join(this.config.cwd, '.claude', 'skills', 'melos-ci-fix-loop', 'SKILL.md');
+  }
+
+  private formatQaChecks(input: WorkerInput): string {
+    return (input.milestone.validationContract.qaChecks ?? [])
+      .map((check) => {
+        const action = typeof check.command === 'string' && check.command.trim().length > 0
+          ? check.command.trim()
+          : (check.type === 'browser'
+              ? 'report browser evidence in `checks` with runner plus screenshot/video paths or URLs'
+              : check.type === 'e2e'
+                ? 'report structured e2e evidence in `checks`'
+                : 'report structured QA evidence in `checks`');
+        const requirementNotes = [
+          check.requiredRunner ? `runner=${check.requiredRunner}` : null,
+          check.requiredArtifacts?.length ? `artifacts=${check.requiredArtifacts.join(',')}` : null,
+        ].filter((item): item is string => Boolean(item));
+        const requirements = requirementNotes.length > 0 ? ` [${requirementNotes.join(' ')}]` : '';
+        return `- ${check.id} [${check.type}] ${check.description}${requirements} :: ${action}`;
+      })
+      .join('\n') || '- none';
+  }
+
+  private shouldIncludeCommitWorkflow(input: WorkerInput): boolean {
+    if (!input.currentBranch || !input.baseBranch) {
+      return false;
+    }
+    return input.feature.kind === 'implementation' || input.feature.kind === 'review_remediation';
   }
 
   private parseWorkReport(
@@ -480,6 +730,14 @@ export class WorkerAgent implements Agent {
         }
         if (Array.isArray(parsed.warnings)) {
           report.warnings = normalizeWarnings(parsed.warnings);
+        }
+        const pullRequest = normalizePullRequestState((parsed as { pullRequest?: unknown }).pullRequest);
+        if (pullRequest) {
+          report.pullRequest = pullRequest;
+        }
+        const pullRequestFollowUp = normalizePullRequestFollowUpState((parsed as { pullRequestFollowUp?: unknown }).pullRequestFollowUp);
+        if (pullRequestFollowUp) {
+          report.pullRequestFollowUp = pullRequestFollowUp;
         }
         const reviewType = input.feature.reviewType;
         if (reviewType && Array.isArray((parsed as { findings?: unknown[] }).findings)) {
@@ -591,9 +849,9 @@ export class WorkerAgent implements Agent {
     const shouldResume = this.resumeThreadId !== null
       && this.resumeMissionId !== null
       && this.resumeMissionId === input.missionPlan.mission.id;
-    const isReviewFeature = input.feature.kind === 'review';
+    const disallowThreadReuse = input.feature.kind === 'review' || input.feature.kind === 'qa';
     const threadId = shouldResume && this.resumeThreadId
-      && !isReviewFeature
+      && !disallowThreadReuse
       ? this.resumeThreadId
       : undefined;
 
@@ -601,9 +859,7 @@ export class WorkerAgent implements Agent {
       cwd: this.resolveExecutionCwd(input),
       model: resolveRuntimeModel(this.config.model, CODEX_LATEST_ALIAS),
       reasoningEffort: this.config.reasoningEffort || 'xhigh',
-      enabledFeatures: input.feature.kind === 'review' && input.feature.reviewType === 'product'
-        ? ['js_repl']
-        : undefined,
+      enabledFeatures: this.shouldEnableJsRepl(input) ? ['js_repl'] : undefined,
       execMode: true,
       suppressTerminalOutput: this.config.suppressTerminalOutput === true,
       threadId,
@@ -640,6 +896,12 @@ export class WorkerAgent implements Agent {
     if (input.feature.kind === 'review' && input.feature.reviewType === 'product') {
       return false;
     }
+    if (input.feature.kind === 'qa') {
+      return false;
+    }
+    if (input.feature.kind === 'pull_request' || input.feature.kind === 'pr_followup') {
+      return true;
+    }
     return isClaudeFamily(input.feature.model);
   }
 
@@ -654,6 +916,16 @@ export class WorkerAgent implements Agent {
       }
     }
     return this.config.cwd;
+  }
+
+  private shouldEnableJsRepl(input: WorkerInput): boolean {
+    if (input.feature.kind === 'review' && input.feature.reviewType === 'product') {
+      return true;
+    }
+    if (input.feature.kind !== 'qa') {
+      return false;
+    }
+    return (input.milestone.validationContract.qaChecks ?? []).some((check) => check.type === 'browser');
   }
 }
 
@@ -755,6 +1027,64 @@ function normalizeValidationCheckFailure(value: unknown): ValidationCheckFailure
     rootCause: typeof record.rootCause === 'string' && record.rootCause.trim().length > 0
       ? record.rootCause.trim()
       : undefined,
+  };
+}
+
+function normalizePullRequestState(value: unknown): WorkerFeatureReport['pullRequest'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const url = typeof record.url === 'string' ? record.url.trim() : '';
+  const baseBranch = typeof record.baseBranch === 'string' ? record.baseBranch.trim() : '';
+  const headBranch = typeof record.headBranch === 'string' ? record.headBranch.trim() : '';
+  const action = record.action === 'created' || record.action === 'updated'
+    ? record.action
+    : null;
+  if (!url || !baseBranch || !headBranch || !action) {
+    return undefined;
+  }
+
+  return {
+    number: typeof record.number === 'number' && Number.isFinite(record.number)
+      ? Math.max(1, Math.floor(record.number))
+      : undefined,
+    url,
+    title: typeof record.title === 'string' && record.title.trim().length > 0
+      ? record.title.trim()
+      : undefined,
+    baseBranch,
+    headBranch,
+    draft: record.draft === true,
+    action,
+    updatedAt: typeof record.updatedAt === 'string' && record.updatedAt.trim().length > 0
+      ? record.updatedAt
+      : new Date().toISOString(),
+  };
+}
+
+function normalizePullRequestFollowUpState(value: unknown): WorkerFeatureReport['pullRequestFollowUp'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const handledFeedbackIds = Array.isArray(record.handledFeedbackIds)
+    ? record.handledFeedbackIds
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+    : [];
+
+  return {
+    handledFeedbackIds,
+    lastExternalActivityAt: typeof record.lastExternalActivityAt === 'string' && record.lastExternalActivityAt.trim().length > 0
+      ? record.lastExternalActivityAt
+      : null,
+    quietUntil: typeof record.quietUntil === 'string' && record.quietUntil.trim().length > 0
+      ? record.quietUntil
+      : null,
   };
 }
 

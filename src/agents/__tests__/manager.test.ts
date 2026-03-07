@@ -43,8 +43,7 @@ describe('ManagerAgent', () => {
             validationContract: {
               staticChecks: [],
               testSuites: [],
-              browserChecks: [],
-              manualSteps: [],
+              qaChecks: [],
             },
             features: [{ id: 'm1-f1', description: 'Implement auth', model: 'codex' }],
           },
@@ -201,6 +200,123 @@ describe('ManagerAgent', () => {
     expect(plan.milestones[0]?.id).toBe('m1');
     expect(plan.milestones[0]?.features[0]?.id).toBe('m1-f1');
     expect(mockExecute).toHaveBeenCalled();
+  });
+
+  it('synthesizes a dedicated qa feature from qaChecks in planner output', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Students LP',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['QA can be executed'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Implement',
+            description: 'Ship UI',
+            validationContract: {
+              staticChecks: [],
+              testSuites: [],
+              qaChecks: [
+                {
+                  id: 'm1-qa-1',
+                  description: 'Verify Students LP hero',
+                  type: 'browser',
+                  requiredRunner: 'playwright-interactive',
+                  requiredArtifacts: ['screenshot'],
+                },
+              ],
+            },
+            features: [{ id: 'm1-f1', description: 'Implement UI', model: 'codex-latest', cwd: 'frontend/apps/web' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'students-lp',
+      prd: '# Students LP',
+    });
+
+    expect(plan.milestones[0]?.validationContract.qaChecks).toHaveLength(1);
+    expect(plan.milestones[0]?.features.at(-1)).toMatchObject({
+      kind: 'qa',
+      model: 'codex-latest',
+      cwd: 'frontend/apps/web',
+    });
+  });
+
+  it('appends post-pr follow-up milestone when automation is enabled', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+      pullRequestAutomationEnabled: true,
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Auth system',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Tests pass'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Core',
+            description: 'Implement core',
+            validationContract: {
+              staticChecks: [],
+              testSuites: [],
+            },
+            features: [{ id: 'm1-f1', description: 'Implement auth', model: 'codex' }],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'auth',
+      prd: '# Auth system',
+    });
+
+    expect(plan.milestones.at(-1)).toMatchObject({
+      title: 'Post-PR Follow-up',
+      features: [
+        expect.objectContaining({
+          kind: 'pull_request',
+          model: 'claude-latest',
+        }),
+        expect.objectContaining({
+          kind: 'pr_followup',
+          model: 'claude-latest',
+        }),
+      ],
+    });
   });
 
   it('normalizes hardcoded local dev ports in validation commands', async () => {

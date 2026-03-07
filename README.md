@@ -2,6 +2,7 @@
 
 Melos は MissionPlan 状態機械を中心に、長時間の自律実行を管理する CLI です。
 `TASK.json` は v3 MissionPlan（`mission > milestones > features`）を唯一の実行ソースとして扱います。
+milestone ごとの QA は `validationContract.qaChecks` に定義し、Melos が dedicated `qa` feature を自動生成して実行します。
 
 ## セットアップ
 

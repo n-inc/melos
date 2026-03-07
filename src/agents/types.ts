@@ -1,6 +1,7 @@
 import type { MissionPlan, Milestone, Feature } from '../state/mission.js';
 import type { ValidationCheckResult, ValidationReport } from '../state/validation.js';
 import type { ReviewArtifact, ReviewFinding, ReviewType } from '../state/review.js';
+import type { PullRequestState, PullRequestFollowUpState } from '../state/git-strategy.js';
 
 export type AgentMode = 'manager' | 'worker';
 
@@ -36,6 +37,8 @@ export interface WorkerFeatureReport {
     typecheckPassed: boolean;
   };
   checks: ValidationCheckResult[];
+  pullRequest?: PullRequestState;
+  pullRequestFollowUp?: PullRequestFollowUpState;
   review?: {
     reviewType: ReviewType;
     generation: number;

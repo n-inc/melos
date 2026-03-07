@@ -10,6 +10,7 @@ import type { EngineResult } from '../engines/base.js';
 import type { MissionPlan } from '../state/mission.js';
 import {
   createMissionPlan,
+  ensurePullRequestFollowUpMilestone,
 } from '../state/mission.js';
 import type { ProductReviewContract, ReviewFinding, ReviewType } from '../state/review.js';
 import { normalizeProductReviewContract } from '../state/review.js';
@@ -42,6 +43,7 @@ export interface ManagerAgentConfig {
   requestTimeoutMs?: number;
   suppressTerminalOutput?: boolean;
   resumeThreadId?: string;
+  pullRequestAutomationEnabled?: boolean;
 }
 
 export class MissionPlanningError extends Error {
@@ -166,7 +168,7 @@ interface MissionPlanningOutput {
     validationContract?: {
       staticChecks?: Array<{ id: string; description: string; command?: string; type?: string }>;
       testSuites?: Array<{ id: string; description: string; command?: string; type?: string }>;
-      browserChecks?: Array<{
+      qaChecks?: Array<{
         id: string;
         description: string;
         command?: string;
@@ -174,7 +176,6 @@ interface MissionPlanningOutput {
         requiredRunner?: string;
         requiredArtifacts?: string[];
       }>;
-      manualSteps?: Array<{ id: string; description: string; command?: string; type?: string }>;
     };
     features: Array<{
       id?: string;
@@ -578,7 +579,7 @@ export class ManagerAgent implements Agent {
       successCriteria,
     });
 
-    return createMissionPlan({
+    const plan = createMissionPlan({
       missionId: input.missionId,
       goal,
       constraints,
@@ -587,6 +588,9 @@ export class ManagerAgent implements Agent {
       state: 'planning',
       milestones: appendFinalReviewMilestone(milestones, productReviewContract),
     });
+    return this.config.pullRequestAutomationEnabled
+      ? ensurePullRequestFollowUpMilestone(plan)
+      : plan;
   }
 
   private toMissionPlan(
@@ -620,21 +624,13 @@ export class ManagerAgent implements Agent {
           passed: false,
           failureCount: 0,
         })),
-        browserChecks: (milestone.validationContract?.browserChecks ?? []).map((check, index) => ({
-          id: check.id || `m${milestoneIndex + 1}-browser-${index + 1}`,
-          description: check.description,
-          type: normalizeCheckType(check.type, 'browser'),
-          command: check.command,
-          requiredRunner: normalizeValidationRunner(check.requiredRunner),
-          requiredArtifacts: normalizeValidationArtifacts(check.requiredArtifacts),
-          passed: false,
-          failureCount: 0,
-        })),
-        manualSteps: (milestone.validationContract?.manualSteps ?? []).map((check, index) => ({
-          id: check.id || `m${milestoneIndex + 1}-manual-${index + 1}`,
+        qaChecks: (milestone.validationContract?.qaChecks ?? []).map((check, index) => ({
+          id: check.id || `m${milestoneIndex + 1}-qa-${index + 1}`,
           description: check.description,
           type: normalizeCheckType(check.type, 'manual'),
           command: check.command,
+          requiredRunner: normalizeValidationRunner(check.requiredRunner),
+          requiredArtifacts: normalizeValidationArtifacts(check.requiredArtifacts),
           passed: false,
           failureCount: 0,
         })),
@@ -658,7 +654,7 @@ export class ManagerAgent implements Agent {
       successCriteria: planning.successCriteria,
     });
 
-    return createMissionPlan({
+    const plan = createMissionPlan({
       missionId: input.missionId,
       goal: planning.goal,
       constraints: planning.constraints,
@@ -667,6 +663,9 @@ export class ManagerAgent implements Agent {
       milestones: appendFinalReviewMilestone(milestones, productReviewContract),
       state: 'planning',
     });
+    return this.config.pullRequestAutomationEnabled
+      ? ensurePullRequestFollowUpMilestone(plan)
+      : plan;
   }
 
   private buildMissionPlanPrompt(
@@ -696,7 +695,7 @@ export class ManagerAgent implements Agent {
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"browserChecks":[{"id":"...","description":"...","type":"browser","requiredRunner":"playwright-interactive","requiredArtifacts":["screenshot"]}],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"qaChecks":[{"id":"...","description":"...","type":"browser","requiredRunner":"playwright-interactive","requiredArtifacts":["screenshot"]}]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -710,6 +709,7 @@ export class ManagerAgent implements Agent {
       '- If the PRD/repository mentions `.port`, `CONDUCTOR_PORT`, or `make info`, validation commands must reuse that local URL resolution strategy and must not hardcode port 8000 except as a final fallback through `${CONDUCTOR_PORT:-8000}` or `.port`.',
       '- Set feature.cwd only when the implementation or QA must run from a workspace subdirectory. cwd must be repo-relative (example: `frontend/apps/web`).',
       '- Feature IDs must follow mX-fY',
+      '- Put interactive browser/manual/e2e verification in `validationContract.qaChecks`. Do not output a dedicated qa feature; Melos synthesizes it automatically when qaChecks exist.',
       '- Default feature model is codex-latest',
       '- Use model "claude-latest" only for UI creation, UI fixes, styling, layout, or visual design work',
       '',
@@ -849,12 +849,12 @@ export class ManagerAgent implements Agent {
 
 function normalizeCheckType(
   value: string | undefined,
-  fallback: 'command' | 'auto:test' | 'browser' | 'manual'
+  fallback: 'command' | 'auto:test' | 'browser' | 'manual' | 'e2e'
 ): CheckType {
   if (!value) {
     return fallback;
   }
-  if (value === 'auto:lint' || value === 'auto:typecheck' || value === 'auto:test' || value === 'browser' || value === 'manual' || value === 'command') {
+  if (value === 'auto:lint' || value === 'auto:typecheck' || value === 'auto:test' || value === 'browser' || value === 'manual' || value === 'e2e' || value === 'command') {
     return value;
   }
   return fallback;
@@ -1064,8 +1064,7 @@ function getValidationFocusLines(contract: MissionPlan['milestones'][number]['va
   return [
     ...contract.staticChecks.map((check) => formatValidationCheckLine('static', check.description, check.command)),
     ...contract.testSuites.map((check) => formatValidationCheckLine('test', check.description, check.command)),
-    ...(contract.browserChecks ?? []).map((check) => formatValidationCheckLine('browser', check.description, check.command)),
-    ...(contract.manualSteps ?? []).map((check) => formatValidationCheckLine('manual', check.description, check.command)),
+    ...(contract.qaChecks ?? []).map((check) => formatValidationCheckLine(`qa:${check.type}`, check.description, check.command)),
   ].filter((line) => line.trim().length > 0);
 }
 
@@ -1813,8 +1812,7 @@ function normalizeValidationContract(value: unknown): MissionPlanningOutput['mil
   return {
     staticChecks: normalizeValidationChecks(contract.staticChecks),
     testSuites: normalizeValidationChecks(contract.testSuites),
-    browserChecks: normalizeBrowserValidationChecks(contract.browserChecks),
-    manualSteps: normalizeValidationChecks(contract.manualSteps),
+    qaChecks: normalizeQaValidationChecks(contract.qaChecks),
   };
 }
 
@@ -1847,7 +1845,7 @@ function normalizeValidationChecks(
   return checks.length > 0 ? checks : undefined;
 }
 
-function normalizeBrowserValidationChecks(
+function normalizeQaValidationChecks(
   value: unknown
 ): Array<{
   id: string;
@@ -1880,12 +1878,12 @@ function normalizeBrowserValidationChecks(
       return;
     }
     const id = toNonEmptyString(record.id) ?? `check-${index + 1}`;
-    const type = toNonEmptyString(record.type);
+    const type = normalizeQaCheckType(record.type, record.requiredRunner, record.requiredArtifacts);
     const command = toNonEmptyString(record.command);
     checks.push({
       id,
       description,
-      type: type ?? undefined,
+      type,
       command: normalizeValidationCommand(command),
       requiredRunner: normalizeValidationRunner(record.requiredRunner),
       requiredArtifacts: normalizeValidationArtifacts(record.requiredArtifacts),
@@ -1899,6 +1897,19 @@ function normalizeValidationRunner(value: unknown): ValidationRunner | undefined
   return value === 'playwright-interactive' || value === 'browser-test'
     ? value
     : undefined;
+}
+
+function normalizeQaCheckType(
+  value: unknown,
+  requiredRunner: unknown,
+  requiredArtifacts: unknown
+): 'browser' | 'manual' | 'e2e' {
+  if (value === 'browser' || value === 'manual' || value === 'e2e') {
+    return value;
+  }
+  return (normalizeValidationRunner(requiredRunner) || Array.isArray(requiredArtifacts))
+    ? 'browser'
+    : 'manual';
 }
 
 function normalizeValidationArtifacts(value: unknown): ValidationArtifact[] | undefined {

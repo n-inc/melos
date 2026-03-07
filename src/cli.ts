@@ -21,6 +21,7 @@ import {
   terminateProcess,
 } from './state/runtime.js';
 import { loadSnapshot } from './state/snapshot.js';
+import { loadGitStrategyState, type PullRequestState } from './state/git-strategy.js';
 import type { MissionEvent } from './state/events.js';
 import {
   formatRuntimeWarningRecord,
@@ -34,6 +35,7 @@ import { createRuntimeUI, resolveRuntimeUIMode, type SessionInfo, type TerminalC
 import { CODEX_LATEST_ALIAS, normalizeModelName } from './models/registry.js';
 
 export interface CLIOptions {
+  input?: string;
   maxIterations?: number;
   plannerModel?: string;
   workerModel?: string;
@@ -44,7 +46,9 @@ export interface CLIOptions {
   dryRun?: boolean;
   interactive?: boolean;
   autoApprove?: boolean;
+  quick?: boolean;
   gitStrategy?: boolean;
+  createPr?: boolean;
   baseBranch?: string;
   missionId?: string;
   headless?: boolean;
@@ -133,6 +137,7 @@ export function createProgram(): Command {
     .helpOption('-h, --help', 'ヘルプを表示');
 
   const applyCommonRunOptions = (cmd: Command): Command => cmd
+    .option('--input <path>', 'RunSpec JSON ファイルからミッションを起動')
     .option('--max-iterations <number>', '最大イテレーション数', parseMaxIterations)
     .option('--model <model>', '全ロールの共通モデル')
     .option('--planner-model <model>', 'Planner/Manager モデル')
@@ -143,9 +148,11 @@ export function createProgram(): Command {
     .option('--headless', 'TUIを無効化し、外部コマンドで監視/承認するヘッドレスモード')
     .option('--detach', 'バックグラウンドで実行して即時に終了（--headless推奨）')
     .option('--dry-run', '実装を行わず計画のみ進める')
+    .option('--quick', '計画スキップ・単一 Feature 即実行')
     .option('--interactive', '対話型 planning を有効化')
     .option('--auto-approve', 'plan 承認を自動化')
     .option('--git-strategy', 'Git-as-Truth ハンドオフを有効化')
+    .option('--create-pr', 'final review 後に GitHub Pull Request 作成と post-PR follow-up を有効化')
     .option('--base-branch <branch>', 'Git戦略のベースブランチ')
     .option('--mission-id <id>', 'ミッションID')
     .addOption(new Option(DETACHED_CHILD_FLAG).hideHelp());
@@ -349,6 +356,31 @@ export async function executeWithOptions(
   const melosDir = join(cwd, '.melos');
   const missionFilePath = join(cwd, 'TASK.json');
   const prdFilePath = join(cwd, 'PRD.md');
+  let prdOverride: string | undefined;
+  let runIdentity: OrchestratorConfig['runIdentity'];
+  let runSpecTitle: string | undefined;
+
+  if (options.input) {
+    const { loadRunSpec, runSpecToPrdText, extractRunIdentity } = await import('./run-spec.js');
+    const runSpec = await loadRunSpec(options.input);
+    runSpecTitle = runSpec.source.title;
+    prdOverride = runSpecToPrdText(runSpec);
+    runIdentity = extractRunIdentity(runSpec);
+
+    if (runSpec.options?.quick) {
+      options.quick = true;
+    }
+    if (runSpec.options?.maxIterations) {
+      options.maxIterations ??= runSpec.options.maxIterations;
+    }
+    if (runSpec.options?.model) {
+      options.workerModel ??= runSpec.options.model;
+      options.plannerModel ??= runSpec.options.model;
+    }
+  }
+  if (options.quick === true) {
+    options.autoApprove = true;
+  }
 
   const autoResumeState = runtimeOptions.resume
     ? null
@@ -360,6 +392,7 @@ export async function executeWithOptions(
     melosDir,
     missionFilePath,
     prdFilePath,
+    hasRunSpecInput: options.input !== undefined,
     resume: effectiveResume,
   });
   if (autoResumeState) {
@@ -399,6 +432,9 @@ export async function executeWithOptions(
     interactivePlanning: options.interactive === true,
     autoApprove: options.autoApprove === true,
     dryRun: options.dryRun === true,
+    quick: options.quick === true,
+    runIdentity,
+    prdOverride,
     resume: effectiveResume,
     missionId: options.missionId,
     runtimeUIMode: uiMode,
@@ -442,7 +478,7 @@ export async function executeWithOptions(
     runtimeUI.start(buildSessionInfo({
       version: getVersion(),
       missionId: options.missionId ?? 'mission',
-      missionTitle: readPrdTitle(prdFilePath),
+      missionTitle: runSpecTitle ?? readPrdTitle(prdFilePath),
       planner: models.planner,
       worker: models.worker,
     }), {
@@ -520,6 +556,7 @@ function buildRunCompletionMessage(
 }
 
 export interface MissionStatusPayload {
+  schemaVersion: 1;
   initialized: boolean;
   warnings: string[];
   running: boolean;
@@ -549,6 +586,15 @@ export interface MissionStatusPayload {
     failedCheckCount: number;
     warningCount: number;
   } | null;
+  qa: {
+    summaries: Array<{
+      milestoneId: string;
+      total: number;
+      passed: number;
+      failed: number;
+      pending: number;
+    }>;
+  } | null;
   review: {
     reviewType: 'product' | 'code';
     generation: number;
@@ -566,6 +612,13 @@ export interface MissionStatusPayload {
       dueAt: string;
       reason: string;
     }>;
+  } | null;
+  git: {
+    activeBranch: string | null;
+    missionBranch: string | null;
+    pullRequest: PullRequestState | null;
+    quietUntil: string | null;
+    lastExternalActivityAt: string | null;
   } | null;
   pendingPrompt: string | null;
   lastEvent: {
@@ -592,8 +645,10 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   let totalIterations = 0;
   let pendingPrompt: string | null = null;
   let validation: MissionStatusPayload['validation'] = null;
+  let qa: MissionStatusPayload['qa'] = null;
   let review: MissionStatusPayload['review'] = null;
   let retry: MissionStatusPayload['retry'] = null;
+  let git: MissionStatusPayload['git'] = null;
   let missionFromTask = false;
   let initialized = false;
   let missionPlanForReview: MissionPlan | null = null;
@@ -653,6 +708,7 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
     }
     appendRuntimeStatusWarnings(warnings, snapshot.state?.kernel?.warnings);
     validation = buildMissionStatusValidation(snapshot.state?.kernel?.latestValidationReport ?? null);
+    qa = buildMissionStatusQa(missionPlanForReview);
     review = buildMissionStatusReview(
       missionPlanForReview,
       snapshot.state?.kernel?.latestReviewReport ?? null
@@ -670,6 +726,10 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
     }
   }
 
+  const gitStrategy = snapshot?.state?.kernel?.gitStrategy ?? await loadGitStrategyState(melosDir);
+  git = buildMissionStatusGit(gitStrategy);
+  qa = qa ?? buildMissionStatusQa(missionPlanForReview);
+
   const events = readEventFile(join(melosDir, 'events.jsonl'));
   appendRuntimeWarningsFromEvents(warnings, events);
   const last = events[events.length - 1] ?? null;
@@ -680,6 +740,7 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   }
 
   return {
+    schemaVersion: 1,
     initialized,
     warnings,
     running: runAlive,
@@ -698,8 +759,10 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
       totalIterations,
     },
     validation,
+    qa,
     review,
     retry,
+    git,
     pendingPrompt,
     lastEvent: last
       ? {
@@ -733,10 +796,27 @@ function formatStatusPlain(status: MissionStatusPayload): string {
       `validation=${status.validation.milestoneId} attempt=${status.validation.attempt} passed=${status.validation.passed ? 'yes' : 'no'} failedChecks=${status.validation.failedCheckCount} warnings=${status.validation.warningCount}`
     );
   }
+  if (status.qa) {
+    for (const summary of status.qa.summaries) {
+      lines.push(
+        `qa=${summary.milestoneId} total=${summary.total} passed=${summary.passed} failed=${summary.failed} pending=${summary.pending}`
+      );
+    }
+  }
   if (status.retry && status.retry.queued.length > 0) {
     for (const item of status.retry.queued) {
       lines.push(
         `retry=${item.milestoneId}/${item.featureId} nextAttempt=${item.nextAttempt} dueAt=${item.dueAt} reason=${item.reason}`
+      );
+    }
+  }
+  if (status.git) {
+    lines.push(
+      `git=active=${status.git.activeBranch ?? '-'} mission=${status.git.missionBranch ?? '-'} quietUntil=${status.git.quietUntil ?? '-'}`
+    );
+    if (status.git.pullRequest) {
+      lines.push(
+        `pr=#${status.git.pullRequest.number ?? '-'} action=${status.git.pullRequest.action} url=${status.git.pullRequest.url}`
       );
     }
   }
@@ -1124,6 +1204,7 @@ interface RunPreflightInput {
   melosDir: string;
   missionFilePath: string;
   prdFilePath: string;
+  hasRunSpecInput: boolean;
   resume: boolean;
 }
 
@@ -1134,7 +1215,9 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
 
   const messages: string[] = [];
 
-  if (!existsSync(input.prdFilePath)) {
+  if (input.hasRunSpecInput) {
+    // RunSpec input supplies the mission content directly, so PRD.md is optional here.
+  } else if (!existsSync(input.prdFilePath)) {
     throw new Error([
       `PRD.md が見つからないためミッションを開始できません: ${input.prdFilePath}`,
       '先に PRD.md を作成してから `melos run` を実行してください。',
@@ -1199,11 +1282,12 @@ function buildTerminalStateGuidance(state: MissionState): string {
   }
 }
 
-function resolveGitStrategy(
+export function resolveGitStrategy(
   options: CLIOptions,
   config: MelosConfig
 ): OrchestratorConfig['gitStrategy'] {
-  const enabled = options.gitStrategy ?? config.git?.enabled ?? false;
+  const pullRequestEnabled = options.createPr ?? config.git?.pullRequest?.enabled ?? false;
+  const enabled = options.gitStrategy ?? config.git?.enabled ?? pullRequestEnabled;
   if (!enabled) {
     return undefined;
   }
@@ -1216,6 +1300,7 @@ function resolveGitStrategy(
     autoPush: config.git?.autoPush ?? false,
     preMergeValidation: config.git?.preMergeValidation ?? true,
     validationCommands: config.git?.validationCommands ?? ['npm run typecheck', 'npm test'],
+    pullRequestEnabled,
   };
 }
 
@@ -1301,6 +1386,35 @@ function buildMissionStatusValidation(
   };
 }
 
+function buildMissionStatusQa(
+  missionPlan: MissionPlan | null
+): MissionStatusPayload['qa'] {
+  if (!missionPlan) {
+    return null;
+  }
+
+  const summaries = missionPlan.milestones
+    .map((milestone) => {
+      const qaChecks = milestone.validationContract.qaChecks ?? [];
+      if (qaChecks.length === 0) {
+        return null;
+      }
+
+      const passed = qaChecks.filter((check) => check.passed).length;
+      const failed = qaChecks.filter((check) => !check.passed && check.failureCount > 0).length;
+      return {
+        milestoneId: milestone.id,
+        total: qaChecks.length,
+        passed,
+        failed,
+        pending: qaChecks.length - passed - failed,
+      };
+    })
+    .filter((summary): summary is NonNullable<typeof summary> => summary !== null);
+
+  return summaries.length > 0 ? { summaries } : null;
+}
+
 function buildMissionStatusRetry(
   featureRetries: MissionKernelState['featureRetries']
 ): MissionStatusPayload['retry'] {
@@ -1316,6 +1430,22 @@ function buildMissionStatusRetry(
       dueAt: retry.dueAt,
       reason: retry.reason,
     })),
+  };
+}
+
+function buildMissionStatusGit(
+  gitStrategy: MissionKernelState['gitStrategy'] | null | undefined
+): MissionStatusPayload['git'] {
+  if (!gitStrategy) {
+    return null;
+  }
+
+  return {
+    activeBranch: gitStrategy.activeBranch,
+    missionBranch: gitStrategy.missionBranch,
+    pullRequest: gitStrategy.pullRequest,
+    quietUntil: gitStrategy.quietUntil,
+    lastExternalActivityAt: gitStrategy.lastExternalActivityAt,
   };
 }
 

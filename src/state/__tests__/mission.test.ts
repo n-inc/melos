@@ -7,6 +7,7 @@ import {
   areAllMilestonesDone,
   areMilestoneFeaturesDone,
   createMissionPlan,
+  ensurePullRequestFollowUpMilestone,
   getNextPendingFeature,
   getNextPendingMilestone,
   loadMissionPlan,
@@ -134,6 +135,138 @@ describe('state/mission', () => {
     expect(plan.milestones[0].features[1]?.id).toBe('m1-f2');
     expect(plan.milestones[0].features[1]?.model).toBe('codex-latest');
     expect(plan.milestones[0].features[1]?.trackingKey).toBe('validation-jest-failure');
+  });
+
+  it('auto-generates a dedicated qa feature when qaChecks exist and keeps it last', () => {
+    let plan = createMissionPlan({
+      goal: 'QA plan',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Implementation',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            qaChecks: [
+              {
+                id: 'm1-qa-1',
+                description: 'Verify hero copy',
+                type: 'browser',
+                requiredRunner: 'playwright-interactive',
+                requiredArtifacts: ['screenshot'],
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement hero',
+              cwd: 'frontend/apps/web',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(plan.milestones[0]?.features.map((feature) => ({
+      id: feature.id,
+      kind: feature.kind,
+      cwd: feature.cwd,
+      model: feature.model,
+    }))).toEqual([
+      {
+        id: 'm1-f1',
+        kind: 'implementation',
+        cwd: 'frontend/apps/web',
+        model: undefined,
+      },
+      {
+        id: 'm1-f2',
+        kind: 'qa',
+        cwd: 'frontend/apps/web',
+        model: 'codex-latest',
+      },
+    ]);
+
+    plan = appendFeaturesToMilestone(plan, 'm1', [
+      {
+        id: 'm1-f3',
+        description: 'Fix QA follow-up',
+        kind: 'implementation',
+        status: 'pending',
+        attempts: 0,
+      },
+    ]);
+
+    expect(plan.milestones[0]?.features.map((feature) => feature.kind)).toEqual([
+      'implementation',
+      'implementation',
+      'qa',
+    ]);
+    expect(plan.milestones[0]?.features.at(-1)?.id).toBe('m1-f2');
+  });
+
+  it('appends a single post-pr follow-up milestone with claude workers', () => {
+    const plan = createMissionPlan({
+      goal: 'PR automation',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Implementation',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [{ id: 'm1-f1', description: 'f1', status: 'pending', attempts: 0 }],
+        },
+        {
+          id: 'm2',
+          title: 'Final Review',
+          description: 'desc',
+          status: 'pending',
+          order: 2,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm2-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+    });
+
+    const next = ensurePullRequestFollowUpMilestone(plan);
+    expect(next.milestones).toHaveLength(3);
+    expect(next.milestones[2]).toMatchObject({
+      title: 'Post-PR Follow-up',
+      features: [
+        expect.objectContaining({
+          kind: 'pull_request',
+          model: 'claude-latest',
+        }),
+        expect.objectContaining({
+          kind: 'pr_followup',
+          model: 'claude-latest',
+        }),
+      ],
+    });
+
+    const idempotent = ensurePullRequestFollowUpMilestone(next);
+    expect(idempotent.milestones).toHaveLength(3);
   });
 
   it('rejects legacy TASK array (hard cutover: MissionPlan v3 only)', async () => {

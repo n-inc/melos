@@ -2,10 +2,10 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 import type { ValidationContract } from './validation.js';
-import { normalizeValidationContract } from './validation.js';
+import { createEmptyValidationContract, normalizeValidationContract } from './validation.js';
 import type { ProductReviewContract, ReviewType } from './review.js';
 import { normalizeProductReviewContract } from './review.js';
-import { normalizeModelName } from '../models/registry.js';
+import { CLAUDE_LATEST_ALIAS, CODEX_LATEST_ALIAS, normalizeModelName } from '../models/registry.js';
 
 export type MissionState =
   | 'planning'
@@ -17,7 +17,7 @@ export type MissionState =
   | 'aborted';
 
 export type FeatureStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped';
-export type FeatureKind = 'implementation' | 'review' | 'review_remediation';
+export type FeatureKind = 'implementation' | 'qa' | 'review' | 'review_remediation' | 'pull_request' | 'pr_followup';
 export type MilestoneStatus =
   | 'pending'
   | 'in_progress'
@@ -100,6 +100,11 @@ const ALLOWED_TRANSITIONS: Record<MissionState, MissionState[]> = {
 };
 
 const MISSING_DESCRIPTION_PLACEHOLDER = 'No description provided';
+const POST_PR_MILESTONE_TITLE = 'Post-PR Follow-up';
+const POST_PR_MILESTONE_DESCRIPTION = 'Create the PR and address actionable PR feedback before mission completion.';
+const PULL_REQUEST_FEATURE_DESCRIPTION = 'Create or update GitHub pull request';
+const PR_FOLLOWUP_FEATURE_DESCRIPTION = 'Wait for PR feedback and fix actionable issues';
+const QA_FEATURE_DESCRIPTION = 'Execute milestone QA checklist';
 
 export function missionFileExists(path: string): boolean {
   return existsSync(path);
@@ -329,13 +334,99 @@ export function appendFeaturesToMilestone(
           id: asTrimmedString(feature.id) || `${milestoneId}-f${milestone.features.length + index + 1}`,
         })
       );
+      const existingQaFeatures = milestone.features.filter((feature) => feature.kind === 'qa');
+      const existingNonQaFeatures = milestone.features.filter((feature) => feature.kind !== 'qa');
 
       return {
         ...milestone,
-        features: [...milestone.features, ...normalizedFeatures],
+        features: [...existingNonQaFeatures, ...normalizedFeatures, ...existingQaFeatures],
       };
     }),
   };
+}
+
+export function ensurePullRequestFollowUpMilestone(plan: MissionPlan): MissionPlan {
+  const milestoneIndex = plan.milestones.findIndex((milestone) =>
+    milestone.features.some((feature) => feature.kind === 'pull_request' || feature.kind === 'pr_followup')
+  );
+  if (milestoneIndex >= 0) {
+    const milestone = plan.milestones[milestoneIndex]!;
+    const hasPullRequest = milestone.features.some((feature) => feature.kind === 'pull_request');
+    const hasFollowUp = milestone.features.some((feature) => feature.kind === 'pr_followup');
+    if (hasPullRequest && hasFollowUp) {
+      return plan;
+    }
+
+    const missingFeatures = [
+      !hasPullRequest
+        ? {
+          id: `${milestone.id}-f${milestone.features.length + 1}`,
+          description: PULL_REQUEST_FEATURE_DESCRIPTION,
+          kind: 'pull_request' as const,
+          status: 'pending' as const,
+          model: CLAUDE_LATEST_ALIAS,
+          attempts: 0,
+        }
+        : null,
+      !hasFollowUp
+        ? {
+          id: `${milestone.id}-f${milestone.features.length + (hasPullRequest ? 1 : 2)}`,
+          description: PR_FOLLOWUP_FEATURE_DESCRIPTION,
+          kind: 'pr_followup' as const,
+          status: 'pending' as const,
+          model: CLAUDE_LATEST_ALIAS,
+          attempts: 0,
+        }
+        : null,
+    ].filter((feature): feature is NonNullable<typeof feature> => Boolean(feature));
+
+    return normalizeMissionPlan({
+      ...plan,
+      milestones: plan.milestones.map((item, index) =>
+        index === milestoneIndex
+          ? {
+            ...item,
+            title: POST_PR_MILESTONE_TITLE,
+            description: POST_PR_MILESTONE_DESCRIPTION,
+            features: [...item.features, ...missingFeatures],
+          }
+          : item
+      ),
+    });
+  }
+
+  const nextMilestoneId = `m${plan.milestones.length + 1}`;
+  return normalizeMissionPlan({
+    ...plan,
+    milestones: [
+      ...plan.milestones,
+      {
+        id: nextMilestoneId,
+        title: POST_PR_MILESTONE_TITLE,
+        description: POST_PR_MILESTONE_DESCRIPTION,
+        status: 'pending',
+        validationContract: createEmptyValidationContract(),
+        features: [
+          {
+            id: `${nextMilestoneId}-f1`,
+            description: PULL_REQUEST_FEATURE_DESCRIPTION,
+            kind: 'pull_request',
+            status: 'pending',
+            model: CLAUDE_LATEST_ALIAS,
+            attempts: 0,
+          },
+          {
+            id: `${nextMilestoneId}-f2`,
+            description: PR_FOLLOWUP_FEATURE_DESCRIPTION,
+            kind: 'pr_followup',
+            status: 'pending',
+            model: CLAUDE_LATEST_ALIAS,
+            attempts: 0,
+          },
+        ],
+      },
+    ],
+  });
 }
 
 function normalizeMissionPlan(plan: unknown, options?: { baseDir?: string }): MissionPlan {
@@ -409,12 +500,17 @@ function normalizeMilestones(milestones: unknown[], baseDir?: string): Milestone
 function normalizeMilestone(milestone: unknown, index: number, baseDir?: string): Milestone {
   const rawMilestone = asRecord(milestone);
   const normalizedId = asTrimmedString(rawMilestone.id) || `m${index + 1}`;
+  const validationContract = normalizeValidationContract(rawMilestone.validationContract as Partial<ValidationContract> | null | undefined);
   return {
     id: normalizedId,
     title: asTrimmedString(rawMilestone.title) || `Milestone ${index + 1}`,
     description: asTrimmedString(rawMilestone.description) || 'No description provided',
-    features: normalizeFeatureList(rawMilestone.features, normalizedId, baseDir),
-    validationContract: normalizeValidationContract(rawMilestone.validationContract as Partial<ValidationContract> | null | undefined),
+    features: ensureMilestoneQaFeature(
+      normalizedId,
+      normalizeFeatureList(rawMilestone.features, normalizedId, baseDir),
+      validationContract
+    ),
+    validationContract,
     status: normalizeMilestoneStatus(rawMilestone.status),
   };
 }
@@ -485,6 +581,43 @@ function normalizeFeatureCwd(value: unknown, baseDir?: string): string | undefin
   return normalized.replace(/\\/g, '/');
 }
 
+function ensureMilestoneQaFeature(
+  milestoneId: string,
+  features: Feature[],
+  validationContract: ValidationContract
+): Feature[] {
+  const qaChecks = validationContract.qaChecks ?? [];
+  const nonQaFeatures = features.filter((feature) => feature.kind !== 'qa');
+  if (qaChecks.length === 0) {
+    return nonQaFeatures;
+  }
+
+  const existingQaFeature = features.find((feature) => feature.kind === 'qa');
+  const derivedCwd = deriveQaFeatureCwd(nonQaFeatures);
+  const qaFeature: Feature = {
+    id: existingQaFeature?.id ?? `${milestoneId}-f${nonQaFeatures.length + 1}`,
+    description: existingQaFeature?.description?.trim() || QA_FEATURE_DESCRIPTION,
+    trackingKey: existingQaFeature?.trackingKey,
+    cwd: existingQaFeature?.cwd ?? derivedCwd,
+    checks: existingQaFeature?.checks,
+    kind: 'qa',
+    status: existingQaFeature?.status ?? 'pending',
+    model: CODEX_LATEST_ALIAS,
+    attempts: existingQaFeature?.attempts ?? 0,
+  };
+
+  return [...nonQaFeatures, qaFeature];
+}
+
+function deriveQaFeatureCwd(features: Feature[]): string | undefined {
+  const uniqueCwds = Array.from(new Set(
+    features
+      .map((feature) => feature.cwd?.trim())
+      .filter((cwd): cwd is string => typeof cwd === 'string' && cwd.length > 0)
+  ));
+  return uniqueCwds.length === 1 ? uniqueCwds[0] : undefined;
+}
+
 function normalizeFeatureChecks(value: unknown): CheckItem[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -530,7 +663,14 @@ function normalizeFeatureModel(value: unknown): string | undefined {
 
 function normalizeFeatureKind(value: unknown, reviewType?: ReviewType): FeatureKind {
   const normalized = asTrimmedString(value);
-  if (normalized === 'implementation' || normalized === 'review' || normalized === 'review_remediation') {
+  if (
+    normalized === 'implementation'
+    || normalized === 'qa'
+    || normalized === 'review'
+    || normalized === 'review_remediation'
+    || normalized === 'pull_request'
+    || normalized === 'pr_followup'
+  ) {
     return normalized;
   }
   return reviewType ? 'review' : 'implementation';
@@ -651,6 +791,14 @@ function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {
 
     if (!Array.isArray(milestone.features) || milestone.features.length === 0) {
       throw new Error(`Milestone ${milestone.id} must include features`);
+    }
+
+    const qaFeatureCount = milestone.features.filter((feature) => feature.kind === 'qa').length;
+    if (qaFeatureCount > 1) {
+      throw new Error(`Milestone ${milestone.id} may include at most one qa feature`);
+    }
+    if (qaFeatureCount === 1 && (milestone.validationContract.qaChecks?.length ?? 0) === 0) {
+      throw new Error(`Milestone ${milestone.id} has a qa feature but no qaChecks`);
     }
 
     const featureIds = new Set<string>();

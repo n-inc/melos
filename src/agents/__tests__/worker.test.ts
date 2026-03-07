@@ -148,6 +148,193 @@ describe('WorkerAgent', () => {
     expect(prompt).toContain('Mission goal: Sample goal');
   });
 
+  it('builds a dedicated qa prompt and enables js_repl for browser qa', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: '```json\n{"status":"SUCCESS","summary":"qa done","filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":false,"typecheckPassed":false},"checks":[{"checkId":"m1-qa-1","passed":true,"runner":"playwright-interactive","screenshotPath":"artifacts/screenshots/hero.png"}],"warnings":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+        exitCode: 0,
+      });
+
+    const plan = createMissionPlan({
+      missionId: 'qa-test',
+      goal: 'QA goal',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            qaChecks: [
+              {
+                id: 'm1-qa-1',
+                description: 'Verify hero',
+                type: 'browser',
+                requiredRunner: 'playwright-interactive',
+                requiredArtifacts: ['screenshot'],
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement feature',
+              cwd: 'frontend/apps/web',
+              status: 'done',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+    });
+
+    const milestone = plan.milestones[0]!;
+    const qaFeature = milestone.features.at(-1)!;
+
+    await agent.run({
+      iteration: 1,
+      missionPlan: plan,
+      milestone,
+      feature: qaFeature,
+      prd: '# PRD',
+      briefing: 'qa briefing',
+      currentBranch: 'melos/qa-test/mission',
+      baseBranch: 'main',
+    });
+
+    const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
+    const options = codexExecute.mock.calls[0]?.[1] as { enabledFeatures?: string[] } | undefined;
+    expect(qaFeature.kind).toBe('qa');
+    expect(prompt).toContain('## QA Mode');
+    expect(prompt).toContain('## QA Checks');
+    expect(prompt).toContain('playwright-interactive');
+    expect(prompt).not.toContain('## Commit Workflow');
+    expect(options?.enabledFeatures).toEqual(['js_repl']);
+  });
+
+  it('uses claude with git-new-pull-request prompt for pull_request features', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+      claudeModel: 'claude-latest',
+    });
+    const claudeExecute = jest.spyOn((agent as unknown as {
+      claudeEngine: { execute: (...args: unknown[]) => Promise<unknown> };
+    }).claudeEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: '```json\n{"status":"SUCCESS","summary":"pr updated","warnings":[],"filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"pullRequest":{"number":12,"url":"https://github.com/example/repo/pull/12","title":"feat: update","baseBranch":"main","headBranch":"melos/mission-test/mission","draft":false,"action":"updated"},"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+      exitCode: 0,
+    });
+
+    const result = await agent.run(createRunInput({
+      feature: {
+        id: 'm1-f-pr',
+        description: 'Create or update GitHub pull request',
+        kind: 'pull_request',
+        status: 'pending',
+        attempts: 0,
+        model: 'claude-latest',
+      },
+      currentBranch: 'melos/mission-test/mission',
+      baseBranch: 'main',
+    }));
+
+    const prompt = String(claudeExecute.mock.calls[0]?.[0] ?? '');
+    expect(prompt).toContain('# Pull Request Worker');
+    expect(prompt).toContain('.claude/skills/git-new-pull-request/SKILL.md');
+    expect(prompt).toContain('gh pr create');
+    expect(prompt).toContain('gh pr edit');
+    expect(result.report.pullRequest).toMatchObject({
+      number: 12,
+      action: 'updated',
+      headBranch: 'melos/mission-test/mission',
+    });
+  });
+
+  it('uses claude post-pr prompt and parses follow-up metadata without nested melos execution', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+      claudeModel: 'claude-latest',
+    });
+    const claudeExecute = jest.spyOn((agent as unknown as {
+      claudeEngine: { execute: (...args: unknown[]) => Promise<unknown> };
+    }).claudeEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        status: 'SUCCESS',
+        summary: 'follow-up complete',
+        warnings: ['ignored off-target feedback: already addressed upstream'],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 2,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        pullRequest: {
+          number: 12,
+          url: 'https://github.com/example/repo/pull/12',
+          title: 'feat: update',
+          baseBranch: 'main',
+          headBranch: 'melos/mission-test/mission',
+          draft: false,
+          action: 'updated',
+        },
+        pullRequestFollowUp: {
+          handledFeedbackIds: ['PRRC_1', 'PRRC_2'],
+          lastExternalActivityAt: '2026-03-07T09:00:00.000Z',
+          quietUntil: '2026-03-07T09:30:00.000Z',
+        },
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const result = await agent.run(createRunInput({
+      feature: {
+        id: 'm1-f-followup',
+        description: 'Wait for PR feedback and fix actionable issues',
+        kind: 'pr_followup',
+        status: 'pending',
+        attempts: 0,
+        model: 'claude-latest',
+      },
+      currentBranch: 'melos/mission-test/mission',
+      baseBranch: 'main',
+    }));
+
+    const prompt = String(claudeExecute.mock.calls[0]?.[0] ?? '');
+    expect(prompt).toContain('# Post-PR Follow-up Worker');
+    expect(prompt).toContain('.claude/skills/melos-ci-fix-loop/SKILL.md');
+    expect(prompt).toContain('.claude/skills/git-committer/SKILL.md');
+    expect(prompt).not.toContain('npx melos --ci-fix-only');
+    expect(result.report.pullRequestFollowUp).toEqual({
+      handledFeedbackIds: ['PRRC_1', 'PRRC_2'],
+      lastExternalActivityAt: '2026-03-07T09:00:00.000Z',
+      quietUntil: '2026-03-07T09:30:00.000Z',
+    });
+    expect(result.report.warnings).toEqual(['ignored off-target feedback: already addressed upstream']);
+  });
+
   it('includes feature cwd in prompt and engine options', async () => {
     const repoCwd = await mkdtemp(join(tmpdir(), 'melos-worker-cwd-'));
     try {

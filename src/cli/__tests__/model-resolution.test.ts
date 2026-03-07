@@ -1,4 +1,4 @@
-import { createProgram } from '../../cli.js';
+import { createProgram, resolveGitStrategy } from '../../cli.js';
 
 describe('CLI v0.8 options', () => {
   it('registers run/resume/kill/cancel/status/logs/approve/reject commands', () => {
@@ -26,9 +26,55 @@ describe('CLI v0.8 options', () => {
     expect(options.has('--headless')).toBe(true);
     expect(options.has('--detach')).toBe(true);
     expect(options.has('--git-strategy')).toBe(true);
+    expect(options.has('--create-pr')).toBe(true);
     expect(options.has('--base-branch')).toBe(true);
     expect(options.has('--mission-id')).toBe(true);
     expect(options.has('--planner-model')).toBe(true);
     expect(options.has('--worker-model')).toBe(true);
+  });
+
+  it('enables git strategy automatically when pull request automation is requested', () => {
+    const gitStrategy = resolveGitStrategy(
+      {
+        createPr: true,
+        missionId: 'persona-lp',
+      },
+      {
+        git: {
+          baseBranch: 'develop',
+        },
+      }
+    );
+
+    expect(gitStrategy).toMatchObject({
+      enabled: true,
+      missionId: 'persona-lp',
+      baseBranch: 'develop',
+      pullRequestEnabled: true,
+    });
+  });
+
+  it('prefers CLI create-pr over config when resolving git strategy', () => {
+    const gitStrategy = resolveGitStrategy(
+      {
+        createPr: true,
+        gitStrategy: true,
+        missionId: 'persona-lp',
+      },
+      {
+        git: {
+          enabled: false,
+          pullRequest: {
+            enabled: false,
+          },
+        },
+      }
+    );
+
+    expect(gitStrategy?.pullRequestEnabled).toBe(true);
+  });
+
+  it('keeps pull request automation disabled by default', () => {
+    expect(resolveGitStrategy({}, {})).toBeUndefined();
   });
 });

@@ -40,7 +40,20 @@ describe('cli headless operations', () => {
           description: 'desc',
           order: 1,
           status: 'in_progress',
-          validationContract: { staticChecks: [], testSuites: [] },
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            qaChecks: [
+              {
+                id: 'manual-qa',
+                description: 'Check browser flow',
+                type: 'manual',
+                passed: false,
+                failureCount: 1,
+                lastFailure: 'manual validation was not reported by the worker',
+              },
+            ],
+          },
           features: [
             { id: 'm1-f1', description: 'f1', status: 'done', attempts: 1 },
             { id: 'm1-f2', description: 'f2', status: 'in_progress', attempts: 1 },
@@ -82,7 +95,32 @@ describe('cli headless operations', () => {
           logEntries: [],
           currentActor: 'manager',
           activeWorkerRunId: null,
-          gitStrategy: null,
+          gitStrategy: {
+            config: {
+              missionId: 'persona-lp',
+              baseBranch: 'main',
+              autoPush: false,
+              preMergeValidation: true,
+              validationCommands: ['npm test'],
+              pullRequestEnabled: true,
+            },
+            branches: [],
+            activeBranch: 'melos/persona-lp/mission',
+            missionBranch: 'melos/persona-lp/mission',
+            pullRequest: {
+              number: 12,
+              url: 'https://github.com/example/repo/pull/12',
+              title: 'feat: persona lp',
+              baseBranch: 'main',
+              headBranch: 'melos/persona-lp/mission',
+              draft: false,
+              action: 'updated',
+              updatedAt: '2026-03-03T00:00:01.000Z',
+            },
+            handledFeedbackIds: ['PRRC_1'],
+            lastExternalActivityAt: '2026-03-03T00:05:00.000Z',
+            quietUntil: '2026-03-03T00:35:00.000Z',
+          },
           warnings: [
             {
               timestamp: '2026-03-03T00:00:00.500Z',
@@ -126,11 +164,12 @@ describe('cli headless operations', () => {
     });
 
     const status = await readMissionStatus(rootDir);
+    expect(status.schemaVersion).toBe(1);
     expect(status.running).toBe(true);
     expect(status.pid).toBe(43210);
     expect(status.initialized).toBe(true);
     expect(status.mission.state).toBe('running');
-    expect(status.mission.progress.label).toBe('1/2 (50%)');
+    expect(status.mission.progress.label).toBe('1/3 (33%)');
     expect(status.lastEvent?.seq).toBe(11);
     expect(status.lastEvent?.type).toBe('manager_decision');
     expect(status.cursor.nextSeq).toBe(12);
@@ -140,6 +179,17 @@ describe('cli headless operations', () => {
       passed: false,
       failedCheckCount: 1,
       warningCount: 1,
+    });
+    expect(status.qa).toEqual({
+      summaries: [
+        {
+          milestoneId: 'm1',
+          total: 1,
+          passed: 0,
+          failed: 1,
+          pending: 0,
+        },
+      ],
     });
     expect(status.retry).toEqual({
       queued: [
@@ -151,6 +201,22 @@ describe('cli headless operations', () => {
           reason: 'manual verification is still required',
         },
       ],
+    });
+    expect(status.git).toEqual({
+      activeBranch: 'melos/persona-lp/mission',
+      missionBranch: 'melos/persona-lp/mission',
+      pullRequest: {
+        number: 12,
+        url: 'https://github.com/example/repo/pull/12',
+        title: 'feat: persona lp',
+        baseBranch: 'main',
+        headBranch: 'melos/persona-lp/mission',
+        draft: false,
+        action: 'updated',
+        updatedAt: '2026-03-03T00:00:01.000Z',
+      },
+      quietUntil: '2026-03-03T00:35:00.000Z',
+      lastExternalActivityAt: '2026-03-03T00:05:00.000Z',
     });
     expect(status.warnings).toContain('[worker] m1-f2: manual verification is still required');
   });
@@ -413,6 +479,7 @@ describe('cli headless operations', () => {
   it('reports unknown mission status when TASK.json is invalid', async () => {
     writeFileSync(join(rootDir, 'TASK.json'), '{invalid', 'utf-8');
     const status = await readMissionStatus(rootDir);
+    expect(status.schemaVersion).toBe(1);
     expect(status.mission.state).toBe('unknown');
     expect(status.mission.progress.label).toBe('0/0 (0%)');
     expect(status.warnings.some((line) => line.includes('TASK.json'))).toBe(true);

@@ -13,6 +13,7 @@ describe('cli preflight', () => {
       melosDir: join(cwd, '.melos'),
       missionFilePath: join(cwd, 'TASK.json'),
       prdFilePath: join(cwd, 'PRD.md'),
+      hasRunSpecInput: false,
       resume: false,
     })).rejects.toThrow(/PRD.md が見つからないためミッションを開始できません/);
     expect(existsSync(join(cwd, 'PRD.md'))).toBe(false);
@@ -44,6 +45,7 @@ describe('cli preflight', () => {
       melosDir: join(cwd, '.melos'),
       missionFilePath,
       prdFilePath: join(cwd, 'PRD.md'),
+      hasRunSpecInput: false,
       resume: false,
     })).rejects.toThrow(/終了状態 \(completed\).*melos status --plain.*melos logs --plain/s);
     expect(existsSync(missionFilePath)).toBe(true);
@@ -62,9 +64,23 @@ describe('cli preflight', () => {
       melosDir: join(cwd, '.melos'),
       missionFilePath,
       prdFilePath: join(cwd, 'PRD.md'),
+      hasRunSpecInput: false,
       resume: false,
     })).rejects.toThrow(/TASK.json の読み込みに失敗したため、実行を停止しました/);
     expect(existsSync(missionFilePath)).toBe(true);
+  });
+
+  it('allows startup without PRD.md when RunSpec input is provided', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-preflight-runspec-'));
+
+    await expect(prepareRunPreflight({
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      missionFilePath: join(cwd, 'TASK.json'),
+      prdFilePath: join(cwd, 'PRD.md'),
+      hasRunSpecInput: true,
+      resume: false,
+    })).resolves.toEqual([]);
   });
 
   it('detects aborted TASK.json as resumable', async () => {

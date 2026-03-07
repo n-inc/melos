@@ -10,10 +10,12 @@ import {
   type MissionState,
   type Milestone,
   type Feature,
+  createMissionPlan,
   missionFileExists,
   loadMissionPlan,
   saveMissionPlan,
   transitionMissionState,
+  ensurePullRequestFollowUpMilestone,
   getNextPendingMilestone,
   getNextPendingFeature,
   areAllMilestonesDone,
@@ -41,10 +43,14 @@ import {
 import {
   type GitStrategyState,
   createGitStrategyState,
+  createMissionBranchName,
   createFeatureBranchName,
   registerFeatureBranch,
   saveGitStrategyState,
   loadGitStrategyState,
+  setMissionBranch,
+  updatePullRequestState,
+  updatePullRequestFollowUpState,
   updateFeatureBranchStatus,
 } from './state/git-strategy.js';
 import {
@@ -82,6 +88,7 @@ import {
   type ModelEngine,
 } from './models/registry.js';
 import { getDefaultPromptsDir } from './prompts/index.js';
+import type { RunIdentity } from './run-spec.js';
 import type { MissionControlState, MissionMilestoneView, WorkerRunView } from './ui/tui-views.js';
 
 export interface OrchestratorConfig {
@@ -108,6 +115,9 @@ export interface OrchestratorConfig {
   interactivePlanning?: boolean;
   autoApprove?: boolean;
   dryRun?: boolean;
+  quick?: boolean;
+  runIdentity?: RunIdentity;
+  prdOverride?: string;
   gitStrategy?: {
     enabled: boolean;
     baseBranch: string;
@@ -115,6 +125,7 @@ export interface OrchestratorConfig {
     autoPush: boolean;
     preMergeValidation: boolean;
     validationCommands: string[];
+    pullRequestEnabled: boolean;
   };
   resume?: boolean;
   missionId?: string;
@@ -191,6 +202,11 @@ export class Orchestrator {
   private managerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private abortSignal: NodeJS.Signals | null = null;
 
+  private setGitStrategyState(next: GitStrategyState | null): void {
+    this.state.gitStrategy = next;
+    this.kernelState.gitStrategy = next;
+  }
+
   constructor(config: OrchestratorConfig) {
     this.config = config;
     this.executionConfig = {
@@ -229,6 +245,7 @@ export class Orchestrator {
       effort: config.managerEffort ?? 'high',
       requestTimeoutMs: 900_000,
       suppressTerminalOutput: config.runtimeUIMode !== 'plain',
+      pullRequestAutomationEnabled: config.gitStrategy?.pullRequestEnabled === true,
     };
     this.manager = new ManagerAgent(managerConfig);
 
@@ -262,12 +279,14 @@ export class Orchestrator {
           autoPush: config.gitStrategy.autoPush,
           preMergeValidation: config.gitStrategy.preMergeValidation,
           validationCommands: config.gitStrategy.validationCommands,
+          pullRequestEnabled: config.gitStrategy.pullRequestEnabled,
         })
         : null,
       startedAt: new Date(),
     };
 
     this.kernelState = createInitialKernelState();
+    this.kernelState.gitStrategy = this.state.gitStrategy;
     this.watchdog.onStuck(() => {
       this.emitEvent('error', 'system', {
         message: 'worker appears stuck (watchdog timeout)',
@@ -307,13 +326,21 @@ export class Orchestrator {
 
         const missionPlan = this.state.missionPlan;
         if (!missionPlan) {
-          await this.runPlanningPhase();
+          if (this.config.quick) {
+            await this.createQuickMissionPlan();
+          } else {
+            await this.runPlanningPhase();
+          }
           continue;
         }
 
         switch (missionPlan.state) {
           case 'planning':
-            await this.runPlanningPhase();
+            if (this.config.quick) {
+              await this.createQuickMissionPlan();
+            } else {
+              await this.runPlanningPhase();
+            }
             break;
 
           case 'awaiting_approval':
@@ -563,7 +590,9 @@ export class Orchestrator {
   }
 
   private async loadState(): Promise<void> {
-    if (existsSync(this.config.prdFile)) {
+    if (this.config.prdOverride) {
+      this.state.prd = this.config.prdOverride;
+    } else if (existsSync(this.config.prdFile)) {
       this.state.prd = await readFile(this.config.prdFile, 'utf-8');
     }
 
@@ -596,13 +625,70 @@ export class Orchestrator {
     if (this.state.gitStrategy && this.config.resume) {
       const persisted = await loadGitStrategyState(this.config.melosDir);
       if (persisted) {
-        this.state.gitStrategy = persisted;
+        this.setGitStrategyState(persisted);
+      }
+    }
+
+    if (this.state.missionPlan && this.state.gitStrategy?.config.pullRequestEnabled) {
+      const nextPlan = ensurePullRequestFollowUpMilestone(this.state.missionPlan);
+      if (nextPlan !== this.state.missionPlan) {
+        this.state.missionPlan = nextPlan;
+        await saveMissionPlan(this.config.missionFile, nextPlan);
       }
     }
 
     this.state.latestValidationReport = this.kernelState.latestValidationReport ?? null;
     this.state.latestReviewReport = this.kernelState.latestReviewReport ?? null;
     this.kernelState.missionPlan = this.state.missionPlan ?? null;
+    this.kernelState.gitStrategy = this.state.gitStrategy;
+    await this.emitStatusUpdate();
+  }
+
+  private async createQuickMissionPlan(): Promise<void> {
+    const prd = this.state.prd?.trim() ?? '';
+    const heading = prd
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('# '))
+      ?.replace(/^#\s+/, '')
+      .trim();
+    const objective = heading && heading.length > 0 ? heading : 'Quick mission';
+
+    let plan = createMissionPlan({
+      missionId: this.resolveMissionId(),
+      goal: objective,
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Quick Execution',
+          description: objective,
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: prd || objective,
+              status: 'pending',
+              attempts: 0,
+              model: this.modelRouter.getModel('worker'),
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    plan = setActiveMilestone(plan, 'm1');
+    plan = setActiveFeature(plan, 'm1-f1');
+
+    this.state.missionPlan = plan;
+    this.kernelState.missionPlan = plan;
+    this.activityLabel = 'Quick mission plan created. Starting execution...';
+
+    this.emitEvent('plan_created', 'manager', { plan, quick: true });
+    await this.persistMissionPlan();
     await this.emitStatusUpdate();
   }
 
@@ -682,7 +768,10 @@ export class Orchestrator {
       this.stopManagerHeartbeat();
     }
 
-    const withPhase = transitionMissionState(generated, 'awaiting_approval');
+    const planWithFollowUp = this.state.gitStrategy?.config.pullRequestEnabled
+      ? ensurePullRequestFollowUpMilestone(generated)
+      : generated;
+    const withPhase = transitionMissionState(planWithFollowUp, 'awaiting_approval');
     const activeMilestone = getNextPendingMilestone(withPhase);
     const activeFeature = activeMilestone ? getNextPendingFeature(activeMilestone) : null;
 
@@ -857,15 +946,24 @@ export class Orchestrator {
 
     this.activityLabel = `Worker executing ${updatedFeature.id}...`;
     const rawResult = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
-    const result = updatedFeature.kind === 'review'
-      ? rawResult
-      : this.applyWorkerWarningPolicy(updatedMilestone.id, updatedFeature.id, rawResult);
+    await this.syncPullRequestStateFromReport(updatedFeature, rawResult.report);
+    const result = this.shouldApplyWorkerWarningPolicy(updatedFeature)
+      ? this.applyWorkerWarningPolicy(updatedMilestone.id, updatedFeature.id, rawResult)
+      : rawResult;
     this.state.latestWorkerReport = result.report;
     this.recordValidationEvidence(updatedMilestone.id, result.report.checks);
     this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
 
     if (updatedFeature.kind === 'review') {
       await this.handleReviewFeatureResult(updatedMilestone, updatedFeature, result);
+      return;
+    }
+    if (updatedFeature.kind === 'qa') {
+      await this.handleQaFeatureResult(updatedMilestone, updatedFeature, result);
+      return;
+    }
+    if (updatedFeature.kind === 'pull_request' || updatedFeature.kind === 'pr_followup') {
+      await this.handleOperationalFeatureResult(updatedMilestone, updatedFeature, result);
       return;
     }
     await this.handleImplementationFeatureResult(updatedMilestone, updatedFeature, result);
@@ -1033,8 +1131,7 @@ export class Orchestrator {
             ...current.validationContract,
             staticChecks: current.validationContract.staticChecks.map((check) => ({ ...check, failureCount: 0 })),
             testSuites: current.validationContract.testSuites.map((check) => ({ ...check, failureCount: 0 })),
-            browserChecks: current.validationContract.browserChecks?.map((check) => ({ ...check, failureCount: 0 })),
-            manualSteps: current.validationContract.manualSteps?.map((check) => ({ ...check, failureCount: 0 })),
+            qaChecks: current.validationContract.qaChecks?.map((check) => ({ ...check, failureCount: 0 })),
           },
         }));
         missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
@@ -1173,35 +1270,72 @@ export class Orchestrator {
     this.worker.setRuntimeModel(modelState.model);
 
     let branchName: string | null = null;
+    let currentBranch: string | null = null;
     let baseBranch: string | undefined;
+    let mergeTargetBranch: string | undefined;
 
     if (this.state.gitStrategy) {
       baseBranch = this.state.gitStrategy.config.baseBranch;
-      branchName = createFeatureBranchName(
-        this.state.gitStrategy.config.missionId,
-        feature.id,
-        feature.description
-      );
-
-      const baseCommitHash = getHeadCommitHash(this.config.cwd);
-      createBranch(this.config.cwd, branchName, baseBranch);
-      this.state.gitStrategy = registerFeatureBranch(this.state.gitStrategy, {
-        name: branchName,
-        taskId: feature.id,
-        baseCommitHash,
-      });
-
-      await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-      this.emitEvent('branch_created', 'system', {
-        branchName,
-        baseBranch,
-        baseCommitHash,
-      });
+      if (this.state.gitStrategy.config.pullRequestEnabled) {
+        const missionBranch = await this.ensureMissionBranch();
+        currentBranch = missionBranch;
+        if (this.requiresDedicatedFeatureBranch(feature)) {
+          branchName = createFeatureBranchName(
+            this.state.gitStrategy.config.missionId,
+            feature.id,
+            feature.description
+          );
+          mergeTargetBranch = missionBranch;
+          const baseCommitHash = getHeadCommitHash(this.config.cwd);
+          createBranch(this.config.cwd, branchName, missionBranch);
+          this.setGitStrategyState(registerFeatureBranch(this.state.gitStrategy, {
+            name: branchName,
+            taskId: feature.id,
+            baseCommitHash,
+          }));
+          currentBranch = branchName;
+          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+          this.emitEvent('branch_created', 'system', {
+            branchName,
+            baseBranch: missionBranch,
+            baseCommitHash,
+            branchType: 'feature',
+          });
+        }
+      } else {
+        if (this.requiresDedicatedFeatureBranch(feature)) {
+          branchName = createFeatureBranchName(
+            this.state.gitStrategy.config.missionId,
+            feature.id,
+            feature.description
+          );
+          mergeTargetBranch = baseBranch;
+          const baseCommitHash = getHeadCommitHash(this.config.cwd);
+          createBranch(this.config.cwd, branchName, baseBranch);
+          this.setGitStrategyState(registerFeatureBranch(this.state.gitStrategy, {
+            name: branchName,
+            taskId: feature.id,
+            baseCommitHash,
+          }));
+          currentBranch = branchName;
+          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+          this.emitEvent('branch_created', 'system', {
+            branchName,
+            baseBranch,
+            baseCommitHash,
+            branchType: 'feature',
+          });
+        }
+      }
     }
 
     const runId = ++this.workerRunCounter;
     const workerStartedAt = new Date();
-    const workerRunType = feature.kind === 'review' ? 'review' : 'implement';
+    const workerRunType = feature.kind === 'review'
+      ? 'review'
+      : feature.kind === 'qa'
+        ? 'qa'
+        : 'implement';
     if (feature.kind === 'review') {
       this.emitEvent('review_started', 'orchestrator', {
         milestoneId: milestone.id,
@@ -1215,7 +1349,7 @@ export class Orchestrator {
       type: workerRunType,
       milestoneId: milestone.id,
       featureId: feature.id,
-      branch: branchName,
+      branch: currentBranch ?? branchName,
       engine: resolvedExecutionModel.engine,
       model: resolvedExecutionModel.displayModel,
       modelSource: modelState.source,
@@ -1270,7 +1404,7 @@ export class Orchestrator {
       feature: executionFeature,
       prd: this.state.prd,
       briefing,
-      currentBranch: branchName,
+      currentBranch,
       baseBranch,
       onAppServerEvent: (method, params) => {
         const detail = formatAgentEventDetail(method, params);
@@ -1314,7 +1448,7 @@ export class Orchestrator {
     if (branchName && this.state.gitStrategy) {
       const postProcess = await this.runGitPostProcess(
         branchName,
-        baseBranch ?? this.state.gitStrategy.config.baseBranch,
+        mergeTargetBranch ?? baseBranch ?? this.state.gitStrategy.config.baseBranch,
         result.report
       );
       result.report.summary = postProcess.summary;
@@ -1343,6 +1477,233 @@ export class Orchestrator {
     );
 
     return result;
+  }
+
+  private requiresDedicatedFeatureBranch(feature: Feature): boolean {
+    return feature.kind === 'implementation' || feature.kind === 'review_remediation';
+  }
+
+  private async ensureMissionBranch(): Promise<string> {
+    if (!this.state.gitStrategy) {
+      throw new Error('git strategy is not enabled');
+    }
+
+    const existingMissionBranch = this.state.gitStrategy.missionBranch
+      ?? createMissionBranchName(this.state.gitStrategy.config.missionId);
+
+    try {
+      checkoutBranch(this.config.cwd, existingMissionBranch);
+    } catch {
+      createBranch(this.config.cwd, existingMissionBranch, this.state.gitStrategy.config.baseBranch);
+      this.emitEvent('branch_created', 'system', {
+        branchName: existingMissionBranch,
+        baseBranch: this.state.gitStrategy.config.baseBranch,
+        baseCommitHash: getHeadCommitHash(this.config.cwd),
+        branchType: 'mission',
+      });
+    }
+
+    this.setGitStrategyState(setMissionBranch(this.state.gitStrategy, existingMissionBranch));
+    await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+    return existingMissionBranch;
+  }
+
+  private shouldApplyWorkerWarningPolicy(feature: Feature): boolean {
+    return feature.kind === 'implementation' || feature.kind === 'review_remediation';
+  }
+
+  private async syncPullRequestStateFromReport(
+    feature: Feature,
+    report: WorkerFeatureReport
+  ): Promise<void> {
+    if (!this.state.gitStrategy) {
+      return;
+    }
+
+    let next = this.state.gitStrategy;
+    let changed = false;
+
+    if (report.pullRequest) {
+      next = updatePullRequestState(next, report.pullRequest);
+      changed = true;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: report.pullRequest.action === 'created' ? 'pull_request_created' : 'pull_request_updated',
+        featureId: feature.id,
+        url: report.pullRequest.url,
+        number: report.pullRequest.number,
+        headBranch: report.pullRequest.headBranch,
+        baseBranch: report.pullRequest.baseBranch,
+        message: `${report.pullRequest.action} PR ${report.pullRequest.url}`,
+      });
+    }
+
+    if (report.pullRequestFollowUp) {
+      next = updatePullRequestFollowUpState(next, report.pullRequestFollowUp);
+      changed = true;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'pull_request_follow_up_progress',
+        featureId: feature.id,
+        quietUntil: report.pullRequestFollowUp.quietUntil,
+        lastExternalActivityAt: report.pullRequestFollowUp.lastExternalActivityAt,
+        handledFeedbackCount: report.pullRequestFollowUp.handledFeedbackIds.length,
+        message: report.pullRequestFollowUp.quietUntil
+          ? `PR follow-up waiting for quiet window until ${report.pullRequestFollowUp.quietUntil}`
+          : 'PR follow-up progress updated',
+      });
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    this.setGitStrategyState(next);
+    await saveGitStrategyState(this.config.melosDir, next);
+  }
+
+  private async handleOperationalFeatureResult(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): Promise<void> {
+    let missionPlan = this.requireMissionPlan();
+    missionPlan = incrementMissionIterations(missionPlan);
+
+    if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      missionPlan = transitionMissionState(missionPlan, 'paused');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.activityLabel = `${feature.id} blocked. Resolve the PR automation issue and resume.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    if (result.type === 'success') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'done',
+      });
+      this.activityLabel = `Completed ${feature.id}.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const runtimeFeature = missionPlan.milestones
+      .find((item) => item.id === milestone.id)
+      ?.features.find((item) => item.id === feature.id);
+    const attempts = runtimeFeature?.attempts ?? feature.attempts;
+
+    if (attempts < this.executionConfig.maxFeatureAttempts) {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      const retry = this.scheduleFeatureRetry(missionPlan, milestone.id, feature.id, attempts + 1, result.report);
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'feature_retry_scheduled',
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        attempt: attempts,
+        nextAttempt: retry.nextAttempt,
+        dueAt: retry.dueAt,
+        message: `Retry ${feature.id} as attempt ${retry.nextAttempt} at ${retry.dueAt}`,
+      });
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'retry_pending',
+      });
+      this.activityLabel = `Retrying ${feature.id} at ${retry.dueAt}.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+    missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'failed');
+    missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'failed');
+    missionPlan = transitionMissionState(missionPlan, 'failed');
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+    this.emitEvent('iteration_completed', 'orchestrator', {
+      iteration: missionPlan.totalIterations,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      status: 'failed',
+    });
+    this.emitEvent('mission_failed', 'orchestrator', {
+      reason: `${feature.kind} feature failed`,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      summary: result.report.summary,
+    });
+    this.activityLabel = `${feature.id} failed.`;
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
+  private async handleQaFeatureResult(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): Promise<void> {
+    let missionPlan = this.requireMissionPlan();
+    missionPlan = incrementMissionIterations(missionPlan);
+
+    if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
+      missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      missionPlan = transitionMissionState(missionPlan, 'paused');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.activityLabel = `${feature.id} blocked. Resolve the QA environment issue and resume.`;
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    missionPlan = this.clearFeatureRetry(missionPlan, milestone.id, feature.id);
+    missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+    this.emitEvent('iteration_completed', 'orchestrator', {
+      iteration: missionPlan.totalIterations,
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      status: 'done',
+    });
+    this.activityLabel = result.type === 'success'
+      ? `Completed ${feature.id}.`
+      : `QA execution finished for ${feature.id}; milestone validation will determine pass/fail.`;
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
   }
 
   private applyWorkerWarningPolicy(
@@ -1687,14 +2048,14 @@ export class Orchestrator {
 
   private async runGitPostProcess(
     branchName: string,
-    baseBranch: string,
+    targetBranch: string,
     report: WorkerFeatureReport
   ): Promise<{ ok: boolean; summary: string }> {
     try {
       if (!isWorkingTreeClean(this.config.cwd)) {
         const message = [
           report.summary,
-          `Commit required before merge on ${branchName}.`,
+          `Commit required before merge into ${targetBranch} from ${branchName}.`,
           'Please commit the feature changes using the git-committer skill and retry.',
         ].join('\n');
         this.emitEvent('error', 'system', {
@@ -1702,11 +2063,11 @@ export class Orchestrator {
           featureId: report.featureId,
           message: 'git strategy requires committed changes before merge',
         });
-        this.state.gitStrategy = this.state.gitStrategy
-          ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned')
-          : this.state.gitStrategy;
-        await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
-        checkoutBranch(this.config.cwd, baseBranch);
+        if (this.state.gitStrategy) {
+          this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
+          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+        }
+        checkoutBranch(this.config.cwd, targetBranch);
         return {
           ok: false,
           summary: message,
@@ -1721,11 +2082,11 @@ export class Orchestrator {
             exitCode: result.exitCode,
           });
           if (result.exitCode !== 0) {
-            this.state.gitStrategy = this.state.gitStrategy
-              ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned')
-              : this.state.gitStrategy;
-            await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
-            checkoutBranch(this.config.cwd, baseBranch);
+            if (this.state.gitStrategy) {
+              this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
+              await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+            }
+            checkoutBranch(this.config.cwd, targetBranch);
             return {
               ok: false,
               summary: `${report.summary}\nPre-merge validation failed: ${command}`,
@@ -1734,7 +2095,7 @@ export class Orchestrator {
         }
       }
 
-      if (hasConflicts(this.config.cwd, branchName, baseBranch)) {
+      if (hasConflicts(this.config.cwd, branchName, targetBranch)) {
         const missionPlan = this.requireMissionPlan();
         const activeMilestoneId = missionPlan.activeMilestoneId;
         if (activeMilestoneId) {
@@ -1749,27 +2110,30 @@ export class Orchestrator {
             model: CODEX_LATEST_ALIAS,
           }]);
         }
-        this.state.gitStrategy = this.state.gitStrategy
-          ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned')
-          : this.state.gitStrategy;
-        await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
-        checkoutBranch(this.config.cwd, baseBranch);
+        if (this.state.gitStrategy) {
+          this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
+          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+        }
+        checkoutBranch(this.config.cwd, targetBranch);
         return {
           ok: false,
           summary: `${report.summary}\nMerge conflict detected for ${branchName}`,
         };
       }
 
-      mergeBranch(this.config.cwd, branchName, baseBranch);
+      mergeBranch(this.config.cwd, branchName, targetBranch);
       this.emitEvent('branch_merged', 'system', {
         branchName,
-        baseBranch,
+        baseBranch: targetBranch,
+        mergeTargetBranch: targetBranch,
       });
-      this.state.gitStrategy = this.state.gitStrategy
-        ? updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'merged', { mergedAt: new Date().toISOString() })
-        : this.state.gitStrategy;
-      await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy!);
-      checkoutBranch(this.config.cwd, baseBranch);
+      if (this.state.gitStrategy) {
+        this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'merged', {
+          mergedAt: new Date().toISOString(),
+        }));
+        await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
+      }
+      checkoutBranch(this.config.cwd, targetBranch);
 
       return {
         ok: true,
@@ -1777,7 +2141,7 @@ export class Orchestrator {
       };
     } catch (error) {
       try {
-        checkoutBranch(this.config.cwd, baseBranch);
+        checkoutBranch(this.config.cwd, targetBranch);
       } catch {
         // ignore cleanup failure
       }
@@ -2367,11 +2731,14 @@ export class Orchestrator {
     payload: Record<string, unknown>
   ): void {
     const iteration = this.state.missionPlan?.totalIterations ?? this.state.iteration;
+    const enrichedPayload = this.config.runIdentity
+      ? { ...payload, runIdentity: this.config.runIdentity }
+      : payload;
     const event = this.eventLog.emit({
       type,
       agent,
       iteration,
-      payload,
+      payload: enrichedPayload,
     });
     this.kernelState = reduceMissionEvent(this.kernelState, event);
     this.kernelState.missionPlan = this.state.missionPlan;
@@ -2693,6 +3060,7 @@ export class Orchestrator {
   }
 
   private async persistRuntimeState(): Promise<void> {
+    this.kernelState.gitStrategy = this.state.gitStrategy;
     await saveSnapshot(this.config.melosDir, {
       seq: this.eventLog.getCurrentSeq(),
       savedAt: new Date().toISOString(),
@@ -2750,6 +3118,18 @@ export class Orchestrator {
         `Blocking findings: ${latestReview.blockingFindingCount}`,
       ]
       : ['No final review report'];
+    const gitStrategy = this.state.gitStrategy;
+    const gitLines = gitStrategy
+      ? [
+        `Base branch: ${gitStrategy.config.baseBranch}`,
+        `Mission branch: ${gitStrategy.missionBranch ?? '-'}`,
+        `Active branch: ${gitStrategy.activeBranch ?? '-'}`,
+        `Pull request: ${gitStrategy.pullRequest ? `${gitStrategy.pullRequest.url} (${gitStrategy.pullRequest.action})` : '-'}`,
+        `Quiet until: ${gitStrategy.quietUntil ?? '-'}`,
+        `Last external activity: ${gitStrategy.lastExternalActivityAt ?? '-'}`,
+        `Handled feedback count: ${gitStrategy.handledFeedbackIds.length}`,
+      ]
+      : ['Git strategy disabled'];
 
     const content = [
       '# Melos Mission Handoff',
@@ -2771,6 +3151,10 @@ export class Orchestrator {
       '## Final Review',
       '',
       ...reviewLines,
+      '',
+      '## Git / Pull Request',
+      '',
+      ...gitLines,
       '',
       '## Warnings',
       '',
@@ -2846,6 +3230,8 @@ function buildTaskPreviewLines(
       const badge = toFeatureModelBadge(feature, modelState.source);
       const reviewMeta = feature.kind === 'review'
         ? ` [review:${feature.reviewType ?? 'unknown'} g${feature.reviewGeneration ?? 1}]`
+        : feature.kind === 'qa'
+          ? ' [qa]'
         : feature.kind === 'review_remediation'
           ? ' [review-remediation]'
           : '';
@@ -2856,8 +3242,7 @@ function buildTaskPreviewLines(
     const validationChecks = [
       ...milestone.validationContract.staticChecks,
       ...milestone.validationContract.testSuites,
-      ...(milestone.validationContract.browserChecks ?? []),
-      ...(milestone.validationContract.manualSteps ?? []),
+      ...(milestone.validationContract.qaChecks ?? []),
     ];
     if (validationChecks.length > 0) {
       lines.push('  validation checks:');
@@ -2876,6 +3261,13 @@ function buildTaskPreviewLines(
                 ? 'browser QA (worker evidence required)'
                 : 'command not specified');
         lines.push(`    - [${check.passed ? 'x' : ' '}] ${check.id} (${check.type}) ${description} :: ${actionLabel}`);
+      }
+      const qaChecks = milestone.validationContract.qaChecks ?? [];
+      if (qaChecks.length > 0) {
+        const qaPassed = qaChecks.filter((check) => check.passed).length;
+        const qaFailed = qaChecks.filter((check) => !check.passed && check.failureCount > 0).length;
+        const qaPending = qaChecks.length - qaPassed - qaFailed;
+        lines.push(`  qa summary: total=${qaChecks.length} passed=${qaPassed} failed=${qaFailed} pending=${qaPending}`);
       }
     }
     lines.push('');

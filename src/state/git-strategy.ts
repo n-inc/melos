@@ -8,6 +8,24 @@ export interface GitStrategyConfig {
   autoPush: boolean;
   preMergeValidation: boolean;
   validationCommands: string[];
+  pullRequestEnabled: boolean;
+}
+
+export interface PullRequestState {
+  number?: number;
+  url: string;
+  title?: string;
+  baseBranch: string;
+  headBranch: string;
+  draft: boolean;
+  action: 'created' | 'updated';
+  updatedAt: string;
+}
+
+export interface PullRequestFollowUpState {
+  handledFeedbackIds: string[];
+  lastExternalActivityAt: string | null;
+  quietUntil: string | null;
 }
 
 export interface FeatureBranch {
@@ -26,6 +44,11 @@ export interface GitStrategyState {
   config: GitStrategyConfig;
   branches: FeatureBranch[];
   activeBranch: string | null;
+  missionBranch: string | null;
+  pullRequest: PullRequestState | null;
+  handledFeedbackIds: string[];
+  lastExternalActivityAt: string | null;
+  quietUntil: string | null;
 }
 
 export function getGitStrategyPath(melosDir: string): string {
@@ -42,7 +65,7 @@ export async function loadGitStrategyState(melosDir: string): Promise<GitStrateg
     return null;
   }
   const raw = await readFile(path, 'utf-8');
-  return JSON.parse(raw) as GitStrategyState;
+  return normalizeGitStrategyState(JSON.parse(raw) as Partial<GitStrategyState>);
 }
 
 export async function saveGitStrategyState(melosDir: string, state: GitStrategyState): Promise<void> {
@@ -55,7 +78,19 @@ export function createGitStrategyState(config: GitStrategyConfig): GitStrategySt
     config,
     branches: [],
     activeBranch: null,
+    missionBranch: null,
+    pullRequest: null,
+    handledFeedbackIds: [],
+    lastExternalActivityAt: null,
+    quietUntil: null,
   };
+}
+
+export function createMissionBranchName(missionId: string): string {
+  const safeMissionId = typeof missionId === 'string' && missionId.trim().length > 0
+    ? missionId.trim()
+    : 'mission';
+  return `melos/${safeMissionId}/mission`;
 }
 
 export function createFeatureBranchName(
@@ -124,6 +159,17 @@ export function registerFeatureBranch(
   };
 }
 
+export function setMissionBranch(
+  state: GitStrategyState,
+  branchName: string
+): GitStrategyState {
+  return {
+    ...state,
+    missionBranch: branchName,
+    activeBranch: branchName,
+  };
+}
+
 export function updateFeatureBranchStatus(
   state: GitStrategyState,
   branchName: string,
@@ -132,7 +178,9 @@ export function updateFeatureBranchStatus(
 ): GitStrategyState {
   return {
     ...state,
-    activeBranch: status === 'merged' || status === 'abandoned' ? null : state.activeBranch,
+    activeBranch: status === 'merged' || status === 'abandoned'
+      ? state.missionBranch
+      : state.activeBranch,
     branches: state.branches.map((branch) => {
       if (branch.name !== branchName) {
         return branch;
@@ -148,5 +196,75 @@ export function updateFeatureBranchStatus(
         mergedAt: options.mergedAt ?? (status === 'merged' ? new Date().toISOString() : branch.mergedAt),
       };
     }),
+  };
+}
+
+export function updatePullRequestState(
+  state: GitStrategyState,
+  pullRequest: Omit<PullRequestState, 'updatedAt'> & { updatedAt?: string }
+): GitStrategyState {
+  return {
+    ...state,
+    pullRequest: {
+      ...pullRequest,
+      updatedAt: pullRequest.updatedAt ?? new Date().toISOString(),
+    },
+  };
+}
+
+export function updatePullRequestFollowUpState(
+  state: GitStrategyState,
+  followUp: Partial<PullRequestFollowUpState>
+): GitStrategyState {
+  const handledFeedbackIds = Array.isArray(followUp.handledFeedbackIds)
+    ? Array.from(new Set([
+      ...state.handledFeedbackIds,
+      ...followUp.handledFeedbackIds.filter((value) => typeof value === 'string' && value.trim().length > 0),
+    ]))
+    : state.handledFeedbackIds;
+
+  return {
+    ...state,
+    handledFeedbackIds,
+    lastExternalActivityAt: followUp.lastExternalActivityAt ?? state.lastExternalActivityAt,
+    quietUntil: followUp.quietUntil ?? state.quietUntil,
+  };
+}
+
+function normalizeGitStrategyState(value: Partial<GitStrategyState>): GitStrategyState {
+  const config = value.config ?? {
+    missionId: 'mission',
+    baseBranch: 'main',
+    autoPush: false,
+    preMergeValidation: true,
+    validationCommands: ['npm run typecheck', 'npm test'],
+    pullRequestEnabled: false,
+  };
+
+  return {
+    config: {
+      ...config,
+      pullRequestEnabled: config.pullRequestEnabled === true,
+    },
+    branches: Array.isArray(value.branches) ? value.branches : [],
+    activeBranch: typeof value.activeBranch === 'string' ? value.activeBranch : null,
+    missionBranch: typeof value.missionBranch === 'string' ? value.missionBranch : null,
+    pullRequest: value.pullRequest && typeof value.pullRequest.url === 'string'
+      ? {
+        ...value.pullRequest,
+        updatedAt: typeof value.pullRequest.updatedAt === 'string'
+          ? value.pullRequest.updatedAt
+          : new Date().toISOString(),
+      }
+      : null,
+    handledFeedbackIds: Array.isArray(value.handledFeedbackIds)
+      ? value.handledFeedbackIds.filter((item): item is string => typeof item === 'string')
+      : [],
+    lastExternalActivityAt: typeof value.lastExternalActivityAt === 'string'
+      ? value.lastExternalActivityAt
+      : null,
+    quietUntil: typeof value.quietUntil === 'string'
+      ? value.quietUntil
+      : null,
   };
 }

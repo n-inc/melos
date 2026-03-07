@@ -32,6 +32,9 @@ describe('config loader v0.8', () => {
         autoPush: true,
         preMergeValidation: true,
         validationCommands: ['npm run typecheck'],
+        pullRequest: {
+          enabled: true,
+        },
       },
     }), 'utf-8');
 
@@ -53,6 +56,7 @@ describe('config loader v0.8', () => {
     expect(config.git?.enabled).toBe(true);
     expect(config.git?.baseBranch).toBe('develop');
     expect(config.git?.validationCommands).toEqual(['npm run typecheck']);
+    expect(config.git?.pullRequest?.enabled).toBe(true);
   });
 
   it('filters invalid fields', () => {
@@ -76,6 +80,9 @@ describe('config loader v0.8', () => {
       git: {
         enabled: 'yes',
         validationCommands: ['npm test', 123, ''],
+        pullRequest: {
+          enabled: 'yes',
+        },
       },
     }), 'utf-8');
 
@@ -85,5 +92,6 @@ describe('config loader v0.8', () => {
     expect(config.execution).toBeUndefined();
     expect(config.verification).toBeUndefined();
     expect(config.git?.validationCommands).toEqual(['npm test']);
+    expect(config.git?.pullRequest).toBeUndefined();
   });
 });

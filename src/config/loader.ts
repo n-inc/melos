@@ -29,6 +29,9 @@ export interface MelosConfig {
     autoPush?: boolean;
     preMergeValidation?: boolean;
     validationCommands?: string[];
+    pullRequest?: {
+      enabled?: boolean;
+    };
   };
 }
 
@@ -157,6 +160,15 @@ function validateConfig(config: MelosConfig): MelosConfig {
     }
     if (Array.isArray(config.git.validationCommands)) {
       git.validationCommands = config.git.validationCommands.filter(isNonEmptyString);
+    }
+    if (config.git.pullRequest && typeof config.git.pullRequest === 'object') {
+      const pullRequest: NonNullable<NonNullable<MelosConfig['git']>['pullRequest']> = {};
+      if (typeof config.git.pullRequest.enabled === 'boolean') {
+        pullRequest.enabled = config.git.pullRequest.enabled;
+      }
+      if (Object.keys(pullRequest).length > 0) {
+        git.pullRequest = pullRequest;
+      }
     }
 
     if (Object.keys(git).length > 0) {

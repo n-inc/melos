@@ -18,7 +18,7 @@ describe('state/validation', () => {
           failureCount: 0,
         },
       ],
-      browserChecks: [
+      qaChecks: [
         {
           id: 'browser',
           description: 'Browser QA',
@@ -34,8 +34,8 @@ describe('state/validation', () => {
 
     expect(contract.staticChecks[0]?.id).toBe('typecheck');
     expect(contract.staticChecks[0]?.failureCount).toBe(0);
-    expect(contract.browserChecks?.[0]?.requiredRunner).toBe('playwright-interactive');
-    expect(contract.browserChecks?.[0]?.requiredArtifacts).toEqual(['screenshot', 'video']);
+    expect(contract.qaChecks?.[0]?.requiredRunner).toBe('playwright-interactive');
+    expect(contract.qaChecks?.[0]?.requiredArtifacts).toEqual(['screenshot', 'video']);
   });
 
   it('increments failure count on failed checks and clears pass status on success', () => {

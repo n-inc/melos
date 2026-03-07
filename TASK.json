@@ -1,9 +1,65 @@
-[
-  {
-    "id": "review-code-g1",
-    "description": "[Code Review] 変更差分中心で P1/P2 相当の品質問題を確認する (generation 1)",
-    "passes": false,
-    "reviewType": "code",
-    "reviewGeneration": 1
-  }
-]
+{
+  "version": 3,
+  "mission": {
+    "id": "mission",
+    "goal": "Implement the requested product changes",
+    "constraints": [
+      "No backward compatibility layer"
+    ],
+    "successCriteria": [
+      "All milestone validations pass"
+    ],
+    "prdFile": "/Users/kmagai/Development/melos/PRD.md"
+  },
+  "state": "completed",
+  "milestones": [
+    {
+      "id": "m1",
+      "title": "Core implementation",
+      "description": "Implement the mission scope end-to-end",
+      "features": [
+        {
+          "id": "m1-f1",
+          "description": "Implement requested scope from PRD",
+          "status": "done",
+          "model": "codex",
+          "briefing": "Let me gather context on the project and the PRD.\n\nPRD.md が存在しません。TASK.json では `prdFile` が `/Users/kmagai/Development/melos/PRD.md` を指していますが、ファイルが削除されています。README や最近の変更差分から要件を把握します。\n\n型チェック・テストともにグリーン（38 suites / 381 tests pass）。PRD.md は削除済みのため、コミット履歴・差分・README から要件を再構成してブリーフィングを作成します。\n\n---\n\n## Objective\n\nHeadless Agent Runtime の API 品質を仕上げ、未コミットの変更をマージ可能な状態にする。具体的には `status` / `logs` / `approve` / `reject` / `cancel` の JSON 出力を構造化し、カーソルベースのポーリング (`cursor.nextSeq`) やアクターフィルタ (`planning|manager|worker|validator|system|all`) を安定させる。\n\n## Constraints\n\n- **後方互換レイヤーは不要**（TASK.json の mission.constraints に明記）\n- 現在のブランチ `codex/mission` は main から **74 ファイル / +13,189 -6,371 行** の大規模差分あり。未コミット変更は `src/cli.ts`（679行差分）、`headless-ops.test.ts`、`model-resolution.test.ts` の 3 ファイル\n- typecheck / test は既に全パス（381 tests）。**回帰させないこと**が最優先\n- PRD.md が削除されているため、受入基準は README の Headless Agent Runtime セクションとテストケースが事実上の仕様\n\n## Validation focus\n\n1. **未コミット変更のコミット**: `cli.ts` の `MissionStatusPayload` 構造変更（`initialized`, `cursor`, `mission.state` 等）とテスト更新を正しくコミット\n2. **headless-ops テストの網羅性**: `readMissionStatus` / `readMissionLogs` のカーソルベース応答、エラーケース（events.jsonl 欠損、invalid TASK.json）、`applyApprovalDecision` の reject 時 throw 確認\n3. **`--detach` フロー**: `spawnDetachedSelf` → `DETACHED_CHILD_FLAG` → JSON ペイロード出力のパスが E2E で一貫\n4. **`cancel` / `kill` の `--plain` オプション**: JSON / plain 両出力モードのテスト\n5. **typecheck + 全テスト通過**の維持\n\n## Risks\n\n- **PRD 消失による仕様ドリフト**: 受入基準の正式な定義がなく、README とテストのみが真の仕様。意図しない仕様変更が混入しやすい\n- **大規模差分のマージコンフリクト**: main との差分が 13k+ 行あるため、マージ時に競合リスクが高い。早期に main への同期またはリベースが必要\n- **Headless detach のプロセス管理**: `spawnDetachedSelf` が `--__detached-child` 内部フラグに依存しており、CLI 引数パースの境界条件（ユーザーが直接フラグを渡すケース等）が未テスト\n- **ログフィルタの actor 名変更**: `orchestrator` → `planning` への rename が呼び出し元全箇所で整合しているか、特にイベント書き込み側との一貫性を要確認\n\n型チェック・テストともにグリーン（38 suites / 381 tests pass）。PRD.md は削除済みのため、コミット履歴・差分・README から要件を再構成してブリーフィングを作成します。\n\n---\n\n## Objective\n\nHeadless Agent Runtime の API 品質を仕上げ、未コミットの変更をマージ可能な状態にする。具体的には `status` / `logs` / `approve` / `reject` / `cancel` の JSON 出力を構造化し、カーソルベースのポーリング (`cursor.nextSeq`) やアクターフィルタ (`planning|manager|worker|validator|system|all`) を安定させる。\n\n## Constraints\n\n- **後方互換レイヤーは不要**（TASK.json の mission.constraints に明記）\n- 現在のブランチ `codex/mission` は main から **74 ファイル / +13,189 -6,371 行** の大規模差分あり。未コミット変更は `src/cli.ts`（679行差分）、`headless-ops.test.ts`、`model-resolution.test.ts` の 3 ファイル\n- typecheck / test は既に全パス（381 tests）。**回帰させないこと**が最優先\n- PRD.md が削除されているため、受入基準は README の Headless Agent Runtime セクションとテストケースが事実上の仕様\n\n## Validation focus\n\n1. **未コミット変更のコミット**: `cli.ts` の `MissionStatusPayload` 構造変更（`initialized`, `cursor`, `mission.state` 等）とテスト更新を正しくコミット\n2. **headless-ops テストの網羅性**: `readMissionStatus` / `readMissionLogs` のカーソルベース応答、エラーケース（events.jsonl 欠損、invalid TASK.json）、`applyApprovalDecision` の reject 時 throw 確認\n3. **`--detach` フロー**: `spawnDetachedSelf` → `DETACHED_CHILD_FLAG` → JSON ペイロード出力のパスが E2E で一貫\n4. **`cancel` / `kill` の `--plain` オプション**: JSON / plain 両出力モードのテスト\n5. **typecheck + 全テスト通過**の維持\n\n## Risks\n\n- **PRD 消失による仕様ドリフト**: 受入基準の正式な定義がなく、README とテストのみが真の仕様。意図しない仕様変更が混入しやすい\n- **大規模差分のマージコンフリクト**: main との差分が 13k+ 行あるため、マージ時に競合リスクが高い。早期に main への同期またはリベースが必要\n- **Headless detach のプロセス管理**: `spawnDetachedSelf` が `--__detached-child` 内部フラグに依存しており、CLI 引数パースの境界条件（ユーザーが直接フラグを渡すケース等）が未テスト\n- **ログフィルタの actor 名変更**: `orchestrator` → `planning` への rename が呼び出し元全箇所で整合しているか、特にイベント書き込み側との一貫性を要確認",
+          "attempts": 1,
+          "lastReportSummary": "[dry-run] execution skipped"
+        }
+      ],
+      "validationContract": {
+        "staticChecks": [
+          {
+            "id": "typecheck",
+            "description": "Typecheck must pass",
+            "type": "auto:typecheck",
+            "command": "npm run typecheck",
+            "passed": true,
+            "failureCount": 0
+          }
+        ],
+        "testSuites": [
+          {
+            "id": "test",
+            "description": "Test suite must pass",
+            "type": "auto:test",
+            "command": "npm test",
+            "passed": true,
+            "failureCount": 0
+          }
+        ],
+        "browserChecks": [],
+        "manualSteps": []
+      },
+      "status": "done",
+      "order": 1
+    }
+  ],
+  "createdAt": "2026-02-28T06:51:24.001Z",
+  "lastTransitionAt": "2026-03-03T10:28:31.475Z",
+  "activeMilestoneId": null,
+  "activeFeatureId": null,
+  "totalIterations": 1,
+  "approvalMethod": "interactive"
+}

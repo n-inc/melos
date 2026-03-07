@@ -57,12 +57,12 @@ describe('Orchestrator v0.8', () => {
 
     jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
     jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
-    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
       type: 'success',
       report: {
         iteration: 1,
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
         status: 'SUCCESS',
         summary: 'done',
         warnings: [],
@@ -80,7 +80,7 @@ describe('Orchestrator v0.8', () => {
         requestsHelp: false,
         createdAt: new Date().toISOString(),
       },
-    });
+    }));
 
     const orchestrator = new Orchestrator({
       cwd,
@@ -98,6 +98,71 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.success).toBe(true);
     expect(result.reason).toBe('completed');
+  });
+
+  it('creates a running quick mission plan when quick mode is enabled', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-quick-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    const prdOverride = '# Quick launch mission\n\nExecute this PRD directly.';
+
+    const planningSpy = jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan');
+    const workerSpy = jest.spyOn(WorkerAgent.prototype, 'run');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: false,
+      interactivePlanning: false,
+      dryRun: true,
+      quick: true,
+      prdOverride,
+      runIdentity: {
+        runId: 'run_123',
+        sourceTracker: 'github',
+        sourceIssueId: '123',
+        sourceIssueUrl: 'https://github.com/example/repo/issues/123',
+        attempt: 2,
+      },
+      resume: false,
+    });
+    const quickPlanSpy = jest.spyOn(
+      orchestrator as unknown as { createQuickMissionPlan: () => Promise<void> },
+      'createQuickMissionPlan'
+    );
+
+    const result = await orchestrator.run();
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as {
+        type: string;
+        payload?: {
+          quick?: boolean;
+          plan?: MissionPlan;
+          runIdentity?: { runId: string; sourceIssueId: string; attempt: number };
+        };
+      });
+    const planCreated = events.find((event) => event.type === 'plan_created');
+
+    expect(result.success).toBe(true);
+    expect(quickPlanSpy).toHaveBeenCalled();
+    expect(planningSpy).not.toHaveBeenCalled();
+    expect(workerSpy).not.toHaveBeenCalled();
+    expect(planCreated?.payload?.quick).toBe(true);
+    expect(planCreated?.payload?.runIdentity).toMatchObject({
+      runId: 'run_123',
+      sourceIssueId: '123',
+      attempt: 2,
+    });
+    expect(planCreated?.payload?.plan?.state).toBe('running');
+    expect(planCreated?.payload?.plan?.milestones[0]?.features[0]?.description).toContain('Execute this PRD directly.');
   });
 
   it('runs final review gate before completion and saves review reports', async () => {
@@ -607,7 +672,7 @@ describe('Orchestrator v0.8', () => {
           validationContract: {
             staticChecks: [],
             testSuites: [],
-            manualSteps: [
+            qaChecks: [
               {
                 id: 'manual-qa',
                 description: 'Check browser flow',
@@ -641,12 +706,12 @@ describe('Orchestrator v0.8', () => {
         model: 'codex',
       },
     ]);
-    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
       type: 'success',
       report: {
         iteration: 1,
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
         status: 'SUCCESS',
         summary: 'done',
         warnings: [],
@@ -664,11 +729,11 @@ describe('Orchestrator v0.8', () => {
         requestsHelp: false,
         createdAt: new Date().toISOString(),
       },
-    });
+    }));
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 2,
+      maxIterations: 3,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -737,7 +802,7 @@ describe('Orchestrator v0.8', () => {
           validationContract: {
             staticChecks: [],
             testSuites: [],
-            browserChecks: [
+            qaChecks: [
               {
                 id: 'browser-qa',
                 description: 'Check browser flow',
@@ -799,7 +864,7 @@ describe('Orchestrator v0.8', () => {
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 2,
+      maxIterations: 3,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -1128,7 +1193,7 @@ describe('Orchestrator v0.8', () => {
           validationContract: {
             staticChecks: [],
             testSuites: [],
-            browserChecks: [
+            qaChecks: [
               {
                 id: 'browser-qa',
                 description: 'Check browser flow',
@@ -1163,12 +1228,12 @@ describe('Orchestrator v0.8', () => {
         model: 'codex',
       },
     ]);
-    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
       type: 'success',
       report: {
         iteration: 1,
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
         status: 'SUCCESS',
         summary: 'done',
         warnings: [],
@@ -1180,24 +1245,26 @@ describe('Orchestrator v0.8', () => {
           lintPassed: true,
           typecheckPassed: true,
         },
-        checks: [
-          {
-            checkId: 'browser-qa',
-            passed: true,
-            runner: 'browser-test',
-            screenshotPath: 'artifacts/screenshots/browser.png',
-          },
-        ],
+        checks: input.feature.kind === 'qa'
+          ? [
+            {
+              checkId: 'browser-qa',
+              passed: true,
+              runner: 'browser-test',
+              screenshotPath: 'artifacts/screenshots/browser.png',
+            },
+          ]
+          : [],
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
       },
-    });
+    }));
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 2,
+      maxIterations: 3,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -1252,7 +1319,7 @@ describe('Orchestrator v0.8', () => {
           validationContract: {
             staticChecks: [],
             testSuites: [],
-            browserChecks: [
+            qaChecks: [
               {
                 id: 'browser-qa',
                 description: 'Check browser flow',
@@ -1287,12 +1354,12 @@ describe('Orchestrator v0.8', () => {
         model: 'codex',
       },
     ]);
-    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
       type: 'success',
       report: {
         iteration: 1,
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
         status: 'SUCCESS',
         summary: 'done',
         warnings: [],
@@ -1304,25 +1371,27 @@ describe('Orchestrator v0.8', () => {
           lintPassed: true,
           typecheckPassed: true,
         },
-        checks: [
-          {
-            checkId: 'browser-qa',
-            passed: true,
-            runner: 'playwright-interactive',
-            screenshotPath: 'artifacts/screenshots/browser.png',
-            warning: 'fallback browser QA was used',
-          },
-        ],
+        checks: input.feature.kind === 'qa'
+          ? [
+            {
+              checkId: 'browser-qa',
+              passed: true,
+              runner: 'playwright-interactive',
+              screenshotPath: 'artifacts/screenshots/browser.png',
+              warning: 'fallback browser QA was used',
+            },
+          ]
+          : [],
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
       },
-    });
+    }));
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 2,
+      maxIterations: 3,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -1376,7 +1445,7 @@ describe('Orchestrator v0.8', () => {
           validationContract: {
             staticChecks: [],
             testSuites: [],
-            browserChecks: [
+            qaChecks: [
               {
                 id: 'browser-qa',
                 description: 'Check browser flow',
@@ -1411,12 +1480,12 @@ describe('Orchestrator v0.8', () => {
         model: 'codex',
       },
     ]);
-    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
       type: 'success',
       report: {
         iteration: 1,
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
         status: 'SUCCESS',
         summary: 'done',
         warnings: [],
@@ -1428,24 +1497,26 @@ describe('Orchestrator v0.8', () => {
           lintPassed: true,
           typecheckPassed: true,
         },
-        checks: [
-          {
-            checkId: 'browser-qa',
-            passed: true,
-            runner: 'playwright-interactive',
-            screenshotPath: 'artifacts/screenshots/missing.png',
-          },
-        ],
+        checks: input.feature.kind === 'qa'
+          ? [
+            {
+              checkId: 'browser-qa',
+              passed: true,
+              runner: 'playwright-interactive',
+              screenshotPath: 'artifacts/screenshots/missing.png',
+            },
+          ]
+          : [],
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
       },
-    });
+    }));
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 2,
+      maxIterations: 3,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -1498,7 +1569,7 @@ describe('Orchestrator v0.8', () => {
           validationContract: {
             staticChecks: [],
             testSuites: [],
-            manualSteps: [
+            qaChecks: [
               {
                 id: 'manual-qa',
                 description: 'Check browser flow',
@@ -1524,12 +1595,12 @@ describe('Orchestrator v0.8', () => {
 
     jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
     jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
-    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
       type: 'success',
       report: {
         iteration: 1,
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
         status: 'SUCCESS',
         summary: 'done',
         warnings: [],
@@ -1541,19 +1612,21 @@ describe('Orchestrator v0.8', () => {
           lintPassed: true,
           typecheckPassed: true,
         },
-        checks: [
-          {
-            checkId: 'manual-qa',
-            passed: true,
-            output: 'browser flow verified by worker',
-          },
-        ],
+        checks: input.feature.kind === 'qa'
+          ? [
+            {
+              checkId: 'manual-qa',
+              passed: true,
+              output: 'browser flow verified by worker',
+            },
+          ]
+          : [],
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
         createdAt: new Date().toISOString(),
       },
-    });
+    }));
 
     const orchestrator = new Orchestrator({
       cwd,
@@ -1608,7 +1681,7 @@ describe('Orchestrator v0.8', () => {
           validationContract: {
             staticChecks: [],
             testSuites: [],
-            manualSteps: [
+            qaChecks: [
               {
                 id: 'manual-qa',
                 description: 'Check browser flow',
@@ -1658,17 +1731,19 @@ describe('Orchestrator v0.8', () => {
           lintPassed: true,
           typecheckPassed: true,
         },
-        checks: [
-          {
-            checkId: 'manual-qa',
-            passed: false,
-            failure: {
-              summary: 'manual qa failed',
-              affectedFiles: [],
-              errorMessages: ['screen mismatch'],
+        checks: input.feature.kind === 'qa'
+          ? [
+            {
+              checkId: 'manual-qa',
+              passed: false,
+              failure: {
+                summary: 'manual qa failed',
+                affectedFiles: [],
+                errorMessages: ['screen mismatch'],
+              },
             },
-          },
-        ],
+          ]
+          : [],
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
@@ -1678,7 +1753,7 @@ describe('Orchestrator v0.8', () => {
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 2,
+      maxIterations: 3,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -1703,10 +1778,14 @@ describe('Orchestrator v0.8', () => {
     }));
 
     const mission = JSON.parse(readFileSync(missionPath, 'utf-8')) as {
-      milestones: Array<{ features: Array<{ description: string }> }>;
+      milestones: Array<{ features: Array<{ description: string; kind: string }> }>;
     };
-    expect(mission.milestones[0]?.features).toHaveLength(2);
-    expect(mission.milestones[0]?.features[1]?.description).toBe('Fix manual QA regression');
+    expect(mission.milestones[0]?.features).toHaveLength(3);
+    expect(mission.milestones[0]?.features[1]).toMatchObject({
+      description: 'Fix manual QA regression',
+      kind: 'implementation',
+    });
+    expect(mission.milestones[0]?.features[2]?.kind).toBe('qa');
   });
 
   it('passes feature cwd through to the worker input', async () => {
@@ -3218,6 +3297,7 @@ describe('Orchestrator v0.8', () => {
         autoPush: false,
         preMergeValidation: false,
         validationCommands: [],
+        pullRequestEnabled: false,
       },
       execution: {
         maxFeatureAttempts: 1,
@@ -3315,12 +3395,271 @@ describe('Orchestrator v0.8', () => {
         autoPush: false,
         preMergeValidation: false,
         validationCommands: [],
+        pullRequestEnabled: false,
       },
     });
 
     const result = await orchestrator.run();
     expect(result.success).toBe(true);
     expect(execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim()).toBe(baseBranch);
+  });
+
+  it('uses a dedicated mission branch and post-pr follow-up phase when pull request automation is enabled', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-pr-flow-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# PR flow mission\n', 'utf-8');
+    initGitRepository(cwd);
+    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
+
+    const planned = createMissionPlan({
+      missionId: 'pr-flow',
+      goal: 'Run post-pr automation on a mission branch',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['PR phase runs after final review'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Implementation',
+          description: 'Build the feature',
+          order: 1,
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'Implement', status: 'pending', attempts: 0, model: 'codex' },
+          ],
+        },
+        {
+          id: 'm2',
+          title: 'Final Review',
+          description: 'Run final reviews',
+          order: 2,
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm2-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+            {
+              id: 'm2-f2',
+              description: 'Run final code review',
+              kind: 'review',
+              reviewType: 'code',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+
+    const workerInputs: Array<{ featureId: string; currentBranch: string | null | undefined; baseBranch: string | undefined }> = [];
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
+      workerInputs.push({
+        featureId: input.feature.id,
+        currentBranch: input.currentBranch,
+        baseBranch: input.baseBranch,
+      });
+
+      if (input.feature.id === 'm1-f1') {
+        writeFileSync(join(cwd, 'mission-branch-change.txt'), 'ok', 'utf-8');
+        execSync('git add -A', { cwd, stdio: 'ignore' });
+        execSync('git commit -m "feat(pr-flow): implement"', { cwd, stdio: 'ignore' });
+        return {
+          type: 'success',
+          report: {
+            iteration: 1,
+            milestoneId: input.milestone.id,
+            featureId: input.feature.id,
+            status: 'SUCCESS',
+            summary: 'implemented',
+            warnings: [],
+            filesChanged: [{ path: 'mission-branch-change.txt', additions: 1, deletions: 0 }],
+            validation: {
+              testsRun: true,
+              testsPassed: 1,
+              testsFailed: 0,
+              lintPassed: true,
+              typecheckPassed: true,
+            },
+            checks: [],
+            discoveredFeatures: [],
+            learnings: [],
+            requestsHelp: false,
+            createdAt: new Date().toISOString(),
+          },
+        };
+      }
+
+      if (input.feature.kind === 'review') {
+        return {
+          type: 'success',
+          report: {
+            iteration: 1,
+            milestoneId: input.milestone.id,
+            featureId: input.feature.id,
+            status: 'SUCCESS',
+            summary: `${input.feature.reviewType} review passed`,
+            warnings: [],
+            filesChanged: [],
+            validation: {
+              testsRun: false,
+              testsPassed: 0,
+              testsFailed: 0,
+              lintPassed: false,
+              typecheckPassed: false,
+            },
+            checks: [],
+            review: {
+              reviewType: input.feature.reviewType!,
+              generation: input.feature.reviewGeneration ?? 1,
+              passed: true,
+              summary: `${input.feature.reviewType} review passed`,
+              findings: [],
+              artifacts: [],
+            },
+            discoveredFeatures: [],
+            learnings: [],
+            requestsHelp: false,
+            createdAt: new Date().toISOString(),
+          },
+        };
+      }
+
+      if (input.feature.kind === 'pull_request') {
+        return {
+          type: 'success',
+          report: {
+            iteration: 1,
+            milestoneId: input.milestone.id,
+            featureId: input.feature.id,
+            status: 'SUCCESS',
+            summary: 'pr created',
+            warnings: [],
+            filesChanged: [],
+            validation: {
+              testsRun: false,
+              testsPassed: 0,
+              testsFailed: 0,
+              lintPassed: false,
+              typecheckPassed: false,
+            },
+            checks: [],
+            pullRequest: {
+              number: 99,
+              url: 'https://github.com/example/repo/pull/99',
+              title: 'feat: pr flow',
+              baseBranch,
+              headBranch: 'melos/pr-flow/mission',
+              draft: false,
+              action: 'created',
+              updatedAt: new Date().toISOString(),
+            },
+            discoveredFeatures: [],
+            learnings: [],
+            requestsHelp: false,
+            createdAt: new Date().toISOString(),
+          },
+        };
+      }
+
+      return {
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: input.milestone.id,
+          featureId: input.feature.id,
+          status: 'SUCCESS',
+          summary: 'follow-up complete',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          pullRequest: {
+            number: 99,
+            url: 'https://github.com/example/repo/pull/99',
+            title: 'feat: pr flow',
+            baseBranch,
+            headBranch: 'melos/pr-flow/mission',
+            draft: false,
+            action: 'updated',
+            updatedAt: new Date().toISOString(),
+          },
+          pullRequestFollowUp: {
+            handledFeedbackIds: ['PRRC_1'],
+            lastExternalActivityAt: '2026-03-07T00:00:00.000Z',
+            quietUntil: '2026-03-07T00:30:00.000Z',
+          },
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'pr-flow',
+        baseBranch,
+        autoPush: false,
+        preMergeValidation: false,
+        validationCommands: [],
+        pullRequestEnabled: true,
+      },
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+    expect(workerInputs.map((item) => item.featureId)).toEqual(['m1-f1', 'm2-f1', 'm2-f2', 'm3-f1', 'm3-f2']);
+    expect(workerInputs[0]?.currentBranch).toContain('melos/pr-flow/m1-f1-implement');
+    expect(workerInputs[1]?.currentBranch).toBe('melos/pr-flow/mission');
+    expect(workerInputs[3]?.currentBranch).toBe('melos/pr-flow/mission');
+    expect(execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim()).toBe('melos/pr-flow/mission');
+
+    const gitStrategy = JSON.parse(readFileSync(join(melosDir, 'git-strategy.json'), 'utf-8')) as {
+      missionBranch: string | null;
+      pullRequest: { url: string; action: string } | null;
+      quietUntil: string | null;
+    };
+    expect(gitStrategy.missionBranch).toBe('melos/pr-flow/mission');
+    expect(gitStrategy.pullRequest).toMatchObject({
+      url: 'https://github.com/example/repo/pull/99',
+      action: 'updated',
+    });
+    expect(gitStrategy.quietUntil).toBe('2026-03-07T00:30:00.000Z');
   });
 });
 
