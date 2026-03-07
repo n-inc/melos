@@ -97,6 +97,7 @@ describe('WorkerAgent', () => {
         output: `\`\`\`json\n${JSON.stringify({
           status: 'SUCCESS',
           summary: 'feature implemented',
+          warnings: [],
           filesChanged: [{ path: 'src/a.ts', additions: 12, deletions: 1 }],
           validation: {
             testsRun: true,
@@ -145,6 +146,43 @@ describe('WorkerAgent', () => {
     expect(prompt).toContain('git diff --staged');
     expect(prompt).toContain('## Runtime Context');
     expect(prompt).toContain('Mission goal: Sample goal');
+  });
+
+  it('includes feature cwd in prompt and engine options', async () => {
+    const repoCwd = await mkdtemp(join(tmpdir(), 'melos-worker-cwd-'));
+    try {
+      const agent = new WorkerAgent({
+        cwd: repoCwd,
+        promptsDir: join(process.cwd(), 'prompts'),
+        model: 'gpt-5.4',
+      });
+      const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+        .mockResolvedValue({
+          success: true,
+          output: '```json\n{"status":"SUCCESS","summary":"ok","warnings":[],"filesChanged":[],"validation":{"testsRun":false,"testsPassed":0,"testsFailed":0,"lintPassed":true,"typecheckPassed":true},"checks":[],"discoveredFeatures":[],"learnings":[],"requestsHelp":false}\n```',
+          exitCode: 0,
+        });
+
+      const plan = createTestPlan();
+      const milestone = plan.milestones[0];
+      const feature = {
+        ...milestone.features[0],
+        cwd: 'frontend/apps/web',
+      };
+
+      await agent.run(createRunInput({
+        missionPlan: plan,
+        milestone,
+        feature,
+      }));
+
+      const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
+      const options = codexExecute.mock.calls[0]?.[1] as { cwd?: string } | undefined;
+      expect(prompt).toContain(`Execution cwd: ${join(repoCwd, 'frontend/apps/web')}`);
+      expect(options?.cwd).toBe(join(repoCwd, 'frontend/apps/web'));
+    } finally {
+      await rm(repoCwd, { recursive: true, force: true });
+    }
   });
 
   it('loads worker prompt from a custom promptsDir', async () => {
@@ -314,6 +352,7 @@ describe('WorkerAgent', () => {
         output: `\`\`\`json\n${JSON.stringify({
           status: 'SUCCESS',
           summary: 'claude task complete',
+          warnings: [],
           filesChanged: [],
           validation: {
             testsRun: false,
@@ -368,6 +407,68 @@ describe('WorkerAgent', () => {
     expect(options?.model).toBe('opus');
   });
 
+  it('normalizes warnings and structured validation checks from worker output', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: `\`\`\`json\n${JSON.stringify({
+          status: 'SUCCESS',
+          summary: 'ok',
+          warnings: [' fallback used ', '', 1],
+          filesChanged: [],
+          validation: {
+            testsRun: false,
+            testsPassed: 0,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [
+            {
+              checkId: 'manual-qa',
+              passed: false,
+              warning: 'user confirmation still required',
+              failure: {
+                summary: 'manual qa failed',
+                affectedFiles: ['src/app.ts', 42],
+                errorMessages: ['screen mismatch', 99],
+              },
+            },
+            {
+              checkId: '',
+              passed: true,
+            },
+          ],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+        })}\n\`\`\``,
+        exitCode: 0,
+      });
+
+    const result = await agent.run(createRunInput());
+
+    expect(result.report.warnings).toEqual(['fallback used']);
+    expect(result.report.checks).toEqual([
+      {
+        checkId: 'manual-qa',
+        passed: false,
+        warning: 'user confirmation still required',
+        failure: {
+          summary: 'manual qa failed',
+          affectedFiles: ['src/app.ts'],
+          errorMessages: ['screen mismatch'],
+          rootCause: undefined,
+        },
+      },
+    ]);
+  });
+
   it('normalizes discoveredFeatures when worker returns string entries', async () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
@@ -380,6 +481,7 @@ describe('WorkerAgent', () => {
         output: `\`\`\`json\n${JSON.stringify({
           status: 'SUCCESS',
           summary: 'ok',
+          warnings: [],
           filesChanged: [],
           validation: {
             testsRun: false,

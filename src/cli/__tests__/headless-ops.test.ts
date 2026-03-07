@@ -82,6 +82,16 @@ describe('cli headless operations', () => {
           currentActor: 'manager',
           activeWorkerRunId: null,
           gitStrategy: null,
+          warnings: [
+            {
+              timestamp: '2026-03-03T00:00:00.500Z',
+              iteration: 1,
+              source: 'worker',
+              featureId: 'm1-f2',
+              message: 'manual verification is still required',
+            },
+          ],
+          validationEvidence: {},
         },
       },
     });
@@ -95,6 +105,7 @@ describe('cli headless operations', () => {
     expect(status.lastEvent?.seq).toBe(11);
     expect(status.lastEvent?.type).toBe('manager_decision');
     expect(status.cursor.nextSeq).toBe(12);
+    expect(status.warnings).toContain('[worker] m1-f2: manual verification is still required');
   });
 
   it('reads logs with after-seq/actor/tail filters', async () => {
@@ -189,6 +200,41 @@ describe('cli headless operations', () => {
       '+  return newMode;',
       ' }',
     ]);
+  });
+
+  it('renders warning events as WARN logs', async () => {
+    const eventsPath = join(rootDir, '.melos', 'events.jsonl');
+    writeFileSync(
+      eventsPath,
+      `${JSON.stringify({
+        seq: 9,
+        type: 'warning_emitted',
+        timestamp: '2026-03-03T00:00:09.000Z',
+        iteration: 1,
+        agent: 'worker',
+        payload: {
+          source: 'validation',
+          milestoneId: 'm1',
+          checkId: 'manual-qa',
+          message: 'manual verification was not reported by the worker',
+        },
+      })}\n`,
+      'utf-8'
+    );
+
+    const logs = await readMissionLogs(rootDir, {
+      afterSeq: 0,
+      actor: 'all',
+    });
+
+    expect(logs.entries).toHaveLength(1);
+    expect(logs.entries[0]).toMatchObject({
+      seq: 9,
+      actor: 'validator',
+      kind: 'WARN',
+      message: '[validation] m1/manual-qa: manual verification was not reported by the worker',
+      eventType: 'warning_emitted',
+    });
   });
 
   it('returns empty logs payload when events.jsonl is missing', async () => {

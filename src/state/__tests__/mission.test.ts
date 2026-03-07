@@ -368,4 +368,116 @@ describe('state/mission', () => {
     const loaded = await loadMissionPlan(taskPath);
     expect(loaded.milestones[0]?.features[0]?.trackingKey).toBe('shared-root-cause');
   });
+
+  it('persists feature cwd when mission plan is saved and loaded', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-cwd-save-'));
+    const taskPath = join(dir, 'TASK.json');
+    const plan = createMissionPlan({
+      goal: 'Save feature cwd',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'feature',
+              cwd: 'frontend/apps/web',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+      baseDir: dir,
+    });
+
+    await saveMissionPlan(taskPath, plan);
+
+    const raw = JSON.parse(readFileSync(taskPath, 'utf-8')) as {
+      milestones: Array<{ features: Array<Record<string, unknown>> }>;
+    };
+    expect(raw.milestones[0]?.features[0]?.cwd).toBe('frontend/apps/web');
+
+    const loaded = await loadMissionPlan(taskPath);
+    expect(loaded.milestones[0]?.features[0]?.cwd).toBe('frontend/apps/web');
+  });
+
+  it('rejects absolute feature cwd values', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-cwd-absolute-'));
+    const taskPath = join(dir, 'TASK.json');
+    writeFileSync(taskPath, JSON.stringify({
+      version: 3,
+      mission: {
+        goal: 'Reject absolute cwd',
+        constraints: [],
+        successCriteria: [],
+      },
+      state: 'planning',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'feature',
+              cwd: '/tmp/absolute-path',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+      activeMilestoneId: null,
+      activeFeatureId: null,
+      totalIterations: 0,
+    }, null, 2), 'utf-8');
+
+    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/Feature cwd must be relative/);
+  });
+
+  it('rejects feature cwd that escapes the repo root', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'melos-mission-cwd-escape-'));
+    const taskPath = join(dir, 'TASK.json');
+    writeFileSync(taskPath, JSON.stringify({
+      version: 3,
+      mission: {
+        goal: 'Reject escaped cwd',
+        constraints: [],
+        successCriteria: [],
+      },
+      state: 'planning',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'feature',
+              cwd: '../outside',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+      activeMilestoneId: null,
+      activeFeatureId: null,
+      totalIterations: 0,
+    }, null, 2), 'utf-8');
+
+    await expect(loadMissionPlan(taskPath)).rejects.toThrow(/Feature cwd must stay inside the repo root/);
+  });
 });

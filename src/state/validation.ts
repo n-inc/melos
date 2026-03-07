@@ -37,8 +37,11 @@ export interface ValidationCheckResult {
   exitCode?: number;
   durationMs?: number;
   output?: string;
+  warning?: string;
   failure?: ValidationCheckFailure;
 }
+
+export type ValidationEvidenceMap = Record<string, Record<string, ValidationCheckResult>>;
 
 export interface ValidationReport {
   milestoneId: string;

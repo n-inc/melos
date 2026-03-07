@@ -1,6 +1,7 @@
 import type { MissionPlan } from './mission.js';
 import type { MissionEvent } from './events.js';
 import type { GitStrategyState } from './git-strategy.js';
+import type { ValidationEvidenceMap } from './validation.js';
 import { normalizeLogMessage, type LogActor, type UnifiedLogEntry } from './log-entry.js';
 
 export interface WorkerRunState {
@@ -16,6 +17,19 @@ export interface WorkerRunState {
   log: UnifiedLogEntry[];
 }
 
+export type RuntimeWarningSource = 'worker' | 'validation' | 'system';
+
+export interface RuntimeWarningRecord {
+  timestamp: string;
+  iteration: number;
+  source: RuntimeWarningSource;
+  message: string;
+  milestoneId?: string;
+  featureId?: string;
+  checkId?: string;
+  seq?: number;
+}
+
 export interface MissionKernelState {
   missionPlan: MissionPlan | null;
   iteration: number;
@@ -26,6 +40,8 @@ export interface MissionKernelState {
   currentActor: LogActor;
   activeWorkerRunId: number | null;
   gitStrategy: GitStrategyState | null;
+  warnings?: RuntimeWarningRecord[];
+  validationEvidence?: ValidationEvidenceMap;
 }
 
 export function createInitialKernelState(): MissionKernelState {
@@ -39,6 +55,8 @@ export function createInitialKernelState(): MissionKernelState {
     currentActor: 'idle',
     activeWorkerRunId: null,
     gitStrategy: null,
+    warnings: [],
+    validationEvidence: {},
   };
 }
 
@@ -208,6 +226,27 @@ export function reduceMissionEvent(
       };
     }
 
+    case 'warning_emitted': {
+      const warning = runtimeWarningRecordFromEvent(event);
+      if (!warning) {
+        return state;
+      }
+
+      const actor = resolveActorFromWarningSource(warning.source);
+      const next = appendUnifiedProgress(
+        state,
+        event.timestamp,
+        formatRuntimeWarningRecord(warning),
+        actor,
+        'WARN',
+        event.seq
+      );
+      return {
+        ...next,
+        warnings: appendWarning(next.warnings ?? state.warnings ?? [], warning),
+      };
+    }
+
     case 'branch_created':
     case 'branch_merged':
     case 'branch_abandoned':
@@ -353,9 +392,35 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function resolveActorFromWarningSource(source: RuntimeWarningSource): LogActor {
+  if (source === 'validation') {
+    return 'validator';
+  }
+  if (source === 'worker') {
+    return 'worker';
+  }
+  return 'system';
+}
+
+function appendWarning(
+  warnings: RuntimeWarningRecord[],
+  warning: RuntimeWarningRecord
+): RuntimeWarningRecord[] {
+  const next = [...warnings, warning];
+  if (next.length > 200) {
+    return next.slice(next.length - 200);
+  }
+  return next;
+}
+
 function resolveActorFromEvent(event: MissionEvent): LogActor {
   if (event.type.startsWith('validation_')) {
     return 'validator';
+  }
+  if (event.type === 'warning_emitted') {
+    return resolveActorFromWarningSource(
+      runtimeWarningRecordFromEvent(event)?.source ?? 'system'
+    );
   }
   if (event.type.startsWith('manager_')) {
     return 'manager';
@@ -373,4 +438,65 @@ function resolveActorFromEvent(event: MissionEvent): LogActor {
     return 'worker';
   }
   return 'system';
+}
+
+export function runtimeWarningRecordFromEvent(event: MissionEvent): RuntimeWarningRecord | null {
+  if (event.type !== 'warning_emitted') {
+    return null;
+  }
+
+  return normalizeRuntimeWarningRecord({
+    timestamp: event.timestamp,
+    iteration: event.iteration,
+    seq: event.seq,
+    ...event.payload,
+  });
+}
+
+export function normalizeRuntimeWarningRecord(value: unknown): RuntimeWarningRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const message = typeof record.message === 'string' ? record.message.trim() : '';
+  if (message.length === 0) {
+    return null;
+  }
+
+  const source = record.source === 'worker' || record.source === 'validation' || record.source === 'system'
+    ? record.source
+    : 'system';
+
+  return {
+    timestamp: typeof record.timestamp === 'string' ? record.timestamp : new Date().toISOString(),
+    iteration: typeof record.iteration === 'number' ? Math.max(0, Math.floor(record.iteration)) : 0,
+    source,
+    message,
+    milestoneId: asString(record.milestoneId),
+    featureId: asString(record.featureId),
+    checkId: asString(record.checkId),
+    seq: typeof record.seq === 'number' ? record.seq : undefined,
+  };
+}
+
+export function formatRuntimeWarningRecord(warning: RuntimeWarningRecord): string {
+  const scope = formatRuntimeWarningScope(warning);
+  if (scope) {
+    return `[${warning.source}] ${scope}: ${warning.message}`;
+  }
+  return `[${warning.source}] ${warning.message}`;
+}
+
+function formatRuntimeWarningScope(warning: RuntimeWarningRecord): string {
+  const parts: string[] = [];
+  if (warning.featureId) {
+    parts.push(warning.featureId);
+  } else if (warning.milestoneId) {
+    parts.push(warning.milestoneId);
+  }
+  if (warning.checkId) {
+    parts.push(warning.checkId);
+  }
+  return parts.join('/');
 }

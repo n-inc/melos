@@ -14,6 +14,7 @@ import {
   isCodexFamily,
   resolveRuntimeModel,
 } from '../models/registry.js';
+import type { ValidationCheckFailure, ValidationCheckResult } from '../state/validation.js';
 import type {
   Agent,
   AgentMode,
@@ -63,7 +64,7 @@ export class WorkerAgent implements Agent {
     const result = await (executeWithClaude
       ? this.claudeEngine.execute(
         prompt,
-        this.buildClaudeOptions({
+        this.buildClaudeOptions(input, {
           onAgentMessageDelta: (chunk) => {
             streamTranscript.push(chunk);
             input.onAgentMessageDelta?.(chunk);
@@ -164,6 +165,22 @@ export class WorkerAgent implements Agent {
   private async buildPrompt(input: WorkerInput): Promise<string> {
     const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
     const featureChecks = input.feature.checks?.map((check) => `- ${check.text}`).join('\n') || '- none';
+    const executionCwd = this.resolveExecutionCwd(input);
+    const validationChecks = [
+      ...input.milestone.validationContract.staticChecks,
+      ...input.milestone.validationContract.testSuites,
+      ...(input.milestone.validationContract.e2eChecks ?? []),
+      ...(input.milestone.validationContract.manualSteps ?? []),
+    ]
+      .map((check) => {
+        const action = typeof check.command === 'string' && check.command.trim().length > 0
+          ? check.command.trim()
+          : (check.type === 'manual' || check.type === 'e2e'
+              ? 'report structured evidence in `checks`'
+              : 'no command');
+        return `- ${check.id} [${check.type}] ${check.description} :: ${action}`;
+      })
+      .join('\n');
     const validationCommands = [
       ...input.milestone.validationContract.staticChecks,
       ...input.milestone.validationContract.testSuites,
@@ -180,6 +197,7 @@ export class WorkerAgent implements Agent {
       `- Mission goal: ${input.missionPlan.mission.goal}`,
       `- Milestone: ${input.milestone.id} ${input.milestone.title}`,
       `- Feature: ${input.feature.id} ${input.feature.description}`,
+      `- Execution cwd: ${executionCwd}`,
       `- Current branch: ${input.currentBranch ?? '(not set)'}`,
       `- Base branch: ${input.baseBranch ?? '(not set)'}`,
       '',
@@ -191,6 +209,9 @@ export class WorkerAgent implements Agent {
       '',
       '## PRD',
       input.prd?.trim() || '(PRD not found)',
+      '',
+      '## Milestone Validation Checks',
+      validationChecks || '- none',
       '',
       '## Milestone Validation Commands',
       validationCommands || '(none)',
@@ -223,7 +244,14 @@ export class WorkerAgent implements Agent {
           lintPassed: true,
           typecheckPassed: true,
         },
-        checks: [],
+        checks: [
+          {
+            checkId: 'm1-manual-1',
+            passed: true,
+            warning: 'verification completed with caveats',
+          },
+        ],
+        warnings: ['describe any fallback, unverified scope, or required user follow-up'],
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
@@ -257,6 +285,7 @@ export class WorkerAgent implements Agent {
       featureId: input.feature.id,
       status: engineSuccess ? 'SUCCESS' : 'FAILED',
       summary: '',
+      warnings: [],
       filesChanged: [],
       validation: {
         testsRun: false,
@@ -296,7 +325,10 @@ export class WorkerAgent implements Agent {
           };
         }
         if (Array.isArray(parsed.checks)) {
-          report.checks = parsed.checks;
+          report.checks = normalizeValidationCheckResults(parsed.checks);
+        }
+        if (Array.isArray(parsed.warnings)) {
+          report.warnings = normalizeWarnings(parsed.warnings);
         }
         if (Array.isArray(parsed.discoveredFeatures)) {
           report.discoveredFeatures = normalizeDiscoveredFeatures(parsed.discoveredFeatures);
@@ -358,7 +390,7 @@ export class WorkerAgent implements Agent {
       : undefined;
 
     return {
-      cwd: this.config.cwd,
+      cwd: this.resolveExecutionCwd(input),
       model: resolveRuntimeModel(this.config.model, CODEX_LATEST_ALIAS),
       reasoningEffort: this.config.reasoningEffort || 'xhigh',
       execMode: true,
@@ -371,10 +403,11 @@ export class WorkerAgent implements Agent {
   }
 
   private buildClaudeOptions(
+    input: WorkerInput,
     callbacks: Pick<WorkerInput, 'onAgentMessageDelta' | 'onAppServerEvent'> = {}
   ): ClaudeEngineOptions {
     return {
-      cwd: this.config.cwd,
+      cwd: this.resolveExecutionCwd(input),
       model: this.resolveClaudeModel(),
       effort: this.config.claudeEffort,
       skipPermissions: true,
@@ -395,6 +428,13 @@ export class WorkerAgent implements Agent {
   private shouldExecuteWithClaude(input: WorkerInput): boolean {
     return isClaudeFamily(input.feature.model);
   }
+
+  private resolveExecutionCwd(input: WorkerInput): string {
+    if (typeof input.feature.cwd === 'string' && input.feature.cwd.trim().length > 0) {
+      return resolve(this.config.cwd, input.feature.cwd);
+    }
+    return this.config.cwd;
+  }
 }
 
 function extractJsonBlock(output: string): string | null {
@@ -413,6 +453,84 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function normalizeValidationCheckResults(value: unknown): ValidationCheckResult[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return [];
+    }
+
+    const record = item as Record<string, unknown>;
+    const checkId = typeof record.checkId === 'string' ? record.checkId.trim() : '';
+    if (checkId.length === 0 || typeof record.passed !== 'boolean') {
+      return [];
+    }
+
+    const result: ValidationCheckResult = {
+      checkId,
+      passed: record.passed,
+    };
+
+    if (typeof record.exitCode === 'number') {
+      result.exitCode = record.exitCode;
+    }
+    if (typeof record.durationMs === 'number') {
+      result.durationMs = record.durationMs;
+    }
+    if (typeof record.output === 'string' && record.output.trim().length > 0) {
+      result.output = record.output;
+    }
+    if (typeof record.warning === 'string' && record.warning.trim().length > 0) {
+      result.warning = record.warning.trim();
+    }
+
+    const failure = normalizeValidationCheckFailure(record.failure);
+    if (failure) {
+      result.failure = failure;
+    }
+
+    return [result];
+  });
+}
+
+function normalizeValidationCheckFailure(value: unknown): ValidationCheckFailure | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const summary = typeof record.summary === 'string' ? record.summary.trim() : '';
+  if (summary.length === 0) {
+    return undefined;
+  }
+
+  return {
+    summary,
+    affectedFiles: Array.isArray(record.affectedFiles)
+      ? record.affectedFiles.filter((item): item is string => typeof item === 'string')
+      : [],
+    errorMessages: Array.isArray(record.errorMessages)
+      ? record.errorMessages.filter((item): item is string => typeof item === 'string')
+      : [],
+    rootCause: typeof record.rootCause === 'string' && record.rootCause.trim().length > 0
+      ? record.rootCause.trim()
+      : undefined,
+  };
+}
+
+function normalizeWarnings(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
 }
 
 function normalizeDiscoveredFeatures(value: unknown): WorkerFeatureReport['discoveredFeatures'] {

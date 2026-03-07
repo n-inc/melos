@@ -48,6 +48,7 @@ export {
   type ValidationCheckFailure,
   type ValidationCheckResult,
   type ValidationReport,
+  type ValidationEvidenceMap,
   type ValidationFailureSummary,
   createEmptyValidationContract,
   getAllValidationChecks,
@@ -83,8 +84,12 @@ export {
 
 export {
   type WorkerRunState,
+  type RuntimeWarningSource,
+  type RuntimeWarningRecord,
   type MissionKernelState,
   createInitialKernelState,
+  formatRuntimeWarningRecord,
+  runtimeWarningRecordFromEvent,
   reduceMissionEvent,
   replayMissionEvents,
 } from './event-reducer.js';

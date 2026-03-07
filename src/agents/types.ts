@@ -25,6 +25,7 @@ export interface WorkerFeatureReport {
   featureId: string;
   status: 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'BLOCKED';
   summary: string;
+  warnings: string[];
   filesChanged: WorkerFileChange[];
   validation: {
     testsRun: boolean;

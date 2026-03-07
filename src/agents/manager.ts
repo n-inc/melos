@@ -162,6 +162,7 @@ interface MissionPlanningOutput {
       id?: string;
       description: string;
       model?: string;
+      cwd?: string;
       checks?: Array<{ text: string; type?: string }>;
     }>;
   }>;
@@ -532,6 +533,7 @@ export class ManagerAgent implements Agent {
       features: milestone.features.map((feature, featureIndex) => ({
         id: feature.id?.trim() || `m${milestoneIndex + 1}-f${featureIndex + 1}`,
         description: normalizeFeatureDescription(feature.description),
+        cwd: feature.cwd,
         checks: feature.checks?.map((check) => ({ text: check.text, type: check.type, passed: false })),
         status: 'pending' as const,
         model: resolveFeatureModel(feature.model, feature.description),
@@ -576,7 +578,7 @@ export class ManagerAgent implements Agent {
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -1290,6 +1292,7 @@ function normalizePlanningFeature(
     id: toNonEmptyString(feature.id) ?? undefined,
     description,
     model: normalizeModelName(model) ?? CODEX_LATEST_ALIAS,
+    cwd: toNonEmptyString(feature.cwd) ?? undefined,
     checks: normalizePlanningFeatureChecks(feature.checks),
   };
 }
@@ -1336,9 +1339,15 @@ function mergePlanningFeatureChunk(
     280
   );
   const checks = chunk.flatMap((feature) => feature.checks ?? []);
+  const uniqueCwds = Array.from(new Set(
+    chunk
+      .map((feature) => feature.cwd?.trim())
+      .filter((cwd): cwd is string => typeof cwd === 'string' && cwd.length > 0)
+  ));
   return {
     description,
     model: chunk.some((feature) => isClaudeFamily(feature.model)) ? CLAUDE_LATEST_ALIAS : CODEX_LATEST_ALIAS,
+    cwd: uniqueCwds.length === 1 ? uniqueCwds[0] : undefined,
     checks: checks.length > 0 ? checks.slice(0, 10) : undefined,
   };
 }

@@ -65,6 +65,7 @@ describe('Orchestrator v0.8', () => {
         featureId: 'm1-f1',
         status: 'SUCCESS',
         summary: 'done',
+        warnings: [],
         filesChanged: [],
         validation: {
           testsRun: true,
@@ -97,6 +98,448 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.success).toBe(true);
     expect(result.reason).toBe('completed');
+  });
+
+  it('completes with warnings when worker warnings exist and manual validation evidence is missing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-warning-handoff-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Warning handoff mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'warning-handoff',
+      goal: 'Surface runtime warnings without blocking completion',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['warnings are persisted to handoff and events'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and manually verify',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            manualSteps: [
+              {
+                id: 'manual-qa',
+                description: 'Check browser flow',
+                type: 'manual',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'done',
+        warnings: ['fallback browser QA was used'],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    const handoff = readFileSync(join(cwd, 'HANDOFF.md'), 'utf-8');
+    expect(handoff).toContain('## Warnings');
+    expect(handoff).toContain('[worker] m1-f1: fallback browser QA was used');
+    expect(handoff).toContain('[validation] m1/manual-qa: manual verification was not reported by the worker: Check browser flow');
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8')
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { type: string; payload?: { source?: string; message?: string } });
+    const warningEvents = events.filter((event) => event.type === 'warning_emitted');
+    expect(warningEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          source: 'worker',
+          message: 'fallback browser QA was used',
+        }),
+      }),
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          source: 'validation',
+          message: 'manual verification was not reported by the worker: Check browser flow',
+        }),
+      }),
+    ]));
+  });
+
+  it('passes manual validation when worker supplies structured evidence', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-manual-pass-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Manual evidence mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'manual-pass',
+      goal: 'Manual evidence is treated as validation input',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['manual validation passes from worker evidence'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and verify',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            manualSteps: [
+              {
+                id: 'manual-qa',
+                description: 'Check browser flow',
+                type: 'manual',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'done',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [
+          {
+            checkId: 'manual-qa',
+            passed: true,
+            output: 'browser flow verified by worker',
+          },
+        ],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
+      passed: boolean;
+      results: Array<{ checkId: string; passed: boolean; warning?: string }>;
+    };
+    expect(report.passed).toBe(true);
+    expect(report.results).toEqual([
+      expect.objectContaining({
+        checkId: 'manual-qa',
+        passed: true,
+      }),
+    ]);
+    expect(report.results[0]?.warning).toBeUndefined();
+  });
+
+  it('fails validation when worker evidence marks a manual check as failed', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-manual-fail-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Manual failure mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'manual-fail',
+      goal: 'Manual validation failure creates a follow-up',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['manual validation failure is treated as real failure'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and verify',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            manualSteps: [
+              {
+                id: 'manual-qa',
+                description: 'Check browser flow',
+                type: 'manual',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    const followUpSpy = jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Fix manual QA regression',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
+        status: 'SUCCESS',
+        summary: 'done',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [
+          {
+            checkId: 'manual-qa',
+            passed: false,
+            failure: {
+              summary: 'manual qa failed',
+              affectedFiles: [],
+              errorMessages: ['screen mismatch'],
+            },
+          },
+        ],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    }));
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 2,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(false);
+    expect(result.reason).toBe('max_iterations');
+    expect(followUpSpy).toHaveBeenCalledWith(expect.objectContaining({
+      milestoneId: 'm1',
+      failures: expect.arrayContaining([
+        expect.objectContaining({
+          checkId: 'manual-qa',
+          passed: false,
+        }),
+      ]),
+    }));
+
+    const mission = JSON.parse(readFileSync(missionPath, 'utf-8')) as {
+      milestones: Array<{ features: Array<{ description: string }> }>;
+    };
+    expect(mission.milestones[0]?.features).toHaveLength(2);
+    expect(mission.milestones[0]?.features[1]?.description).toBe('Fix manual QA regression');
+  });
+
+  it('passes feature cwd through to the worker input', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-feature-cwd-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Feature cwd mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'feature-cwd',
+      goal: 'Pass repo-relative feature cwd to worker',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['worker sees feature cwd'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Execute from workspace subdir',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement workspace feature',
+              cwd: 'frontend/apps/web',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+      baseDir: cwd,
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+
+    const workerInputs: Array<{ featureCwd?: string }> = [];
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
+      workerInputs.push({ featureCwd: input.feature.cwd });
+      return {
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: input.milestone.id,
+          featureId: input.feature.id,
+          status: 'SUCCESS',
+          summary: 'done',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          discoveredFeatures: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(workerInputs).toEqual([{ featureCwd: 'frontend/apps/web' }]);
   });
 
   it('uses bundled prompts directory instead of project cwd prompts', () => {
@@ -171,6 +614,7 @@ describe('Orchestrator v0.8', () => {
         featureId: input.feature.id,
         status: 'SUCCESS',
         summary: `done ${input.feature.id}`,
+        warnings: [],
         filesChanged: [],
         validation: {
           testsRun: true,
@@ -502,6 +946,7 @@ describe('Orchestrator v0.8', () => {
           featureId: input.feature.id,
           status: 'SUCCESS',
           summary: `done ${input.feature.id}`,
+          warnings: [],
           filesChanged: [],
           validation: {
             testsRun: true,
@@ -587,6 +1032,7 @@ describe('Orchestrator v0.8', () => {
         featureId: 'm1-f1',
         status: 'SUCCESS',
         summary: 'done',
+        warnings: [],
         filesChanged: [],
         validation: {
           testsRun: true,
@@ -702,6 +1148,7 @@ describe('Orchestrator v0.8', () => {
             featureId: input.feature.id,
             status: 'SUCCESS',
             summary: 'resolved on retry',
+            warnings: [],
             filesChanged: [],
             validation: {
               testsRun: true,
@@ -728,6 +1175,7 @@ describe('Orchestrator v0.8', () => {
             featureId: input.feature.id,
             status: 'FAILED',
             summary: 'needs retry',
+            warnings: [],
             filesChanged: [],
             validation: {
               testsRun: true,
@@ -753,6 +1201,7 @@ describe('Orchestrator v0.8', () => {
           featureId: input.feature.id,
           status: 'SUCCESS',
           summary: `done ${input.feature.id}`,
+          warnings: [],
           filesChanged: [],
           validation: {
             testsRun: true,
@@ -1038,6 +1487,7 @@ describe('Orchestrator v0.8', () => {
         featureId: 'm1-f1',
         status: 'SUCCESS',
         summary: 'resumed',
+        warnings: [],
         filesChanged: [],
         validation: {
           testsRun: true,
@@ -1186,6 +1636,7 @@ describe('Orchestrator v0.8', () => {
           featureId: input.feature.id,
           status: 'SUCCESS',
           summary: 'done',
+          warnings: [],
           filesChanged: [],
           validation: {
             testsRun: true,
@@ -1289,6 +1740,7 @@ describe('Orchestrator v0.8', () => {
           featureId: input.feature.id,
           status: 'SUCCESS',
           summary: 'done',
+          warnings: [],
           filesChanged: [],
           validation: {
             testsRun: true,
@@ -1375,6 +1827,7 @@ describe('Orchestrator v0.8', () => {
           featureId: 'm1-f1',
           status: 'SUCCESS',
           summary: 'implemented',
+          warnings: [],
           filesChanged: [{ path: 'checkpoint-success.txt', additions: 1, deletions: 0 }],
           validation: {
             testsRun: true,
@@ -1454,6 +1907,7 @@ describe('Orchestrator v0.8', () => {
           featureId: 'm1-f1',
           status: 'SUCCESS',
           summary: 'implemented without commit',
+          warnings: [],
           filesChanged: [{ path: 'dirty-change.txt', additions: 1, deletions: 0 }],
           validation: {
             testsRun: true,
@@ -1547,6 +2001,7 @@ describe('Orchestrator v0.8', () => {
           featureId: 'm1-f1',
           status: 'SUCCESS',
           summary: 'implemented with commit',
+          warnings: [],
           filesChanged: [{ path: 'committed-change.txt', additions: 1, deletions: 0 }],
           validation: {
             testsRun: true,

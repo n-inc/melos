@@ -58,6 +58,8 @@ import {
   reduceMissionEvent,
   type MissionKernelState,
   createInitialKernelState,
+  formatRuntimeWarningRecord,
+  type RuntimeWarningSource,
 } from './state/event-reducer.js';
 import { loadSnapshot, saveSnapshot } from './state/snapshot.js';
 import { Watchdog } from './state/watchdog.js';
@@ -786,6 +788,10 @@ export class Orchestrator {
     this.activityLabel = `Worker executing ${updatedFeature.id}...`;
     const result = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
     this.state.latestWorkerReport = result.report;
+    if (result.type === 'success') {
+      this.recordValidationEvidence(updatedMilestone.id, result.report.checks);
+      this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
+    }
 
     const status = result.type === 'success'
       ? 'done'
@@ -835,13 +841,48 @@ export class Orchestrator {
     this.emitEvent('validation_started', 'orchestrator', { milestoneId });
     const checks = getAllValidationChecks(milestone.validationContract);
     const results: ValidationCheckResult[] = [];
+    const evidenceByCheckId = this.kernelState.validationEvidence?.[milestoneId] ?? {};
 
     for (const check of checks) {
+      if (check.type === 'manual' || check.type === 'e2e') {
+        const evidence = evidenceByCheckId[check.id];
+        if (evidence) {
+          const result: ValidationCheckResult = {
+            ...evidence,
+            checkId: check.id,
+            output: evidence.output ?? `worker-reported ${check.type} validation ${evidence.passed ? 'passed' : 'failed'}`,
+          };
+          results.push(result);
+          if (result.warning) {
+            this.emitValidationWarning({
+              milestoneId,
+              checkId: check.id,
+              message: result.warning,
+            });
+          }
+          continue;
+        }
+
+        const warning = `${check.type} verification was not reported by the worker: ${check.description}`;
+        results.push({
+          checkId: check.id,
+          passed: true,
+          output: `${check.type} validation evidence missing`,
+          warning,
+        });
+        this.emitValidationWarning({
+          milestoneId,
+          checkId: check.id,
+          message: warning,
+        });
+        continue;
+      }
+
       if (!check.command) {
         results.push({
           checkId: check.id,
-          passed: check.type === 'manual',
-          output: check.type === 'manual' ? 'manual check pending (treated as pass by default)' : 'no command',
+          passed: false,
+          output: 'no command',
         });
         continue;
       }
@@ -1083,6 +1124,7 @@ export class Orchestrator {
         featureId: feature.id,
         status: 'SUCCESS',
         summary: '[dry-run] execution skipped',
+        warnings: [],
         filesChanged: [],
         validation: {
           testsRun: false,
@@ -1631,6 +1673,82 @@ export class Orchestrator {
     this.managerHeartbeatTimer = null;
   }
 
+  private recordValidationEvidence(milestoneId: string, checks: ValidationCheckResult[]): void {
+    if (checks.length === 0) {
+      return;
+    }
+
+    const nextMilestoneEvidence = {
+      ...(this.kernelState.validationEvidence?.[milestoneId] ?? {}),
+    };
+    for (const check of checks) {
+      nextMilestoneEvidence[check.checkId] = {
+        ...check,
+        failure: check.failure
+          ? {
+            ...check.failure,
+            affectedFiles: [...check.failure.affectedFiles],
+            errorMessages: [...check.failure.errorMessages],
+          }
+          : undefined,
+      };
+    }
+
+    this.kernelState.validationEvidence = {
+      ...(this.kernelState.validationEvidence ?? {}),
+      [milestoneId]: nextMilestoneEvidence,
+    };
+  }
+
+  private emitWorkerWarnings(milestoneId: string, featureId: string, warnings: string[]): void {
+    for (const warning of warnings) {
+      this.emitRuntimeWarning({
+        source: 'worker',
+        milestoneId,
+        featureId,
+        message: warning,
+      });
+    }
+  }
+
+  private emitValidationWarning(input: {
+    milestoneId: string;
+    checkId: string;
+    message: string;
+  }): void {
+    this.emitRuntimeWarning({
+      source: 'validation',
+      milestoneId: input.milestoneId,
+      checkId: input.checkId,
+      message: input.message,
+    });
+  }
+
+  private emitRuntimeWarning(input: {
+    source: RuntimeWarningSource;
+    message: string;
+    milestoneId?: string;
+    featureId?: string;
+    checkId?: string;
+  }): void {
+    const message = input.message.trim();
+    if (message.length === 0) {
+      return;
+    }
+
+    this.emitEvent(
+      'warning_emitted',
+      input.source === 'worker' ? 'worker' : 'orchestrator',
+      {
+        source: input.source,
+        message,
+        milestoneId: input.milestoneId,
+        featureId: input.featureId,
+        checkId: input.checkId,
+      }
+    );
+  }
+
   private async emitStatusUpdate(): Promise<void> {
     if (!this.config.onStatusUpdate) {
       return;
@@ -1856,6 +1974,8 @@ export class Orchestrator {
         .filter((feature) => feature.status === 'done' || feature.status === 'skipped')
         .map((feature) => `- [x] ${feature.id}: ${feature.description}`)
     );
+    const warnings = uniqueRuntimeWarnings(this.kernelState.warnings ?? [])
+      .map((warning) => `- ${formatRuntimeWarningRecord(warning)}`);
 
     const content = [
       '# Melos Mission Handoff',
@@ -1873,6 +1993,10 @@ export class Orchestrator {
       this.state.latestValidationReport
         ? `Last report: ${this.state.latestValidationReport.milestoneId} attempt ${this.state.latestValidationReport.attempt} (${this.state.latestValidationReport.passed ? 'passed' : 'failed'})`
         : 'No validation report',
+      '',
+      '## Warnings',
+      '',
+      ...(warnings.length > 0 ? warnings : ['- none']),
     ].join('\n');
 
     const handoffPath = join(this.config.cwd, 'HANDOFF.md');
@@ -2688,6 +2812,12 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
   const progressLog = Array.isArray(kernel.progressLog) ? kernel.progressLog : [];
   const managerLog = Array.isArray(kernel.managerLog) ? kernel.managerLog : [];
   const logEntries = Array.isArray(kernel.logEntries) ? kernel.logEntries : [];
+  const warnings = Array.isArray(kernel.warnings)
+    ? kernel.warnings
+      .map((warning) => normalizeStoredRuntimeWarning(warning))
+      .filter((warning): warning is NonNullable<MissionKernelState['warnings']>[number] => warning !== null)
+    : [];
+  const validationEvidence = normalizeValidationEvidenceMap(kernel.validationEvidence);
 
   return {
     ...base,
@@ -2696,6 +2826,106 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
     progressLog,
     managerLog,
     logEntries,
+    warnings,
+    validationEvidence,
     currentActor: kernel.currentActor ?? 'idle',
   };
+}
+
+function normalizeStoredRuntimeWarning(
+  value: unknown
+): NonNullable<MissionKernelState['warnings']>[number] | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const message = typeof record.message === 'string' ? record.message.trim() : '';
+  if (message.length === 0) {
+    return null;
+  }
+
+  const source = record.source === 'worker' || record.source === 'validation' || record.source === 'system'
+    ? record.source
+    : 'system';
+
+  return {
+    timestamp: typeof record.timestamp === 'string' ? record.timestamp : new Date().toISOString(),
+    iteration: typeof record.iteration === 'number' ? Math.max(0, Math.floor(record.iteration)) : 0,
+    source,
+    message,
+    milestoneId: typeof record.milestoneId === 'string' ? record.milestoneId : undefined,
+    featureId: typeof record.featureId === 'string' ? record.featureId : undefined,
+    checkId: typeof record.checkId === 'string' ? record.checkId : undefined,
+    seq: typeof record.seq === 'number' ? record.seq : undefined,
+  };
+}
+
+function normalizeValidationEvidenceMap(
+  value: MissionKernelState['validationEvidence']
+): NonNullable<MissionKernelState['validationEvidence']> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+
+  const next: NonNullable<MissionKernelState['validationEvidence']> = {};
+  for (const [milestoneId, rawChecks] of Object.entries(value)) {
+    if (!rawChecks || typeof rawChecks !== 'object' || Array.isArray(rawChecks)) {
+      continue;
+    }
+
+    const normalizedChecks: Record<string, ValidationCheckResult> = {};
+    for (const [checkId, rawResult] of Object.entries(rawChecks)) {
+      if (!rawResult || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
+        continue;
+      }
+
+      const result = rawResult as ValidationCheckResult;
+      if (typeof result.passed !== 'boolean') {
+        continue;
+      }
+
+      normalizedChecks[checkId] = {
+        ...result,
+        checkId,
+        output: typeof result.output === 'string' ? result.output : undefined,
+        warning: typeof result.warning === 'string' ? result.warning : undefined,
+        failure: result.failure
+          ? {
+            ...result.failure,
+            affectedFiles: Array.isArray(result.failure.affectedFiles) ? result.failure.affectedFiles : [],
+            errorMessages: Array.isArray(result.failure.errorMessages) ? result.failure.errorMessages : [],
+          }
+          : undefined,
+      };
+    }
+
+    next[milestoneId] = normalizedChecks;
+  }
+
+  return next;
+}
+
+function uniqueRuntimeWarnings(
+  warnings: NonNullable<MissionKernelState['warnings']>
+): NonNullable<MissionKernelState['warnings']> {
+  const seen = new Set<string>();
+  const next: NonNullable<MissionKernelState['warnings']> = [];
+
+  for (const warning of warnings) {
+    const key = [
+      warning.source,
+      warning.featureId ?? '',
+      warning.milestoneId ?? '',
+      warning.checkId ?? '',
+      warning.message,
+    ].join('\u0000');
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    next.push(warning);
+  }
+
+  return next;
 }

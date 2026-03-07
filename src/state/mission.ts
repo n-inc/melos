@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, normalize, relative, resolve, sep } from 'node:path';
 import type { ValidationContract } from './validation.js';
 import { normalizeValidationContract } from './validation.js';
 import { normalizeModelName } from '../models/registry.js';
@@ -56,6 +57,7 @@ export interface Feature {
   id: string;
   description: string;
   trackingKey?: string;
+  cwd?: string;
   checks?: CheckItem[];
   status: FeatureStatus;
   model?: string;
@@ -100,13 +102,13 @@ export async function loadMissionPlan(path: string): Promise<MissionPlan> {
 
   const raw = await readFile(path, 'utf-8');
   const parsed = JSON.parse(raw) as unknown;
-  const normalized = normalizeMissionPlan(parsed);
+  const normalized = normalizeMissionPlan(parsed, { baseDir: dirname(path) });
   validateMissionPlan(normalized);
   return normalized;
 }
 
 export async function saveMissionPlan(path: string, plan: MissionPlan): Promise<void> {
-  const normalized = normalizeMissionPlan(plan);
+  const normalized = normalizeMissionPlan(plan, { baseDir: dirname(path) });
   validateMissionPlan(normalized);
   await writeFile(path, `${JSON.stringify(normalized, null, 2)}\n`, 'utf-8');
 }
@@ -120,6 +122,7 @@ export function createMissionPlan(input: {
   milestones?: CreateMissionMilestoneInput[];
   approvalMethod?: 'auto' | 'interactive';
   state?: MissionState;
+  baseDir?: string;
 }): MissionPlan {
   const milestones = normalizeMilestones(input.milestones ?? []);
 
@@ -136,7 +139,7 @@ export function createMissionPlan(input: {
     activeMilestoneId: null,
     activeFeatureId: null,
     totalIterations: 0,
-  });
+  }, { baseDir: input.baseDir });
 }
 
 export function transitionMissionState(
@@ -323,7 +326,7 @@ export function appendFeaturesToMilestone(
   };
 }
 
-function normalizeMissionPlan(plan: unknown): MissionPlan {
+function normalizeMissionPlan(plan: unknown, options?: { baseDir?: string }): MissionPlan {
   if (Array.isArray(plan)) {
     throw new Error([
       'TASK.json の形式が不正です: legacy task array は v0.8 でサポートされません（hard cutover）。',
@@ -350,7 +353,10 @@ function normalizeMissionPlan(plan: unknown): MissionPlan {
   }
 
   const rawMission = asRecord(candidate.mission);
-  const milestones = normalizeMilestones(Array.isArray(candidate.milestones) ? candidate.milestones : []);
+  const milestones = normalizeMilestones(
+    Array.isArray(candidate.milestones) ? candidate.milestones : [],
+    options?.baseDir
+  );
 
   let activeMilestoneId = asTrimmedString(candidate.activeMilestoneId) || null;
   if (activeMilestoneId && !milestones.some((milestone) => milestone.id === activeMilestoneId)) {
@@ -383,33 +389,33 @@ function normalizeMissionPlan(plan: unknown): MissionPlan {
   };
 }
 
-function normalizeMilestones(milestones: unknown[]): Milestone[] {
-  return milestones.map((milestone, index) => normalizeMilestone(milestone, index));
+function normalizeMilestones(milestones: unknown[], baseDir?: string): Milestone[] {
+  return milestones.map((milestone, index) => normalizeMilestone(milestone, index, baseDir));
 }
 
-function normalizeMilestone(milestone: unknown, index: number): Milestone {
+function normalizeMilestone(milestone: unknown, index: number, baseDir?: string): Milestone {
   const rawMilestone = asRecord(milestone);
   const normalizedId = asTrimmedString(rawMilestone.id) || `m${index + 1}`;
   return {
     id: normalizedId,
     title: asTrimmedString(rawMilestone.title) || `Milestone ${index + 1}`,
     description: asTrimmedString(rawMilestone.description) || 'No description provided',
-    features: normalizeFeatureList(rawMilestone.features, normalizedId),
+    features: normalizeFeatureList(rawMilestone.features, normalizedId, baseDir),
     validationContract: normalizeValidationContract(rawMilestone.validationContract as Partial<ValidationContract> | null | undefined),
     status: normalizeMilestoneStatus(rawMilestone.status),
   };
 }
 
-function normalizeFeatureList(features: unknown, milestoneId: string): Feature[] {
+function normalizeFeatureList(features: unknown, milestoneId: string, baseDir?: string): Feature[] {
   if (!Array.isArray(features)) {
     return [];
   }
   return features.map((feature, featureIndex) =>
-    normalizeFeature(feature, `${milestoneId}-f${featureIndex + 1}`)
+    normalizeFeature(feature, `${milestoneId}-f${featureIndex + 1}`, baseDir)
   );
 }
 
-function normalizeFeature(feature: unknown, fallbackId?: string): Feature {
+function normalizeFeature(feature: unknown, fallbackId?: string, baseDir?: string): Feature {
   const rawFeature = asRecord(feature);
   const normalizedId = asTrimmedString(rawFeature.id) || fallbackId || 'feature-1';
   const trackingKey = normalizeTrackingKey(rawFeature.trackingKey);
@@ -426,11 +432,40 @@ function normalizeFeature(feature: unknown, fallbackId?: string): Feature {
       checks,
     }),
     trackingKey,
+    cwd: normalizeFeatureCwd(rawFeature.cwd, baseDir),
     checks,
     status: normalizeFeatureStatus(rawFeature.status),
     model,
     attempts: normalizeNonNegativeInteger(rawFeature.attempts),
   };
+}
+
+function normalizeFeatureCwd(value: unknown, baseDir?: string): string | undefined {
+  const raw = asTrimmedString(value);
+  if (!raw) {
+    return undefined;
+  }
+  if (isAbsolute(raw)) {
+    throw new Error(`Feature cwd must be relative to the repo root: ${raw}`);
+  }
+
+  const normalized = normalize(raw);
+  if (normalized === '.' || normalized.length === 0) {
+    return undefined;
+  }
+  if (normalized === '..' || normalized.startsWith(`..${sep}`)) {
+    throw new Error(`Feature cwd must stay inside the repo root: ${raw}`);
+  }
+
+  if (baseDir) {
+    const resolved = resolve(baseDir, normalized);
+    const relativePath = relative(baseDir, resolved);
+    if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
+      throw new Error(`Feature cwd must stay inside the repo root: ${raw}`);
+    }
+  }
+
+  return normalized.replace(/\\/g, '/');
 }
 
 function normalizeFeatureChecks(value: unknown): CheckItem[] | undefined {

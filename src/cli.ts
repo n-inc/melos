@@ -22,7 +22,11 @@ import {
 } from './state/runtime.js';
 import { loadSnapshot } from './state/snapshot.js';
 import type { MissionEvent } from './state/events.js';
-import type { MissionKernelState } from './state/event-reducer.js';
+import {
+  formatRuntimeWarningRecord,
+  runtimeWarningRecordFromEvent,
+  type MissionKernelState,
+} from './state/event-reducer.js';
 import { normalizeLogMessage } from './state/log-entry.js';
 import { formatLogStreamLines } from './ui/log-stream.js';
 import { canUseColor } from './ui/tui-ansi.js';
@@ -619,7 +623,8 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
       totalIterations = snapshotPlan.totalIterations;
       initialized = true;
     }
-  if (!pendingPrompt && snapshot.state?.kernel?.logEntries) {
+    appendRuntimeStatusWarnings(warnings, snapshot.state?.kernel?.warnings);
+    if (!pendingPrompt && snapshot.state?.kernel?.logEntries) {
       const entries = snapshot.state.kernel.logEntries;
       for (let idx = entries.length - 1; idx >= 0; idx -= 1) {
         const line = entries[idx];
@@ -632,6 +637,7 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   }
 
   const events = readEventFile(join(melosDir, 'events.jsonl'));
+  appendRuntimeWarningsFromEvents(warnings, events);
   const last = events[events.length - 1] ?? null;
   const maxSeq = last?.seq ?? 0;
   pendingPrompt = resolvePendingPromptFromEvents(events) ?? pendingPrompt;
@@ -841,6 +847,40 @@ function readEventFile(path: string): MissionEvent[] {
     .sort((a, b) => a.seq - b.seq);
 }
 
+function appendRuntimeStatusWarnings(
+  target: string[],
+  warnings: MissionKernelState['warnings']
+): void {
+  if (!Array.isArray(warnings)) {
+    return;
+  }
+
+  for (const warning of warnings) {
+    if (!warning) {
+      continue;
+    }
+    appendWarningLine(target, formatRuntimeWarningRecord(warning));
+  }
+}
+
+function appendRuntimeWarningsFromEvents(target: string[], events: MissionEvent[]): void {
+  for (const event of events) {
+    const warning = runtimeWarningRecordFromEvent(event);
+    if (!warning) {
+      continue;
+    }
+    appendWarningLine(target, formatRuntimeWarningRecord(warning));
+  }
+}
+
+function appendWarningLine(target: string[], message: string): void {
+  const normalized = message.trim();
+  if (normalized.length === 0 || target.includes(normalized)) {
+    return;
+  }
+  target.push(normalized);
+}
+
 function resolvePendingPromptFromEvents(events: MissionEvent[]): string | null {
   for (let idx = events.length - 1; idx >= 0; idx -= 1) {
     const event = events[idx];
@@ -870,6 +910,16 @@ function parseActorFilter(actor: string | undefined): LogActorFilter {
 function deriveLogActor(event: MissionEvent): Exclude<LogActorFilter, 'all'> {
   if (event.type.startsWith('validation_')) {
     return 'validator';
+  }
+  if (event.type === 'warning_emitted') {
+    const source = event.payload?.source;
+    if (source === 'validation') {
+      return 'validator';
+    }
+    if (source === 'worker') {
+      return 'worker';
+    }
+    return 'system';
   }
   if (event.type.startsWith('plan_')) {
     return 'planning';
@@ -902,6 +952,14 @@ function normalizeMissionLogRecord(event: MissionEvent): MissionLogRecord {
 }
 
 function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: string; detailLines?: string[] } {
+  const warning = runtimeWarningRecordFromEvent(event);
+  if (warning) {
+    return {
+      kind: 'WARN',
+      message: formatRuntimeWarningRecord(warning),
+    };
+  }
+
   const payloadMessage = typeof event.payload?.message === 'string' ? event.payload.message : '';
   if (payloadMessage.trim().length > 0) {
     return normalizeLogMessage(payloadMessage, resolveDefaultKind(event));
@@ -957,6 +1015,9 @@ function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: 
 function resolveDefaultKind(event: MissionEvent): string {
   if (event.type === 'command_executed') {
     return 'BASH';
+  }
+  if (event.type === 'warning_emitted') {
+    return 'WARN';
   }
   if (event.type === 'worker_started') {
     return 'STARTED';
