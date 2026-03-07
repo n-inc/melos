@@ -583,7 +583,7 @@ describe('Orchestrator v0.8', () => {
     expect(existsSync(join(melosDir, 'reviews', 'm2-f5.json'))).toBe(true);
   });
 
-  it('completes with warnings when worker warnings exist and manual validation evidence is missing', async () => {
+  it('completes with warnings when manual validation evidence is missing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-warning-handoff-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
@@ -641,7 +641,7 @@ describe('Orchestrator v0.8', () => {
         featureId: 'm1-f1',
         status: 'SUCCESS',
         summary: 'done',
-        warnings: ['fallback browser QA was used'],
+        warnings: [],
         filesChanged: [],
         validation: {
           testsRun: true,
@@ -675,7 +675,6 @@ describe('Orchestrator v0.8', () => {
     expect(result.success).toBe(true);
     const handoff = readFileSync(join(cwd, 'HANDOFF.md'), 'utf-8');
     expect(handoff).toContain('## Warnings');
-    expect(handoff).toContain('[worker] m1-f1: fallback browser QA was used');
     expect(handoff).toContain('[validation] m1/manual-qa: manual verification was not reported by the worker: Check browser flow');
 
     const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8')
@@ -686,14 +685,506 @@ describe('Orchestrator v0.8', () => {
     expect(warningEvents).toEqual(expect.arrayContaining([
       expect.objectContaining({
         payload: expect.objectContaining({
-          source: 'worker',
-          message: 'fallback browser QA was used',
-        }),
-      }),
-      expect.objectContaining({
-        payload: expect.objectContaining({
           source: 'validation',
           message: 'manual verification was not reported by the worker: Check browser flow',
+        }),
+      }),
+    ]));
+  });
+
+  it('fails browser validation when worker does not report browser evidence', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-browser-missing-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Browser evidence mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'browser-missing',
+      goal: 'Browser validation requires worker evidence',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['browser validation fails without worker evidence'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and verify',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            browserChecks: [
+              {
+                id: 'browser-qa',
+                description: 'Check browser flow',
+                type: 'browser',
+                requiredRunner: 'playwright-interactive',
+                requiredArtifacts: ['screenshot'],
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    const followUpSpy = jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Fix browser QA regression',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'done',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 2,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(false);
+    expect(result.reason).toBe('max_iterations');
+    expect(followUpSpy).toHaveBeenCalledWith(expect.objectContaining({
+      milestoneId: 'm1',
+      failures: expect.arrayContaining([
+        expect.objectContaining({
+          checkId: 'browser-qa',
+          passed: false,
+        }),
+      ]),
+    }));
+
+    const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
+      passed: boolean;
+      results: Array<{ checkId: string; passed: boolean; failure?: { summary: string } }>;
+    };
+    expect(report.passed).toBe(false);
+    expect(report.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        checkId: 'browser-qa',
+        passed: false,
+        failure: expect.objectContaining({
+          summary: 'browser validation was not reported by the worker',
+        }),
+      }),
+    ]));
+  });
+
+  it('fails browser validation when runner does not match the required runner', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-browser-runner-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(cwd, 'artifacts', 'screenshots'), { recursive: true });
+    writeFileSync(join(cwd, 'artifacts', 'screenshots', 'browser.png'), 'ok', 'utf-8');
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Browser runner mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'browser-runner',
+      goal: 'Browser validation enforces runner matching',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['browser validation fails on runner mismatch'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and verify',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            browserChecks: [
+              {
+                id: 'browser-qa',
+                description: 'Check browser flow',
+                type: 'browser',
+                requiredRunner: 'playwright-interactive',
+                requiredArtifacts: ['screenshot'],
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Fix browser QA regression',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'done',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [
+          {
+            checkId: 'browser-qa',
+            passed: true,
+            runner: 'browser-test',
+            screenshotPath: 'artifacts/screenshots/browser.png',
+          },
+        ],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 2,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(false);
+    const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
+      passed: boolean;
+      results: Array<{ checkId: string; passed: boolean; failure?: { summary: string } }>;
+    };
+    expect(report.passed).toBe(false);
+    expect(report.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        checkId: 'browser-qa',
+        passed: false,
+        failure: expect.objectContaining({
+          summary: 'browser validation used unexpected runner: browser-test',
+        }),
+      }),
+    ]));
+  });
+
+  it('fails browser validation when worker reports a warning', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-browser-warning-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(cwd, 'artifacts', 'screenshots'), { recursive: true });
+    writeFileSync(join(cwd, 'artifacts', 'screenshots', 'browser.png'), 'ok', 'utf-8');
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Browser warning mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'browser-warning',
+      goal: 'Browser validation fails when worker reports caveats',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['browser validation does not pass with warning evidence'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and verify',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            browserChecks: [
+              {
+                id: 'browser-qa',
+                description: 'Check browser flow',
+                type: 'browser',
+                requiredRunner: 'playwright-interactive',
+                requiredArtifacts: ['screenshot'],
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Fix browser QA regression',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'done',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [
+          {
+            checkId: 'browser-qa',
+            passed: true,
+            runner: 'playwright-interactive',
+            screenshotPath: 'artifacts/screenshots/browser.png',
+            warning: 'fallback browser QA was used',
+          },
+        ],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 2,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(false);
+    const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
+      passed: boolean;
+      results: Array<{ checkId: string; passed: boolean; warning?: string; failure?: { summary: string } }>;
+    };
+    expect(report.passed).toBe(false);
+    expect(report.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        checkId: 'browser-qa',
+        passed: false,
+        warning: 'fallback browser QA was used',
+        failure: expect.objectContaining({
+          summary: 'browser validation reported warning',
+        }),
+      }),
+    ]));
+  });
+
+  it('fails browser validation when artifact paths do not exist', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-browser-path-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Browser path mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'browser-path',
+      goal: 'Browser validation checks artifact paths',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['browser validation fails on missing artifact path'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and verify',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            browserChecks: [
+              {
+                id: 'browser-qa',
+                description: 'Check browser flow',
+                type: 'browser',
+                requiredRunner: 'playwright-interactive',
+                requiredArtifacts: ['screenshot'],
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Fix browser QA regression',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+    jest.spyOn(WorkerAgent.prototype, 'run').mockResolvedValue({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'done',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [
+          {
+            checkId: 'browser-qa',
+            passed: true,
+            runner: 'playwright-interactive',
+            screenshotPath: 'artifacts/screenshots/missing.png',
+          },
+        ],
+        discoveredFeatures: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 2,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(false);
+    const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
+      passed: boolean;
+      results: Array<{ checkId: string; passed: boolean; failure?: { summary: string } }>;
+    };
+    expect(report.passed).toBe(false);
+    expect(report.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        checkId: 'browser-qa',
+        passed: false,
+        failure: expect.objectContaining({
+          summary: 'browser validation reported artifact paths that do not exist',
         }),
       }),
     ]));

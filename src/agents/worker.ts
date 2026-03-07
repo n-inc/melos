@@ -182,14 +182,16 @@ export class WorkerAgent implements Agent {
     const validationChecks = [
       ...input.milestone.validationContract.staticChecks,
       ...input.milestone.validationContract.testSuites,
-      ...(input.milestone.validationContract.e2eChecks ?? []),
+      ...(input.milestone.validationContract.browserChecks ?? []),
       ...(input.milestone.validationContract.manualSteps ?? []),
     ]
       .map((check) => {
         const action = typeof check.command === 'string' && check.command.trim().length > 0
           ? check.command.trim()
-          : (check.type === 'manual' || check.type === 'e2e'
-              ? 'report structured evidence in `checks`'
+          : (check.type === 'manual'
+              ? 'report structured evidence in `checks` if you actually performed the manual step'
+              : check.type === 'browser'
+                ? 'report structured browser evidence in `checks` with runner plus screenshot/video paths or URLs'
               : 'no command');
         return `- ${check.id} [${check.type}] ${check.description} :: ${action}`;
       })
@@ -197,7 +199,6 @@ export class WorkerAgent implements Agent {
     const validationCommands = [
       ...input.milestone.validationContract.staticChecks,
       ...input.milestone.validationContract.testSuites,
-      ...(input.milestone.validationContract.e2eChecks ?? []),
     ]
       .map((check) => check.command)
       .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
@@ -259,9 +260,10 @@ export class WorkerAgent implements Agent {
         },
         checks: [
           {
-            checkId: 'm1-manual-1',
+            checkId: 'm1-browser-1',
             passed: true,
-            warning: 'verification completed with caveats',
+            runner: 'playwright-interactive',
+            screenshotPath: 'artifacts/screenshots/example.png',
           },
         ],
         warnings: ['describe any fallback, unverified scope, or required user follow-up'],
@@ -697,6 +699,21 @@ function normalizeValidationCheckResults(value: unknown): ValidationCheckResult[
     }
     if (typeof record.warning === 'string' && record.warning.trim().length > 0) {
       result.warning = record.warning.trim();
+    }
+    if (typeof record.runner === 'string' && record.runner.trim().length > 0) {
+      result.runner = record.runner.trim();
+    }
+    if (typeof record.screenshotPath === 'string' && record.screenshotPath.trim().length > 0) {
+      result.screenshotPath = record.screenshotPath.trim();
+    }
+    if (typeof record.videoPath === 'string' && record.videoPath.trim().length > 0) {
+      result.videoPath = record.videoPath.trim();
+    }
+    if (typeof record.screenshotUrl === 'string' && record.screenshotUrl.trim().length > 0) {
+      result.screenshotUrl = record.screenshotUrl.trim();
+    }
+    if (typeof record.videoUrl === 'string' && record.videoUrl.trim().length > 0) {
+      result.videoUrl = record.videoUrl.trim();
     }
 
     const failure = normalizeValidationCheckFailure(record.failure);

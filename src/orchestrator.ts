@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { writeFile, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import { ManagerAgent, MissionPlanningError, type ManagerAgentConfig } from './agents/manager.js';
 import { WorkerAgent, type WorkerAgentConfig } from './agents/worker.js';
@@ -31,6 +31,7 @@ import {
   isBlockingReviewFinding,
 } from './state/review.js';
 import {
+  type ValidationCheck,
   type ValidationReport,
   type ValidationCheckResult,
   getAllValidationChecks,
@@ -855,7 +856,20 @@ export class Orchestrator {
     const evidenceByCheckId = this.kernelState.validationEvidence?.[milestoneId] ?? {};
 
     for (const check of checks) {
-      if (check.type === 'manual' || check.type === 'e2e') {
+      if (check.type === 'browser') {
+        const result = evaluateBrowserValidationCheck(this.config.cwd, check, evidenceByCheckId[check.id]);
+        results.push(result);
+        if (result.warning) {
+          this.emitValidationWarning({
+            milestoneId,
+            checkId: check.id,
+            message: result.warning,
+          });
+        }
+        continue;
+      }
+
+      if (check.type === 'manual') {
         const evidence = evidenceByCheckId[check.id];
         if (evidence) {
           const result: ValidationCheckResult = {
@@ -992,7 +1006,7 @@ export class Orchestrator {
             ...current.validationContract,
             staticChecks: current.validationContract.staticChecks.map((check) => ({ ...check, failureCount: 0 })),
             testSuites: current.validationContract.testSuites.map((check) => ({ ...check, failureCount: 0 })),
-            e2eChecks: current.validationContract.e2eChecks?.map((check) => ({ ...check, failureCount: 0 })),
+            browserChecks: current.validationContract.browserChecks?.map((check) => ({ ...check, failureCount: 0 })),
             manualSteps: current.validationContract.manualSteps?.map((check) => ({ ...check, failureCount: 0 })),
           },
         }));
@@ -2432,7 +2446,7 @@ function buildTaskPreviewLines(
     const validationChecks = [
       ...milestone.validationContract.staticChecks,
       ...milestone.validationContract.testSuites,
-      ...(milestone.validationContract.e2eChecks ?? []),
+      ...(milestone.validationContract.browserChecks ?? []),
       ...(milestone.validationContract.manualSteps ?? []),
     ];
     if (validationChecks.length > 0) {
@@ -2446,7 +2460,11 @@ function buildTaskPreviewLines(
           : null;
         const actionLabel = command
           ? command
-          : (check.type === 'manual' ? 'manual step (follow description)' : 'command not specified');
+          : (check.type === 'manual'
+              ? 'manual step (follow description)'
+              : check.type === 'browser'
+                ? 'browser QA (worker evidence required)'
+                : 'command not specified');
         lines.push(`    - [${check.passed ? 'x' : ' '}] ${check.id} (${check.type}) ${description} :: ${actionLabel}`);
       }
     }
@@ -2465,6 +2483,128 @@ function buildTaskPlanningLines(): string[] {
     'No default placeholder task is shown during planning.',
     'TASK.json preview will appear here once the mission plan is generated.',
   ];
+}
+
+function evaluateBrowserValidationCheck(
+  cwd: string,
+  check: ValidationCheck,
+  evidence: ValidationCheckResult | undefined
+): ValidationCheckResult {
+  if (!evidence) {
+    return createBrowserValidationFailure(check.id, 'browser validation was not reported by the worker', [
+      check.description,
+    ]);
+  }
+
+  if (evidence.passed === false) {
+    return {
+      ...evidence,
+      checkId: check.id,
+      output: evidence.output ?? 'browser validation reported failure',
+    };
+  }
+
+  if (typeof evidence.warning === 'string' && evidence.warning.trim().length > 0) {
+    return createBrowserValidationFailure(check.id, 'browser validation reported warning', [
+      evidence.warning.trim(),
+    ], {
+      ...evidence,
+      warning: evidence.warning.trim(),
+    });
+  }
+
+  if (!evidence.runner || evidence.runner.trim().length === 0) {
+    return createBrowserValidationFailure(check.id, 'browser validation did not report a runner', [
+      check.description,
+    ], evidence);
+  }
+
+  if (check.requiredRunner && evidence.runner !== check.requiredRunner) {
+    return createBrowserValidationFailure(check.id, `browser validation used unexpected runner: ${evidence.runner}`, [
+      `expected runner: ${check.requiredRunner}`,
+    ], evidence);
+  }
+
+  const missingArtifacts = getMissingBrowserArtifacts(check, evidence);
+  if (missingArtifacts.length > 0) {
+    return createBrowserValidationFailure(check.id, 'browser validation is missing required evidence', missingArtifacts, evidence);
+  }
+
+  const missingPaths = getMissingBrowserArtifactPaths(cwd, evidence);
+  if (missingPaths.length > 0) {
+    return createBrowserValidationFailure(check.id, 'browser validation reported artifact paths that do not exist', missingPaths, evidence);
+  }
+
+  return {
+    ...evidence,
+    checkId: check.id,
+    passed: true,
+    output: evidence.output ?? `browser validation passed via ${evidence.runner}`,
+  };
+}
+
+function createBrowserValidationFailure(
+  checkId: string,
+  summary: string,
+  errorMessages: string[],
+  base?: ValidationCheckResult
+): ValidationCheckResult {
+  return {
+    ...base,
+    checkId,
+    passed: false,
+    output: base?.output ?? summary,
+    failure: {
+      summary,
+      affectedFiles: [],
+      errorMessages,
+    },
+  };
+}
+
+function getMissingBrowserArtifacts(check: ValidationCheck, evidence: ValidationCheckResult): string[] {
+  const requiredArtifacts = check.requiredArtifacts && check.requiredArtifacts.length > 0
+    ? check.requiredArtifacts
+    : undefined;
+  const available = new Set<string>();
+
+  if (hasNonEmptyValue(evidence.screenshotPath) || hasNonEmptyValue(evidence.screenshotUrl)) {
+    available.add('screenshot');
+  }
+  if (hasNonEmptyValue(evidence.videoPath) || hasNonEmptyValue(evidence.videoUrl)) {
+    available.add('video');
+  }
+
+  if (!requiredArtifacts) {
+    return available.size > 0
+      ? []
+      : ['expected at least one browser artifact: screenshot or video'];
+  }
+
+  return requiredArtifacts
+    .filter((artifact) => !available.has(artifact))
+    .map((artifact) => `missing ${artifact}`);
+}
+
+function getMissingBrowserArtifactPaths(cwd: string, evidence: ValidationCheckResult): string[] {
+  const missing: string[] = [];
+
+  if (hasNonEmptyValue(evidence.screenshotPath) && !existsSync(resolveArtifactPath(cwd, evidence.screenshotPath))) {
+    missing.push(`screenshotPath not found: ${evidence.screenshotPath}`);
+  }
+  if (hasNonEmptyValue(evidence.videoPath) && !existsSync(resolveArtifactPath(cwd, evidence.videoPath))) {
+    missing.push(`videoPath not found: ${evidence.videoPath}`);
+  }
+
+  return missing;
+}
+
+function resolveArtifactPath(cwd: string, artifactPath: string): string {
+  return isAbsolute(artifactPath) ? artifactPath : join(cwd, artifactPath);
+}
+
+function hasNonEmptyValue(value: string | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 type FeatureModelSource = 'explicit' | 'default';
@@ -3275,6 +3415,11 @@ function normalizeValidationEvidenceMap(
         checkId,
         output: typeof result.output === 'string' ? result.output : undefined,
         warning: typeof result.warning === 'string' ? result.warning : undefined,
+        runner: typeof result.runner === 'string' ? result.runner : undefined,
+        screenshotPath: typeof result.screenshotPath === 'string' ? result.screenshotPath : undefined,
+        videoPath: typeof result.videoPath === 'string' ? result.videoPath : undefined,
+        screenshotUrl: typeof result.screenshotUrl === 'string' ? result.screenshotUrl : undefined,
+        videoUrl: typeof result.videoUrl === 'string' ? result.videoUrl : undefined,
         failure: result.failure
           ? {
             ...result.failure,

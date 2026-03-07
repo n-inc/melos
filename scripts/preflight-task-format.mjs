@@ -63,7 +63,11 @@ const validateMilestone = (milestone, path) => {
     return;
   }
 
-  const groups = ['staticChecks', 'testSuites', 'e2eChecks', 'manualSteps'];
+  if (Object.prototype.hasOwnProperty.call(contract, 'e2eChecks')) {
+    pushError(`${path}.validationContract.e2eChecks is no longer supported; use browserChecks instead`);
+  }
+
+  const groups = ['staticChecks', 'testSuites', 'browserChecks', 'manualSteps'];
   for (const group of groups) {
     const checks = contract[group] ?? [];
     if (!Array.isArray(checks)) {

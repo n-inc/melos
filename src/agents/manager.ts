@@ -13,7 +13,7 @@ import {
 } from '../state/mission.js';
 import type { ProductReviewContract, ReviewFinding, ReviewType } from '../state/review.js';
 import { normalizeProductReviewContract } from '../state/review.js';
-import type { ValidationCheckResult } from '../state/validation.js';
+import type { ValidationArtifact, ValidationCheckResult, ValidationRunner } from '../state/validation.js';
 import {
   createEmptyValidationContract,
 } from '../state/validation.js';
@@ -166,7 +166,14 @@ interface MissionPlanningOutput {
     validationContract?: {
       staticChecks?: Array<{ id: string; description: string; command?: string; type?: string }>;
       testSuites?: Array<{ id: string; description: string; command?: string; type?: string }>;
-      e2eChecks?: Array<{ id: string; description: string; command?: string; type?: string }>;
+      browserChecks?: Array<{
+        id: string;
+        description: string;
+        command?: string;
+        type?: string;
+        requiredRunner?: string;
+        requiredArtifacts?: string[];
+      }>;
       manualSteps?: Array<{ id: string; description: string; command?: string; type?: string }>;
     };
     features: Array<{
@@ -560,11 +567,13 @@ export class ManagerAgent implements Agent {
           passed: false,
           failureCount: 0,
         })),
-        e2eChecks: (milestone.validationContract?.e2eChecks ?? []).map((check, index) => ({
-          id: check.id || `m${milestoneIndex + 1}-e2e-${index + 1}`,
+        browserChecks: (milestone.validationContract?.browserChecks ?? []).map((check, index) => ({
+          id: check.id || `m${milestoneIndex + 1}-browser-${index + 1}`,
           description: check.description,
-          type: normalizeCheckType(check.type, 'e2e'),
+          type: normalizeCheckType(check.type, 'browser'),
           command: check.command,
+          requiredRunner: normalizeValidationRunner(check.requiredRunner),
+          requiredArtifacts: normalizeValidationArtifacts(check.requiredArtifacts),
           passed: false,
           failureCount: 0,
         })),
@@ -634,7 +643,7 @@ export class ManagerAgent implements Agent {
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"e2eChecks":[],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"browserChecks":[{"id":"...","description":"...","type":"browser","requiredRunner":"playwright-interactive","requiredArtifacts":["screenshot"]}],"manualSteps":[]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -787,12 +796,12 @@ export class ManagerAgent implements Agent {
 
 function normalizeCheckType(
   value: string | undefined,
-  fallback: 'command' | 'auto:test' | 'e2e' | 'manual'
+  fallback: 'command' | 'auto:test' | 'browser' | 'manual'
 ): CheckType {
   if (!value) {
     return fallback;
   }
-  if (value === 'auto:lint' || value === 'auto:typecheck' || value === 'auto:test' || value === 'e2e' || value === 'manual' || value === 'command') {
+  if (value === 'auto:lint' || value === 'auto:typecheck' || value === 'auto:test' || value === 'browser' || value === 'manual' || value === 'command') {
     return value;
   }
   return fallback;
@@ -1002,7 +1011,7 @@ function getValidationFocusLines(contract: MissionPlan['milestones'][number]['va
   return [
     ...contract.staticChecks.map((check) => formatValidationCheckLine('static', check.description, check.command)),
     ...contract.testSuites.map((check) => formatValidationCheckLine('test', check.description, check.command)),
-    ...(contract.e2eChecks ?? []).map((check) => formatValidationCheckLine('e2e', check.description, check.command)),
+    ...(contract.browserChecks ?? []).map((check) => formatValidationCheckLine('browser', check.description, check.command)),
     ...(contract.manualSteps ?? []).map((check) => formatValidationCheckLine('manual', check.description, check.command)),
   ].filter((line) => line.trim().length > 0);
 }
@@ -1751,7 +1760,7 @@ function normalizeValidationContract(value: unknown): MissionPlanningOutput['mil
   return {
     staticChecks: normalizeValidationChecks(contract.staticChecks),
     testSuites: normalizeValidationChecks(contract.testSuites),
-    e2eChecks: normalizeValidationChecks(contract.e2eChecks),
+    browserChecks: normalizeBrowserValidationChecks(contract.browserChecks),
     manualSteps: normalizeValidationChecks(contract.manualSteps),
   };
 }
@@ -1783,6 +1792,68 @@ function normalizeValidationChecks(
     });
   });
   return checks.length > 0 ? checks : undefined;
+}
+
+function normalizeBrowserValidationChecks(
+  value: unknown
+): Array<{
+  id: string;
+  description: string;
+  command?: string;
+  type?: string;
+  requiredRunner?: ValidationRunner;
+  requiredArtifacts?: ValidationArtifact[];
+}> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const checks: Array<{
+    id: string;
+    description: string;
+    command?: string;
+    type?: string;
+    requiredRunner?: ValidationRunner;
+    requiredArtifacts?: ValidationArtifact[];
+  }> = [];
+
+  value.forEach((check, index) => {
+    if (!check || typeof check !== 'object' || Array.isArray(check)) {
+      return;
+    }
+    const record = check as Record<string, unknown>;
+    const description = toNonEmptyString(record.description);
+    if (!description) {
+      return;
+    }
+    const id = toNonEmptyString(record.id) ?? `check-${index + 1}`;
+    const type = toNonEmptyString(record.type);
+    const command = toNonEmptyString(record.command);
+    checks.push({
+      id,
+      description,
+      type: type ?? undefined,
+      command: normalizeValidationCommand(command),
+      requiredRunner: normalizeValidationRunner(record.requiredRunner),
+      requiredArtifacts: normalizeValidationArtifacts(record.requiredArtifacts),
+    });
+  });
+
+  return checks.length > 0 ? checks : undefined;
+}
+
+function normalizeValidationRunner(value: unknown): ValidationRunner | undefined {
+  return value === 'playwright-interactive' || value === 'browser-test'
+    ? value
+    : undefined;
+}
+
+function normalizeValidationArtifacts(value: unknown): ValidationArtifact[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const artifacts = value.filter((item): item is ValidationArtifact => item === 'screenshot' || item === 'video');
+  return artifacts.length > 0 ? artifacts : undefined;
 }
 
 function normalizeValidationCommand(command: string | null): string | undefined {

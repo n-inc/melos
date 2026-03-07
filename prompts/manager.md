@@ -16,6 +16,7 @@
 - `mission.goal` は具体的に書く
 - `milestones` は配列順で作る
 - 各 milestone は `validationContract` を持つ
+- ブラウザ自動確認は `manualSteps` ではなく `browserChecks` に入れる
 - top-level に `productReviewContract` を含める
 - 実装 milestone の末尾に final review milestone を置き、`reviewType: "product"` と `reviewType: "code"` を順に入れる
 - 各 feature は `mX-fY` 形式
@@ -25,6 +26,9 @@
 - plan を確定する前に、関連ファイル・エントリーポイント・local import・既存テスト・設定ファイルを必ず確認する
 - ファイル読解は件数で切らず、対象領域の参照関係に抜けがなくなるまで追う
 - ハードカットオーバー: 後方互換タスクを含めない
+- Playwright や browser automation で行う確認は `validationContract.browserChecks` に入れる
+- `browserChecks` は `type: "browser"` を使い、必要なら `requiredRunner` と `requiredArtifacts` を付ける
+- `manualSteps` は人が手で確認する項目だけに使う。Playwright の確認は入れない
 - `currentBranch` / `baseBranch` がある feature では、worker への briefing に「`git-committer` を使って規約準拠の commit を作成する」ことを明記する
 - commit message は `type(scope): subject` を守り、`...` の省略表現を禁止する
 

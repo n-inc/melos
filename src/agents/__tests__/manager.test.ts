@@ -43,7 +43,7 @@ describe('ManagerAgent', () => {
             validationContract: {
               staticChecks: [],
               testSuites: [],
-              e2eChecks: [],
+              browserChecks: [],
               manualSteps: [],
             },
             features: [{ id: 'm1-f1', description: 'Implement auth', model: 'codex' }],

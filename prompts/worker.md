@@ -27,4 +27,5 @@
 
 必ず `json` fenced block で report を返す。
 - `warnings` には、未確認項目、fallback、追加でユーザー確認が必要な点を文字列配列で必ず返すこと（なければ空配列）。
-- `checks` には、実施した manual / e2e / QA 検証の結果を `checkId` 単位で返すこと。各要素は少なくとも `checkId` と `passed` を含め、必要なら `warning` や `failure` を付けること。
+- `checks` には、実施した manual / browser QA 検証の結果を `checkId` 単位で返すこと。各要素は少なくとも `checkId` と `passed` を含め、browser check では `runner` と証跡も返すこと。
+- browser check で fallback や caveat が発生した場合は成功扱いにせず、その check 自体を `passed: false` か `warning` 付きで返すこと。

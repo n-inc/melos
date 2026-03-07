@@ -3,8 +3,12 @@ export type CheckType =
   | 'auto:lint'
   | 'auto:typecheck'
   | 'auto:test'
-  | 'e2e'
+  | 'browser'
   | 'manual';
+
+export type ValidationRunner = 'playwright-interactive' | 'browser-test';
+
+export type ValidationArtifact = 'screenshot' | 'video';
 
 export interface ValidationCheck {
   id: string;
@@ -12,6 +16,8 @@ export interface ValidationCheck {
   type: CheckType;
   command?: string;
   expectedOutcome?: string;
+  requiredRunner?: ValidationRunner;
+  requiredArtifacts?: ValidationArtifact[];
   passed: boolean;
   failureCount: number;
   lastFailure?: string;
@@ -20,7 +26,7 @@ export interface ValidationCheck {
 export interface ValidationContract {
   staticChecks: ValidationCheck[];
   testSuites: ValidationCheck[];
-  e2eChecks?: ValidationCheck[];
+  browserChecks?: ValidationCheck[];
   manualSteps?: ValidationCheck[];
 }
 
@@ -38,6 +44,11 @@ export interface ValidationCheckResult {
   durationMs?: number;
   output?: string;
   warning?: string;
+  runner?: string;
+  screenshotPath?: string;
+  videoPath?: string;
+  screenshotUrl?: string;
+  videoUrl?: string;
   failure?: ValidationCheckFailure;
 }
 
@@ -69,7 +80,7 @@ export function getAllValidationChecks(contract: ValidationContract): Validation
   return [
     ...contract.staticChecks,
     ...contract.testSuites,
-    ...(contract.e2eChecks ?? []),
+    ...(contract.browserChecks ?? []),
     ...(contract.manualSteps ?? []),
   ];
 }
@@ -78,18 +89,26 @@ export function cloneValidationContract(contract: ValidationContract): Validatio
   return {
     staticChecks: contract.staticChecks.map((check) => ({ ...check })),
     testSuites: contract.testSuites.map((check) => ({ ...check })),
-    e2eChecks: contract.e2eChecks?.map((check) => ({ ...check })),
+    browserChecks: contract.browserChecks?.map((check) => ({ ...check })),
     manualSteps: contract.manualSteps?.map((check) => ({ ...check })),
   };
 }
 
 export function normalizeValidationCheck(input: Partial<ValidationCheck>, index: number): ValidationCheck {
+  const requiredArtifacts = Array.isArray(input.requiredArtifacts)
+    ? input.requiredArtifacts.filter((artifact): artifact is ValidationArtifact => artifact === 'screenshot' || artifact === 'video')
+    : [];
+
   return {
     id: input.id?.trim() || `check-${index + 1}`,
     description: input.description?.trim() || 'Unnamed validation check',
     type: input.type ?? 'command',
     command: input.command?.trim() || undefined,
     expectedOutcome: input.expectedOutcome?.trim() || undefined,
+    requiredRunner: input.requiredRunner === 'playwright-interactive' || input.requiredRunner === 'browser-test'
+      ? input.requiredRunner
+      : undefined,
+    requiredArtifacts: requiredArtifacts.length > 0 ? requiredArtifacts : undefined,
     passed: Boolean(input.passed),
     failureCount: typeof input.failureCount === 'number' && input.failureCount > 0
       ? Math.floor(input.failureCount)
@@ -109,7 +128,7 @@ export function normalizeValidationContract(contract: Partial<ValidationContract
   return {
     staticChecks: normalizeList(contract.staticChecks),
     testSuites: normalizeList(contract.testSuites),
-    e2eChecks: normalizeList(contract.e2eChecks),
+    browserChecks: normalizeList(contract.browserChecks),
     manualSteps: normalizeList(contract.manualSteps),
   };
 }
@@ -143,7 +162,7 @@ export function mergeValidationResults(
   return {
     staticChecks: mergeList(contract.staticChecks),
     testSuites: mergeList(contract.testSuites),
-    e2eChecks: contract.e2eChecks ? mergeList(contract.e2eChecks) : undefined,
+    browserChecks: contract.browserChecks ? mergeList(contract.browserChecks) : undefined,
     manualSteps: contract.manualSteps ? mergeList(contract.manualSteps) : undefined,
   };
 }

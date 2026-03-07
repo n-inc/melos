@@ -440,6 +440,13 @@ describe('WorkerAgent', () => {
               },
             },
             {
+              checkId: 'browser-qa',
+              passed: true,
+              runner: 'playwright-interactive',
+              screenshotPath: 'artifacts/screenshots/browser.png',
+              videoUrl: 'https://example.com/session.webm',
+            },
+            {
               checkId: '',
               passed: true,
             },
@@ -465,6 +472,13 @@ describe('WorkerAgent', () => {
           errorMessages: ['screen mismatch'],
           rootCause: undefined,
         },
+      },
+      {
+        checkId: 'browser-qa',
+        passed: true,
+        runner: 'playwright-interactive',
+        screenshotPath: 'artifacts/screenshots/browser.png',
+        videoUrl: 'https://example.com/session.webm',
       },
     ]);
   });

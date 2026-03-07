@@ -1,7 +1,7 @@
 # Melos CLI v0.8.0
 
 Melos は MissionPlan 状態機械を中心に、長時間の自律実行を管理する CLI です。
-`TASK.json` は v2 MissionPlan（`mission > milestones > features`）を唯一の実行ソースとして扱います。
+`TASK.json` は v3 MissionPlan（`mission > milestones > features`）を唯一の実行ソースとして扱います。
 
 ## セットアップ
 
@@ -22,7 +22,7 @@ npx melos run
 - `--git-strategy`: feature branch ハンドオフを有効化
 - `--base-branch <branch>`: Git 戦略のベースブランチ
 - `--mission-id <id>`: ミッションID
-- `--planner-model <model>` / `--worker-model <model>` / `--validator-model <model>` / `--research-model <model>`
+- `--planner-model <model>` / `--worker-model <model>`
 - `--dry-run`: 実装を実行せず状態遷移のみ確認
 
 再開:
@@ -89,6 +89,7 @@ npx melos cancel
 - `state.json`: スナップショット
 - `git-strategy.json`: ブランチ状態
 - `validations/*.json`: milestone validation レポート
+- `reviews/*.json`: final review レポート
 - `RUN.json`: 実行中プロセス情報
 
 ## Git Hygiene
@@ -96,9 +97,6 @@ npx melos cancel
 以下は実行時に生成されるローカル運用ファイルのため、コミット対象外です。
 
 - `HANDOFF.md`
-- `PROGRESS.md`
-- `WORK_REPORT.json`
-- `SESSION.json`
 - `.melos/` 配下の全ファイル
 
 ## 設定 (`.melos.json`)
@@ -108,9 +106,7 @@ npx melos cancel
   "maxIterations": 400,
   "models": {
     "planner": "codex-latest",
-    "worker": "codex-latest",
-    "validator": "codex-latest",
-    "research": "claude-latest"
+    "worker": "codex-latest"
   },
   "git": {
     "enabled": true,
