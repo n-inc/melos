@@ -1,6 +1,5 @@
 import type { ModelAssignment, ModelRole } from '../models/router.js';
 import type { FeatureStatus, MilestoneStatus, MissionState } from '../state/mission.js';
-import type { TokenUsageSnapshot } from '../state/token-tracker.js';
 import type { LogActor, UnifiedLogEntry } from '../state/log-entry.js';
 
 export type ViewId = 'overview' | 'features' | 'workers' | 'models' | 'prd' | 'task';
@@ -54,7 +53,6 @@ export interface MissionControlState {
   managerLog?: Array<{ timestamp: string; message: string }>;
   workerRuns: WorkerRunView[];
   modelAssignments: Record<ModelRole, ModelAssignment>;
-  tokenUsage: TokenUsageSnapshot;
   pendingPrompt?: string | null;
 }
 

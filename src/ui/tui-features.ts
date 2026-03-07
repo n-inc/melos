@@ -1,6 +1,7 @@
 import type { MissionControlState, TUIView, ViewPort } from './tui-views.js';
 import { drawBox, splitColumns } from './tui-layout.js';
 import { resolveDisplayModel } from '../models/registry.js';
+import { selectRecentProgressEntries } from './tui-progress.js';
 
 function statusIcon(status: string): string {
   switch (status) {
@@ -34,8 +35,7 @@ export const featuresView: TUIView = {
 
     const activeMilestone = state.milestones.find((milestone) => milestone.id === state.activeMilestoneId) ?? null;
     const activeFeature = activeMilestone?.features.find((feature) => feature.id === state.activeFeatureId) ?? null;
-    const recentLogLines = state.progressLog
-      .slice(-6)
+    const recentLogLines = selectRecentProgressEntries(state.progressLog, 6)
       .map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
     if (recentLogLines.length === 0) {
       recentLogLines.push(state.activity || 'No mission events yet');

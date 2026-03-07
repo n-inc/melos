@@ -13,12 +13,6 @@ export interface AskUserPrompt {
   allowFreeText?: boolean;
 }
 
-export interface WorkerTokenUsage {
-  input: number;
-  output: number;
-  cached?: number;
-}
-
 export interface WorkerFileChange {
   path: string;
   additions: number;
@@ -47,7 +41,6 @@ export interface WorkerFeatureReport {
   }>;
   learnings: string[];
   requestsHelp: boolean;
-  tokenUsage?: WorkerTokenUsage;
   createdAt: string;
 }
 

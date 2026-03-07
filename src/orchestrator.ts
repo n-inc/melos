@@ -61,7 +61,7 @@ import {
 } from './state/event-reducer.js';
 import { loadSnapshot, saveSnapshot } from './state/snapshot.js';
 import { Watchdog } from './state/watchdog.js';
-import type { LogActor } from './state/log-entry.js';
+import { wrapLogText, type LogActor } from './state/log-entry.js';
 import { ModelRouter, type ModelRole } from './models/router.js';
 import {
   CLAUDE_LATEST_ALIAS,
@@ -73,6 +73,7 @@ import {
   resolveModelEngine,
   type ModelEngine,
 } from './models/registry.js';
+import { getDefaultPromptsDir } from './prompts/index.js';
 import type { MissionControlState, MissionMilestoneView, WorkerRunView } from './ui/tui-views.js';
 
 export interface OrchestratorConfig {
@@ -144,6 +145,7 @@ export class Orchestrator {
   private statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private fatalFailureReason: string | null = null;
   private managerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private abortSignal: NodeJS.Signals | null = null;
 
   constructor(config: OrchestratorConfig) {
     this.config = config;
@@ -165,9 +167,11 @@ export class Orchestrator {
       },
     });
 
+    const promptsDir = getDefaultPromptsDir();
+
     const managerConfig: ManagerAgentConfig = {
       cwd: config.cwd,
-      promptsDir: join(config.cwd, 'prompts'),
+      promptsDir,
       model: this.modelRouter.getModel('planner'),
       effort: config.managerEffort ?? 'high',
       requestTimeoutMs: 900_000,
@@ -177,7 +181,7 @@ export class Orchestrator {
 
     const workerConfig: WorkerAgentConfig = {
       cwd: config.cwd,
-      promptsDir: join(config.cwd, 'prompts'),
+      promptsDir,
       model: this.modelRouter.getModel('worker'),
       reasoningEffort: config.workerReasoningEffort ?? 'xhigh',
       claudeModel: this.modelRouter.getModel('worker'),
@@ -349,19 +353,28 @@ export class Orchestrator {
     void this.emitStatusUpdate();
   }
 
-  abort(): void {
+  abort(signal?: NodeJS.Signals): void {
     this.aborted = true;
+    if (signal && this.abortSignal === null) {
+      this.abortSignal = signal;
+    }
     this.activityLabel = 'Abort requested. Stopping active work...';
     this.manager.abort();
     this.worker.abort();
 
     if (this.state.missionPlan && this.state.missionPlan.state !== 'completed') {
+      const reason = this.abortSignal
+        ? `aborted by signal ${this.abortSignal}`
+        : 'aborted by signal';
       this.state.missionPlan = {
         ...this.state.missionPlan,
         state: 'aborted',
       };
       void this.persistMissionPlan();
-      this.emitEvent('mission_failed', 'orchestrator', { reason: 'aborted by signal' });
+      this.emitEvent('mission_failed', 'orchestrator', {
+        reason,
+        signal: this.abortSignal ?? undefined,
+      });
     }
 
     if (this.resumePause) {
@@ -771,8 +784,7 @@ export class Orchestrator {
     });
 
     this.activityLabel = `Worker executing ${updatedFeature.id}...`;
-    const executionResult = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
-    const { result, execution } = executionResult;
+    const result = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
     this.state.latestWorkerReport = result.report;
 
     const status = result.type === 'success'
@@ -984,15 +996,7 @@ export class Orchestrator {
     milestone: Milestone,
     feature: Feature,
     briefing?: string
-  ): Promise<{
-    result: WorkerResult;
-    execution: {
-      engine: ModelEngine;
-      runtimeModel: string;
-      displayModel: string;
-      source: FeatureModelSource;
-    };
-  }> {
+  ): Promise<WorkerResult> {
     const selectedWorkerModel = normalizeModelName(this.modelRouter.getModel('worker')) ?? CODEX_LATEST_ALIAS;
     let missionPlan = this.requireMissionPlan();
     let runtimeFeature = missionPlan.milestones
@@ -1026,7 +1030,6 @@ export class Orchestrator {
     }
 
     const resolvedExecutionModel = resolveModel(modelState.model, selectedWorkerModel);
-    const runtimeModel = resolvedExecutionModel.runtimeModel;
     const executionFeature: Feature = {
       ...runtimeFeature,
       model: modelState.model,
@@ -1101,15 +1104,7 @@ export class Orchestrator {
         status: report.status,
         summary: report.summary,
       });
-      return {
-        result,
-        execution: {
-          engine: resolvedExecutionModel.engine,
-          runtimeModel,
-          displayModel: resolvedExecutionModel.displayModel,
-          source: modelState.source,
-        },
-      };
+      return result;
     }
 
     const workerInput: WorkerInput = {
@@ -1133,8 +1128,25 @@ export class Orchestrator {
       },
     };
 
-    let result = await this.worker.run(workerInput);
-    this.watchdog.touch();
+    const workerReplyStream = createBufferedProgressEmitter((line) => {
+      this.emitEvent('worker_checkpoint', 'worker', {
+        runId,
+        message: `[REPLY] ${line}`,
+      });
+    });
+
+    workerInput.onAgentMessageDelta = (chunk) => {
+      workerReplyStream.push(chunk);
+    };
+
+    let result: WorkerResult;
+    try {
+      result = await this.worker.run(workerInput);
+      this.watchdog.touch();
+    } finally {
+      workerReplyStream.flush();
+    }
+
     if (resolvedExecutionModel.engine === 'codex') {
       const activeThreadId = this.worker.getActiveThreadId();
       if (activeThreadId) {
@@ -1174,15 +1186,7 @@ export class Orchestrator {
       }
     );
 
-    return {
-      result,
-      execution: {
-        engine: resolvedExecutionModel.engine,
-        runtimeModel,
-        displayModel: resolvedExecutionModel.displayModel,
-        source: modelState.source,
-      },
-    };
+    return result;
   }
 
   private async runGitPostProcess(
@@ -2085,7 +2089,20 @@ function createBufferedProgressEmitter(
     if (!normalized) {
       return;
     }
-    emitLine(truncateMessage(normalized, maxLength));
+    const wrapped = wrapLogText(normalized, maxLength, 8);
+    if (wrapped.length === 0) {
+      return;
+    }
+    emitLine(wrapped.join('\n'));
+  };
+
+  const flushLongBuffer = (): void => {
+    while (buffer.trim().length > maxLength) {
+      const splitAt = findStreamingSplitIndex(buffer, maxLength);
+      const prefix = buffer.slice(0, splitAt);
+      buffer = buffer.slice(splitAt).trimStart();
+      emitBufferedLine(prefix);
+    }
   };
 
   return {
@@ -2099,6 +2116,7 @@ function createBufferedProgressEmitter(
       for (const line of lines) {
         emitBufferedLine(line);
       }
+      flushLongBuffer();
     },
     flush(): void {
       emitBufferedLine(buffer);
@@ -2189,10 +2207,39 @@ function normalizeStreamingText(value: string): string | null {
   if (!compact) {
     return null;
   }
-  return truncateMessage(compact, 180);
+  return compact;
+}
+
+function findStreamingSplitIndex(value: string, maxLength: number): number {
+  const preferred = [
+    value.lastIndexOf('. ', maxLength),
+    value.lastIndexOf('。', maxLength),
+    value.lastIndexOf('、', maxLength),
+    value.lastIndexOf(', ', maxLength),
+    value.lastIndexOf(' ', maxLength),
+  ].find((index) => index >= Math.floor(maxLength * 0.55));
+
+  if (preferred === undefined || preferred < 0) {
+    return maxLength;
+  }
+  return preferred + (value[preferred] === ' ' ? 0 : 1);
+}
+
+interface AgentEventLogDetail {
+  kind: string;
+  message: string;
+  detailLines?: string[];
 }
 
 export function formatAgentEventDetail(method: string, params: unknown): string | null {
+  const detail = extractAgentEventLogDetail(method, params);
+  if (!detail) {
+    return null;
+  }
+  return [`[${detail.kind}] ${detail.message}`, ...(detail.detailLines ?? [])].join('\n');
+}
+
+function extractAgentEventLogDetail(method: string, params: unknown): AgentEventLogDetail | null {
   const safeMethod = method.trim();
   if (!safeMethod) {
     return null;
@@ -2204,15 +2251,24 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     const detail = extractString(params, 'detail');
     const outputPreview = extractString(params, 'outputPreview');
     if (reason && detail) {
-      return `[FALLBACK] ${reason} (${truncateMessage(detail, 120)})`;
+      return { kind: 'FALLBACK', message: `${reason} (${detail})` };
     }
     if (reason && outputPreview) {
-      return `[FALLBACK] ${reason} (${truncateMessage(outputPreview, 120)})`;
+      return { kind: 'FALLBACK', message: `${reason} (${outputPreview})` };
     }
     if (reason) {
-      return `[FALLBACK] ${reason}`;
+      return { kind: 'FALLBACK', message: reason };
     }
-    return '[FALLBACK] manager fallback triggered';
+    return { kind: 'FALLBACK', message: 'manager fallback triggered' };
+  }
+
+  if (safeMethodLower.endsWith('/summarytextdelta')) {
+    const delta = extractString(params, 'delta');
+    const normalized = delta ? normalizeStreamingText(delta) : null;
+    return normalized && isMeaningfulLogFragment(normalized) ? { kind: 'THINK', message: normalized } : null;
+  }
+  if (safeMethodLower.includes('reasoning')) {
+    return null;
   }
 
   if (
@@ -2220,7 +2276,6 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     || safeMethodLower.includes('agent_message_delta')
     || safeMethodLower.includes('agent_message_content_delta')
     || safeMethodLower.includes('agentmessage/delta')
-    || safeMethodLower.includes('reasoning')
     || safeMethodLower.includes('/task_complete')
     || safeMethodLower.includes('/turn/completed')
     || safeMethodLower.includes('/mcp_startup')
@@ -2237,35 +2292,30 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     const type = normalizeItemType(extractString(item, 'type') ?? '');
     if (type === 'commandexecution') {
       const command = extractString(item, 'command');
-      return command ? `[BASH] ${truncateMessage(command, 120)}` : '[BASH] (command)';
+      return { kind: 'BASH', message: command?.trim() || '(command)' };
     }
     if (type === 'fileread') {
       const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
       if (!filePath) {
-        return '[READ] (file)';
+        return { kind: 'READ', message: '(file)' };
       }
       const limit = extractNumber(item, 'limit');
-      return limit !== null ? `[READ] ${filePath} (${limit} lines)` : `[READ] ${filePath}`;
+      return { kind: 'READ', message: limit !== null ? `${filePath} (${limit} lines)` : filePath };
     }
     if (type === 'filewrite' || type === 'fileedit') {
       const filePath = extractString(item, 'filePath') ?? extractString(item, 'file_path');
-      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
+      return { kind: 'WRITE', message: filePath ?? '(file)' };
     }
     if (type === 'filechange') {
-      const filePath = extractFirstFileChangePath(item);
-      const summary = extractFileChangeSummary(item);
-      if (summary) {
-        return `[WRITE] ${summary.path} (+${summary.added} -${summary.removed})`;
-      }
-      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
+      return describeFileChangeLogDetail(item, 'WRITE');
     }
     if (type === 'mcptoolcall') {
       const server = extractString(item, 'server');
       const tool = extractString(item, 'tool');
       if (server && tool) {
-        return `[TOOL] ${server}/${tool}`;
+        return { kind: 'TOOL', message: `${server}/${tool}` };
       }
-      return tool ? `[TOOL] ${tool}` : null;
+      return tool ? { kind: 'TOOL', message: tool } : null;
     }
     return null;
   }
@@ -2284,23 +2334,18 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
         exitCode !== null ? `exit=${exitCode}` : null,
         durationMs !== null ? `${durationMs}ms` : null,
       ].filter((v): v is string => v !== null);
-      return parts.length > 0 ? `[DONE] ${parts.join(' ')}` : '[DONE] command finished';
+      return { kind: 'DONE', message: parts.length > 0 ? parts.join(' ') : 'command finished' };
     }
     if (type === 'filechange') {
-      const summary = extractFileChangeSummary(item);
-      if (summary) {
-        return `[DONE] write ${summary.path} (+${summary.added} -${summary.removed})`;
-      }
-      const filePath = extractFirstFileChangePath(item);
-      return filePath ? `[DONE] write ${filePath}` : '[DONE] write completed';
+      return describeFileChangeLogDetail(item, 'DONE');
     }
     if (type === 'mcptoolcall') {
       const tool = extractString(item, 'tool');
       const error = extractString(item, 'error');
       if (error) {
-        return tool ? `[ERR] tool failed ${tool}` : '[ERR] tool failed';
+        return { kind: 'ERR', message: tool ? `tool failed ${tool}` : 'tool failed' };
       }
-      return tool ? `[DONE] tool completed ${tool}` : '[DONE] tool completed';
+      return { kind: 'DONE', message: tool ? `tool completed ${tool}` : 'tool completed' };
     }
     return null;
   }
@@ -2312,10 +2357,10 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   if (safeMethod.endsWith('/delta')) {
     const delta = extractString(params, 'delta');
     if (delta && /tool_use_error|sibling tool call errored/i.test(delta)) {
-      return '[ERR] tool call failed';
+      return { kind: 'ERR', message: 'tool call failed' };
     }
     const normalized = delta ? normalizeStreamingText(delta) : null;
-    return normalized && isMeaningfulLogFragment(normalized) ? `[INFO] ${normalized}` : null;
+    return normalized && isMeaningfulLogFragment(normalized) ? { kind: 'INFO', message: normalized } : null;
   }
 
   if (safeMethod.endsWith('/tool_use')) {
@@ -2326,21 +2371,21 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     }
     if (name === 'Bash') {
       const command = extractString(input, 'command');
-      return command ? `[BASH] ${truncateMessage(command, 120)}` : '[BASH] (command)';
+      return { kind: 'BASH', message: command?.trim() || '(command)' };
     }
     if (name === 'Read') {
       const filePath = extractString(input, 'file_path');
       const limit = extractNumber(input, 'limit');
       if (!filePath) {
-        return '[READ] (file)';
+        return { kind: 'READ', message: '(file)' };
       }
-      return limit !== null ? `[READ] ${filePath} (${limit} lines)` : `[READ] ${filePath}`;
+      return { kind: 'READ', message: limit !== null ? `${filePath} (${limit} lines)` : filePath };
     }
     if (name === 'Write' || name === 'Edit') {
       const filePath = extractString(input, 'file_path');
-      return filePath ? `[WRITE] ${filePath}` : '[WRITE] (file)';
+      return { kind: 'WRITE', message: filePath ?? '(file)' };
     }
-    return `[TOOL] ${name}`;
+    return { kind: 'TOOL', message: name };
   }
 
   if (safeMethod.endsWith('/tool_result')) {
@@ -2350,7 +2395,7 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
     if (!normalized || !isMeaningfulLogFragment(normalized)) {
       return null;
     }
-    return `[INFO] ${normalized}`;
+    return { kind: 'INFO', message: normalized };
   }
 
   if (safeMethod.endsWith('/result')) {
@@ -2360,49 +2405,128 @@ export function formatAgentEventDetail(method: string, params: unknown): string 
   return null;
 }
 
-function extractFileChangeSummary(item: Record<string, unknown> | null): { path: string; added: number; removed: number } | null {
-  if (!item) {
-    return null;
+function describeFileChangeLogDetail(
+  item: Record<string, unknown> | null,
+  kind: 'WRITE' | 'DONE'
+): AgentEventLogDetail {
+  const previews = extractFileChangePreviews(item);
+  if (previews.length === 0) {
+    const filePath = extractFirstFileChangePath(item);
+    return {
+      kind,
+      message: filePath
+        ? (kind === 'DONE' ? `write ${filePath}` : filePath)
+        : (kind === 'DONE' ? 'write completed' : '(file)'),
+    };
   }
-  const changes = item.changes;
-  if (!Array.isArray(changes) || changes.length === 0) {
-    return null;
+
+  const totals = previews.reduce((acc, preview) => ({
+    added: acc.added + preview.added,
+    removed: acc.removed + preview.removed,
+  }), { added: 0, removed: 0 });
+
+  if (previews.length === 1) {
+    const preview = previews[0];
+    return {
+      kind,
+      message: kind === 'DONE'
+        ? `write ${preview.path} (+${preview.added} -${preview.removed})`
+        : `${preview.path} (+${preview.added} -${preview.removed})`,
+      detailLines: kind === 'DONE' ? preview.diffLines : undefined,
+    };
   }
-  const first = changes[0];
-  if (!first || typeof first !== 'object' || Array.isArray(first)) {
-    return null;
-  }
-  const firstRecord = first as Record<string, unknown>;
-  const path = typeof firstRecord.path === 'string' ? firstRecord.path : null;
-  if (!path) {
-    return null;
-  }
-  const diff = typeof firstRecord.diff === 'string' ? firstRecord.diff : '';
-  const parsed = parseUnifiedDiffSummary(diff);
+
+  const detailLines = buildMultiFileChangeDetailLines(previews);
   return {
-    path,
-    added: parsed.added,
-    removed: parsed.removed,
+    kind,
+    message: kind === 'DONE'
+      ? `write ${previews.length} files (+${totals.added} -${totals.removed})`
+      : `${previews.length} files (+${totals.added} -${totals.removed})`,
+    detailLines: kind === 'DONE' ? detailLines : undefined,
   };
 }
 
-function parseUnifiedDiffSummary(diff: string): { added: number; removed: number } {
+interface FileChangePreview {
+  path: string;
+  added: number;
+  removed: number;
+  diffLines: string[];
+}
+
+function extractFileChangePreviews(item: Record<string, unknown> | null): FileChangePreview[] {
+  if (!item) {
+    return [];
+  }
+  const changes = item.changes;
+  if (!Array.isArray(changes) || changes.length === 0) {
+    return [];
+  }
+
+  const previews: FileChangePreview[] = [];
+  for (const rawChange of changes) {
+    if (!rawChange || typeof rawChange !== 'object' || Array.isArray(rawChange)) {
+      continue;
+    }
+    const change = rawChange as Record<string, unknown>;
+    const path = typeof change.path === 'string' ? change.path : '(unknown)';
+    const diff = typeof change.diff === 'string' ? change.diff : '';
+    const parsed = parseUnifiedDiffPreview(diff);
+    previews.push({
+      path,
+      added: parsed.added,
+      removed: parsed.removed,
+      diffLines: parsed.lines,
+    });
+  }
+  return previews;
+}
+
+function buildMultiFileChangeDetailLines(previews: FileChangePreview[]): string[] {
+  const lines: string[] = [];
+  const maxFiles = 2;
+  for (const preview of previews.slice(0, maxFiles)) {
+    lines.push(`${preview.path} (+${preview.added} -${preview.removed})`);
+    lines.push(...preview.diffLines);
+  }
+  if (previews.length > maxFiles) {
+    lines.push(`... +${previews.length - maxFiles} more files`);
+  }
+  return lines;
+}
+
+function parseUnifiedDiffPreview(diff: string): { added: number; removed: number; lines: string[] } {
   let added = 0;
   let removed = 0;
+  const lines: string[] = [];
+  let omitted = 0;
+
   for (const rawLine of diff.split('\n')) {
     const line = rawLine.replace(/\r$/, '');
-    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@')) {
+    if (line.startsWith('+++') || line.startsWith('---')) {
       continue;
     }
     if (line.startsWith('+')) {
       added += 1;
-      continue;
-    }
-    if (line.startsWith('-')) {
+    } else if (line.startsWith('-')) {
       removed += 1;
     }
+
+    if (!(line.startsWith('@@') || line.startsWith('+') || line.startsWith('-') || line.startsWith(' ') || line.startsWith('\\'))) {
+      continue;
+    }
+
+    if (lines.length < 12) {
+      lines.push(truncateMessage(line, 220));
+    } else {
+      omitted += 1;
+    }
   }
-  return { added, removed };
+
+  if (omitted > 0) {
+    lines.push(`... +${omitted} more diff lines`);
+  }
+
+  return { added, removed, lines };
 }
 
 function extractString(value: unknown, key: string): string | null {

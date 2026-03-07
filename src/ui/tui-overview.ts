@@ -1,5 +1,6 @@
 import type { TUIView, MissionControlState, ViewPort } from './tui-views.js';
 import { splitColumns, drawBox } from './tui-layout.js';
+import { selectRecentProgressEntries } from './tui-progress.js';
 
 function statusIcon(status: string): string {
   switch (status) {
@@ -67,8 +68,7 @@ export const overviewView: TUIView = {
     }).slice(-maxFeatureRows);
 
     const maxProgressRows = Math.max(3, Math.min(7, viewport.height - 17));
-    const progressLines = state.progressLog
-      .slice(-maxProgressRows)
+    const progressLines = selectRecentProgressEntries(state.progressLog, maxProgressRows)
       .map((entry) => `${entry.timestamp.slice(11, 19)} ${entry.message}`);
     if (progressLines.length === 0) {
       progressLines.push(state.activity || 'No events yet');

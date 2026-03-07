@@ -883,22 +883,6 @@ function formatAppServerEventLine(method: string, params: unknown): string | nul
     return null;
   }
 
-  if (method === 'thread/tokenUsage/updated') {
-    const usage = toRecord(data.tokenUsage);
-    if (!usage) {
-      return null;
-    }
-    const input = readNumberAny(usage, ['inputTokens', 'input_tokens']);
-    const output = readNumberAny(usage, ['outputTokens', 'output_tokens']);
-    const total = readNumberAny(usage, ['totalTokens', 'total_tokens']);
-    const parts = [
-      typeof input === 'number' ? `in=${input}` : null,
-      typeof output === 'number' ? `out=${output}` : null,
-      typeof total === 'number' ? `total=${total}` : null,
-    ].filter((v): v is string => v !== null);
-    return parts.length > 0 ? `usage ${parts.join(' ')}` : null;
-  }
-
   if (method === 'item/commandExecution/requestApproval') {
     return 'approval requested (command)';
   }

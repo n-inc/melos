@@ -76,13 +76,6 @@ function createState(): MissionControlState {
       validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
       research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
-    tokenUsage: {
-      total: { input: 12200, output: 7900, cached: 2450, cost: 0.23 },
-      byRole: {
-        planner: { model: 'opus', input: 4200, output: 2100, cached: 800, cost: 0.12 },
-        worker: { model: 'gpt-5.4', input: 6800, output: 5200, cached: 1200, cost: 0.08 },
-      },
-    },
   };
 }
 
@@ -153,6 +146,34 @@ describe('ui/tui views', () => {
     expect(lines).toContain('Active Feature: m2-f3 Auth middleware');
     expect(lines).toContain('Model: -');
     expect(lines).toContain('Model Source: default');
+  });
+
+  it('hides repetitive manager heartbeat lines in overview when richer events exist', () => {
+    const state = createState();
+    state.progressLog = [
+      { timestamp: '2026-02-28T12:00:00.000Z', message: 'Manager started feature briefing for m1-f1' },
+      { timestamp: '2026-02-28T12:00:05.000Z', message: 'Manager is preparing briefing for m1-f1 (5s elapsed)' },
+      { timestamp: '2026-02-28T12:00:07.000Z', message: '[READ] /repo/TASK.json' },
+      { timestamp: '2026-02-28T12:00:10.000Z', message: 'Manager is preparing briefing for m1-f1 (10s elapsed)' },
+    ];
+
+    const lines = overviewView.render({ width: 100, height: 24 }, state).join('\n');
+
+    expect(lines).toContain('[READ] /repo/TASK.json');
+    expect(lines).not.toContain('10s elapsed');
+  });
+
+  it('shows a single heartbeat in features view when no richer event exists yet', () => {
+    const state = createState();
+    state.progressLog = [
+      { timestamp: '2026-02-28T12:00:05.000Z', message: 'Manager is preparing briefing for m1-f1 (5s elapsed)' },
+      { timestamp: '2026-02-28T12:00:10.000Z', message: 'Manager is preparing briefing for m1-f1 (10s elapsed)' },
+    ];
+
+    const lines = featuresView.render({ width: 140, height: 24 }, state).join('\n');
+
+    expect(lines).toContain('12:00:10 Manager is preparing briefing for m1-f1');
+    expect(lines).not.toContain('5s elapsed');
   });
 
   it('renders workers view table and logs', () => {

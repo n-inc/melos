@@ -1,7 +1,6 @@
 import type { MissionPlan } from './mission.js';
 import type { MissionEvent } from './events.js';
 import type { GitStrategyState } from './git-strategy.js';
-import type { TokenUsageSnapshot } from './token-tracker.js';
 import { normalizeLogMessage, type LogActor, type UnifiedLogEntry } from './log-entry.js';
 
 export interface WorkerRunState {
@@ -27,7 +26,6 @@ export interface MissionKernelState {
   currentActor: LogActor;
   activeWorkerRunId: number | null;
   gitStrategy: GitStrategyState | null;
-  tokenUsage: TokenUsageSnapshot;
 }
 
 export function createInitialKernelState(): MissionKernelState {
@@ -41,10 +39,6 @@ export function createInitialKernelState(): MissionKernelState {
     currentActor: 'idle',
     activeWorkerRunId: null,
     gitStrategy: null,
-    tokenUsage: {
-      total: { input: 0, output: 0, cached: 0, cost: 0 },
-      byRole: {},
-    },
   };
 }
 
@@ -219,7 +213,6 @@ export function reduceMissionEvent(
     case 'branch_abandoned':
     case 'validation_started':
     case 'validation_result':
-    case 'token_usage':
     case 'mission_completed':
     case 'mission_failed':
     case 'mission_interrupted':

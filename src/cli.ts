@@ -412,7 +412,7 @@ export async function executeWithOptions(
   let runFailureMessage: string | null = null;
   let runCompletionMessage: string | null = null;
   const signalController = createSignalController({
-    abort: () => orchestrator.abort(),
+    abort: (signal) => orchestrator.abort(signal),
     stopUI: () => runtimeUI.stop(),
     setExitCode: (code) => {
       process.exitCode = code;

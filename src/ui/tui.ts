@@ -812,11 +812,10 @@ function buildFrame(
   const width = Math.max(options.width, 60);
   const height = Math.max(options.height, 20);
   const contentHeight = height - 4;
-  const usage = state.tokenUsage.total;
 
   const header = composeTwoSidedLine(
     `● Mission Control  ${state.missionTitle}`,
-    `Time ${state.elapsedLabel}  Input ${usage.input}  Cached ${usage.cached}  Output ${usage.output}`,
+    `Time ${state.elapsedLabel}`,
     width
   );
   const actorSummary = composeActorSummary(state);
@@ -912,7 +911,7 @@ function buildInitializingFrame(
 
   const header = composeTwoSidedLine(
     `● Mission Control  ${session.missionTitle}`,
-    'Time 0m 00s  Input 0  Cached 0  Output 0',
+    'Time 0m 00s',
     width
   );
   const status = truncateDisplay(`● ${colorizeState('INITIALIZING', options.useColor)} [░░░░░░░░░░] 0/0 (0%)`, width);

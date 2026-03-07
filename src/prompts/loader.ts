@@ -41,6 +41,10 @@ function getPromptsDir(): string {
   return join(__dirname, '..', '..', 'prompts');
 }
 
+export function getDefaultPromptsDir(): string {
+  return getPromptsDir();
+}
+
 /**
  * プロンプトタイプからファイル名を取得
  */

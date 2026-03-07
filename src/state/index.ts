@@ -101,13 +101,6 @@ export {
 } from './watchdog.js';
 
 export {
-  type TokenUsage,
-  type TokenUsageEntry,
-  type TokenUsageSnapshot,
-  TokenTracker,
-} from './token-tracker.js';
-
-export {
   type ExecutionMode,
   type ProgressHeader,
   type IterationEntry,

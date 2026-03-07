@@ -82,10 +82,6 @@ describe('cli headless operations', () => {
           currentActor: 'manager',
           activeWorkerRunId: null,
           gitStrategy: null,
-          tokenUsage: {
-            total: { input: 0, output: 0, cached: 0, cost: 0 },
-            byRole: {},
-          },
         },
       },
     });

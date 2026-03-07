@@ -83,13 +83,6 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
       validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
       research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
-    tokenUsage: {
-      total: { input: 1200, output: 900, cached: 300, cost: 0.02 },
-      byRole: {
-        planner: { model: 'opus', input: 400, output: 200, cached: 100, cost: 0.01 },
-        worker: { model: 'gpt-5.4', input: 800, output: 700, cached: 200, cost: 0.01 },
-      },
-    },
   };
   return {
     ...base,

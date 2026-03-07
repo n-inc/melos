@@ -11,7 +11,6 @@ export interface ResolvedModel {
   effort: string;
   displayLabel: string;
   displayModel: string;
-  pricingKey: string;
   isLatestAlias: boolean;
 }
 
@@ -20,7 +19,6 @@ interface ModelDefinition {
   engine: ModelEngine;
   effort: string;
   displayLabel: string;
-  pricingKey: string;
   isLatestAlias: boolean;
 }
 
@@ -30,7 +28,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'codex',
     effort: 'xhigh',
     displayLabel: 'gpt-5.4',
-    pricingKey: 'gpt-5.4',
     isLatestAlias: true,
   },
   [CLAUDE_LATEST_ALIAS]: {
@@ -38,7 +35,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'claude',
     effort: 'max',
     displayLabel: 'claude-opus-4.6',
-    pricingKey: 'opus',
     isLatestAlias: true,
   },
   'gpt-5.4': {
@@ -46,7 +42,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'codex',
     effort: 'xhigh',
     displayLabel: 'gpt-5.4',
-    pricingKey: 'gpt-5.4',
     isLatestAlias: false,
   },
   'gpt-5.4-codex': {
@@ -54,7 +49,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'codex',
     effort: 'xhigh',
     displayLabel: 'gpt-5.4-codex',
-    pricingKey: 'gpt-5.4',
     isLatestAlias: false,
   },
   opus: {
@@ -62,7 +56,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'claude',
     effort: 'max',
     displayLabel: 'opus',
-    pricingKey: 'opus',
     isLatestAlias: false,
   },
   'claude-opus-4.6': {
@@ -70,7 +63,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'claude',
     effort: 'max',
     displayLabel: 'claude-opus-4.6',
-    pricingKey: 'opus',
     isLatestAlias: false,
   },
   sonnet: {
@@ -78,7 +70,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'claude',
     effort: 'high',
     displayLabel: 'sonnet',
-    pricingKey: 'sonnet',
     isLatestAlias: false,
   },
   'claude-sonnet-4.5': {
@@ -86,7 +77,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'claude',
     effort: 'high',
     displayLabel: 'claude-sonnet-4.5',
-    pricingKey: 'sonnet',
     isLatestAlias: false,
   },
   haiku: {
@@ -94,7 +84,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'claude',
     effort: 'low',
     displayLabel: 'haiku',
-    pricingKey: 'haiku',
     isLatestAlias: false,
   },
   'claude-haiku-4.5': {
@@ -102,7 +91,6 @@ const MODEL_DEFINITIONS: Record<string, ModelDefinition> = {
     engine: 'claude',
     effort: 'low',
     displayLabel: 'claude-haiku-4.5',
-    pricingKey: 'haiku',
     isLatestAlias: false,
   },
 };
@@ -143,7 +131,6 @@ export function resolveModel(
       displayModel: definition.isLatestAlias
         ? `${definition.displayLabel} [Latest]`
         : definition.displayLabel,
-      pricingKey: definition.pricingKey,
       isLatestAlias: definition.isLatestAlias,
     };
   }
@@ -157,7 +144,6 @@ export function resolveModel(
     effort: inferEffortForUnknownModel(normalized, engine),
     displayLabel: normalized,
     displayModel: normalized,
-    pricingKey: inferPricingKeyForUnknownModel(normalized, engine),
     isLatestAlias: false,
   };
 }
@@ -221,17 +207,4 @@ function inferEffortForUnknownModel(normalized: string, engine: ModelEngine): st
     return 'max';
   }
   return 'medium';
-}
-
-function inferPricingKeyForUnknownModel(normalized: string, engine: ModelEngine): string {
-  if (engine === 'codex') {
-    return 'gpt-5.4';
-  }
-  if (normalized.includes('haiku')) {
-    return 'haiku';
-  }
-  if (normalized.includes('sonnet')) {
-    return 'sonnet';
-  }
-  return 'opus';
 }

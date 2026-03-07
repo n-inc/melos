@@ -4,8 +4,6 @@ describe('orchestrator streaming event formatting', () => {
   it('filters noisy codex internal events', () => {
     expect(formatAgentEventDetail('codex/event/agent_message_content_delta', { delta: '{' })).toBeNull();
     expect(formatAgentEventDetail('item/agentMessage/delta', { delta: 'a' })).toBeNull();
-    expect(formatAgentEventDetail('codex/event/token_count', { total: 10 })).toBeNull();
-    expect(formatAgentEventDetail('thread/tokenUsage/updated', { input: 1 })).toBeNull();
     expect(formatAgentEventDetail('codex/event/turn/completed', {})).toBeNull();
   });
 

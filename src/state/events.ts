@@ -8,7 +8,7 @@ export type MissionEventType =
   | 'iteration_started' | 'iteration_completed'
   | 'manager_started' | 'manager_decision' | 'manager_error'
   | 'worker_started' | 'worker_checkpoint' | 'worker_finished' | 'worker_error'
-  | 'command_executed' | 'file_changed' | 'token_usage'
+  | 'command_executed' | 'file_changed'
   | 'validation_started' | 'validation_result'
   | 'branch_created' | 'branch_merged' | 'branch_abandoned' | 'commit_created'
   | 'user_steer' | 'user_answer' | 'escalation_created' | 'escalation_answered'

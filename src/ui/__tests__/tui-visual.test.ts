@@ -75,13 +75,6 @@ function createState(): MissionControlState {
       validator: { role: 'validator', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
       research: { role: 'research', engine: 'claude', model: 'opus', effort: 'max' },
     },
-    tokenUsage: {
-      total: { input: 12000, output: 8800, cached: 2500, cost: 0.23 },
-      byRole: {
-        planner: { model: 'opus', input: 4200, output: 2100, cached: 800, cost: 0.12 },
-        worker: { model: 'gpt-5.4', input: 6800, output: 5200, cached: 1200, cost: 0.08 },
-      },
-    },
   };
 }
 

@@ -227,7 +227,6 @@ export class WorkerAgent implements Agent {
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
-        tokenUsage: { input: 0, output: 0, cached: 0 },
       }, null, 2),
       '',
       'Return only one fenced json block.'
@@ -307,9 +306,6 @@ export class WorkerAgent implements Agent {
         }
         if (typeof parsed.requestsHelp === 'boolean') {
           report.requestsHelp = parsed.requestsHelp;
-        }
-        if (parsed.tokenUsage) {
-          report.tokenUsage = parsed.tokenUsage;
         }
       } catch {
         // fallback to heuristic

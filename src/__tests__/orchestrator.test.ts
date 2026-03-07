@@ -7,6 +7,7 @@ import { jest } from '@jest/globals';
 import { Orchestrator } from '../orchestrator.js';
 import { ManagerAgent, MissionPlanningError } from '../agents/manager.js';
 import { WorkerAgent } from '../agents/worker.js';
+import { getDefaultPromptsDir } from '../prompts/index.js';
 import { createMissionPlan } from '../state/mission.js';
 import type { MissionControlState } from '../ui/tui-views.js';
 
@@ -76,11 +77,6 @@ describe('Orchestrator v0.8', () => {
         discoveredFeatures: [],
         learnings: [],
         requestsHelp: false,
-        tokenUsage: {
-          input: 100,
-          output: 50,
-          cached: 10,
-        },
         createdAt: new Date().toISOString(),
       },
     });
@@ -101,6 +97,34 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.success).toBe(true);
     expect(result.reason).toBe('completed');
+  });
+
+  it('uses bundled prompts directory instead of project cwd prompts', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-bundled-prompts-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: join(cwd, 'PRD.md'),
+      missionFile: join(cwd, 'TASK.json'),
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const expectedPromptsDir = getDefaultPromptsDir();
+    expect((orchestrator as unknown as { manager: { config: { promptsDir: string } } }).manager.config.promptsDir)
+      .toBe(expectedPromptsDir);
+    const workerConfig = (orchestrator as unknown as {
+      worker: { config: { promptsDir: string; reasoningEffort: string } };
+    }).worker.config;
+    expect(workerConfig.promptsDir)
+      .toBe(expectedPromptsDir);
+    expect(workerConfig.reasoningEffort).toBe('xhigh');
   });
 
   it('keeps codex resume thread at mission scope across multiple features', async () => {
@@ -854,10 +878,6 @@ describe('Orchestrator v0.8', () => {
           progressLog: [{ timestamp: '2026-01-01T00:00:01.000Z', message: 'snapshot base' }],
           activeWorkerRunId: null,
           gitStrategy: null,
-          tokenUsage: {
-            total: { input: 0, output: 0, cached: 0, cost: 0 },
-            byRole: {},
-          },
         },
       },
     }, null, 2), 'utf-8');
@@ -952,10 +972,6 @@ describe('Orchestrator v0.8', () => {
           progressLog: [],
           activeWorkerRunId: null,
           gitStrategy: null,
-          tokenUsage: {
-            total: { input: 0, output: 0, cached: 0, cost: 0 },
-            byRole: {},
-          },
         },
       },
     }, null, 2), 'utf-8');
