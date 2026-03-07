@@ -3282,7 +3282,6 @@ function buildTaskPlanningLines(): string[] {
     '',
     'TASK.json has not been created yet.',
     'Manager is reading PRD.md and generating milestones/features/validation contracts.',
-    'No default placeholder task is shown during planning.',
     'TASK.json preview will appear here once the mission plan is generated.',
   ];
 }
