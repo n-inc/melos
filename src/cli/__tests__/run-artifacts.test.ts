@@ -2,7 +2,6 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { executeWithOptions } from '../../cli.js';
 import { createMissionPlan, loadMissionPlan, saveMissionPlan } from '../../state/mission.js';
 
@@ -58,17 +57,29 @@ describe('cli run artifacts', () => {
     });
     await saveMissionPlan(taskPath, mission);
 
-    await executeWithOptions(
-      {
-        plain: true,
-        dryRun: true,
-        autoApprove: true,
-      },
-      { resume: false }
-    );
+    const stderrOutput: string[] = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrOutput.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      await executeWithOptions(
+        {
+          plain: true,
+          dryRun: true,
+          autoApprove: true,
+        },
+        { resume: false }
+      );
+    } finally {
+      process.stderr.write = originalWrite;
+    }
 
     const savedMission = await loadMissionPlan(taskPath);
     expect(savedMission.state).toBe('completed');
+    expect(stderrOutput.join('')).toContain('ミッションが完了しました。最終状態は state=completed です');
 
     const handoffPath = join(rootDir, 'HANDOFF.md');
     expect(existsSync(handoffPath)).toBe(true);
@@ -99,5 +110,69 @@ describe('cli run artifacts', () => {
 
     const runPath = join(melosDir, 'RUN.json');
     expect(existsSync(runPath)).toBe(false);
+  });
+
+  it('prints the final state after auto-resuming an aborted mission', async () => {
+    const prdPath = join(rootDir, 'PRD.md');
+    const taskPath = join(rootDir, 'TASK.json');
+    writeFileSync(prdPath, '# Auto resume mission\n', 'utf-8');
+
+    const mission = createMissionPlan({
+      missionId: 'auto-resume-validation',
+      goal: 'Auto resume validation mission',
+      constraints: ['No backward compatibility layer'],
+      successCriteria: ['Mission completed'],
+      state: 'aborted',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Completed scope',
+          description: 'already done',
+          status: 'done',
+          order: 1,
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'done',
+              status: 'done',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+    });
+    await saveMissionPlan(taskPath, mission);
+
+    const stderrOutput: string[] = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrOutput.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      await executeWithOptions(
+        {
+          plain: true,
+          dryRun: true,
+          autoApprove: true,
+        },
+        { resume: false }
+      );
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    const savedMission = await loadMissionPlan(taskPath);
+    expect(savedMission.state).toBe('completed');
+
+    const combinedOutput = stderrOutput.join('');
+    expect(combinedOutput).toContain('TASK.json の状態 aborted を検出したため、自動で再開モードに切り替えます。');
+    expect(combinedOutput).toContain('起動時点では state=aborted でしたが、自動再開後の最終状態は state=completed です');
   });
 });

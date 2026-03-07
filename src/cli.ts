@@ -23,6 +23,9 @@ import {
 import { loadSnapshot } from './state/snapshot.js';
 import type { MissionEvent } from './state/events.js';
 import type { MissionKernelState } from './state/event-reducer.js';
+import { normalizeLogMessage } from './state/log-entry.js';
+import { formatLogStreamLines } from './ui/log-stream.js';
+import { canUseColor } from './ui/tui-ansi.js';
 import { createRuntimeUI, resolveRuntimeUIMode, type SessionInfo, type TerminalCapabilities } from './ui/tui.js';
 import { CODEX_LATEST_ALIAS, normalizeModelName } from './models/registry.js';
 
@@ -59,7 +62,7 @@ const LOG_ACTORS = ['planning', 'manager', 'worker', 'validator', 'system', 'all
 type LogActorFilter = typeof LOG_ACTORS[number];
 
 interface SignalControllerHooks {
-  abort: () => void;
+  abort: (signal: NodeJS.Signals) => void;
   stopUI: () => void;
   setExitCode: (code: number) => void;
   exitNow: (code: number) => void;
@@ -103,7 +106,7 @@ export function createSignalController(hooks: SignalControllerHooks): SignalCont
     signalExitCode = nextCode;
     hooks.setExitCode(signalExitCode);
     hooks.write('\n[melos] 中断しています...（もう一度 Ctrl+C で強制終了）\n');
-    hooks.abort();
+    hooks.abort(signal);
 
     forceExitTimer = setTimeout(() => {
       forceExit(signalExitCode ?? nextCode);
@@ -216,9 +219,12 @@ export function createProgram(): Command {
           if (logs.entries.length === 0) {
             console.log('(no logs)');
           } else {
-            for (const entry of logs.entries) {
-              console.log(`${entry.seq} ${entry.timestamp} [${entry.actor.toUpperCase()}][${entry.kind}] ${entry.message}`);
-            }
+            const lines = formatLogStreamLines(logs.entries, {
+              useColor: canUseColor(process.stdout.isTTY === true),
+              showSeq: true,
+              showActor: true,
+            });
+            console.log(lines.join('\n'));
           }
           return;
         }
@@ -356,7 +362,11 @@ export async function executeWithOptions(
     resume: effectiveResume,
   });
   if (autoResumeState) {
-    preflightMessages.unshift(`TASK.json の状態 ${autoResumeState} を検出したため、自動で再開モードに切り替えます。`);
+    preflightMessages.unshift([
+      `TASK.json の状態 ${autoResumeState} を検出したため、自動で再開モードに切り替えます。`,
+      '前回のミッションを継続します。状態確認は別端末で `melos status --plain` / `melos logs --plain` を使ってください。',
+      '新規ミッションを開始したい場合は、既存の TASK.json を退避または更新してから再実行してください。',
+    ].join('\n'));
   }
   for (const message of preflightMessages) {
     process.stderr.write(`[melos] ${message}\n`);
@@ -400,8 +410,9 @@ export async function executeWithOptions(
   const orchestrator = new Orchestrator(orchestratorConfig);
 
   let runFailureMessage: string | null = null;
+  let runCompletionMessage: string | null = null;
   const signalController = createSignalController({
-    abort: () => orchestrator.abort(),
+    abort: (signal) => orchestrator.abort(signal),
     stopUI: () => runtimeUI.stop(),
     setExitCode: (code) => {
       process.exitCode = code;
@@ -451,12 +462,17 @@ export async function executeWithOptions(
     if (signalController.getExitCode() !== null) {
       return;
     }
-
     if (!result.success) {
       const detail = result.error ? ` (${result.error})` : '';
       runFailureMessage = `実行失敗: ${result.reason}${detail}`;
       return;
     }
+
+    const status = await readMissionStatus(cwd);
+    runCompletionMessage = buildRunCompletionMessage(status, {
+      initialState: autoResumeState,
+      uiMode,
+    });
   } finally {
     signalController.clear();
     runtimeUI.stop();
@@ -465,10 +481,41 @@ export async function executeWithOptions(
     process.removeListener('SIGTERM', handleSignal);
   }
 
+  if (runCompletionMessage) {
+    process.stderr.write(`[melos] ${runCompletionMessage}\n`);
+  }
   if (runFailureMessage) {
     console.error(runFailureMessage);
     process.exitCode = 1;
   }
+}
+
+function buildRunCompletionMessage(
+  status: {
+    mission: {
+      state: MissionState | 'unknown' | 'not_initialized';
+      progress: { label: string };
+    };
+    lastEvent: { seq: number; type: string } | null;
+  },
+  options: {
+    initialState: MissionState | null;
+    uiMode: 'tui' | 'plain' | 'headless';
+  }
+): string {
+  const details = [
+    `progress=${status.mission.progress.label}`,
+    status.lastEvent ? `lastEvent=${status.lastEvent.seq}:${status.lastEvent.type}` : null,
+  ].filter((value): value is string => Boolean(value));
+  const detailSuffix = details.length > 0 ? ` (${details.join(', ')})` : '';
+  const completionDetail = options.uiMode === 'tui'
+    ? ' TUI を終了しました。'
+    : '';
+
+  if (options.initialState) {
+    return `起動時点では state=${options.initialState} でしたが、自動再開後の最終状態は state=${status.mission.state} です${detailSuffix}。${completionDetail}`;
+  }
+  return `ミッションが完了しました。最終状態は state=${status.mission.state} です${detailSuffix}。${completionDetail}`;
 }
 
 export interface MissionStatusPayload {
@@ -649,6 +696,7 @@ export interface MissionLogRecord {
   actor: Exclude<LogActorFilter, 'all'>;
   kind: string;
   message: string;
+  detailLines?: string[];
   eventType: string;
 }
 
@@ -840,7 +888,7 @@ function deriveLogActor(event: MissionEvent): Exclude<LogActorFilter, 'all'> {
 
 function normalizeMissionLogRecord(event: MissionEvent): MissionLogRecord {
   const actor = deriveLogActor(event);
-  const { kind, message } = normalizeKindAndMessage(event);
+  const { kind, message, detailLines } = normalizeKindAndMessage(event);
   return {
     seq: event.seq,
     timestamp: event.timestamp,
@@ -848,20 +896,15 @@ function normalizeMissionLogRecord(event: MissionEvent): MissionLogRecord {
     actor,
     kind,
     message,
+    detailLines,
     eventType: event.type,
   };
 }
 
-function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: string } {
-  const payloadMessage = typeof event.payload?.message === 'string' ? event.payload.message.trim() : '';
-  if (payloadMessage.length > 0) {
-    const tagged = payloadMessage.match(/^\[([A-Z0-9_]+)\]\s*(.*)$/);
-    if (tagged) {
-      return {
-        kind: tagged[1],
-        message: tagged[2]?.trim() || tagged[1],
-      };
-    }
+function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: string; detailLines?: string[] } {
+  const payloadMessage = typeof event.payload?.message === 'string' ? event.payload.message : '';
+  if (payloadMessage.trim().length > 0) {
+    return normalizeLogMessage(payloadMessage, resolveDefaultKind(event));
   }
 
   if (event.type === 'command_executed') {
@@ -911,6 +954,31 @@ function normalizeKindAndMessage(event: MissionEvent): { kind: string; message: 
   };
 }
 
+function resolveDefaultKind(event: MissionEvent): string {
+  if (event.type === 'command_executed') {
+    return 'BASH';
+  }
+  if (event.type === 'worker_started') {
+    return 'STARTED';
+  }
+  if (event.type === 'worker_finished') {
+    return 'DONE';
+  }
+  if (event.type === 'worker_error' || event.type === 'manager_error' || event.type === 'error' || event.type === 'mission_failed') {
+    return 'ERR';
+  }
+  if (event.type === 'validation_started' || event.type === 'validation_result') {
+    return 'VALIDATE';
+  }
+  if (event.type === 'plan_created' || event.type === 'plan_updated') {
+    return 'PLAN';
+  }
+  if (event.type === 'manager_decision') {
+    return 'INFO';
+  }
+  return event.type.toUpperCase();
+}
+
 interface RunPreflightInput {
   cwd: string;
   melosDir: string;
@@ -953,7 +1021,7 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
   }
   throw new Error([
     `TASK.json は終了状態 (${missionPlan.state}) のため、そのままでは新規ミッションを開始しません。`,
-    'TASK.json を手動で更新してから再実行してください。',
+    buildTerminalStateGuidance(missionPlan.state),
   ].join('\n'));
 }
 
@@ -966,6 +1034,28 @@ export async function detectResumableMissionState(missionFilePath: string): Prom
     return AUTO_RESUME_ON_RUN_STATES.has(missionPlan.state) ? missionPlan.state : null;
   } catch {
     return null;
+  }
+}
+
+function buildTerminalStateGuidance(state: MissionState): string {
+  switch (state) {
+    case 'completed':
+      return [
+        '前回のミッションは完了済みです。結果確認は `melos status --plain` / `melos logs --plain` を使ってください。',
+        '新規ミッションを開始するには、既存の TASK.json を退避または更新し、必要なら PRD.md も見直してから再実行してください。',
+      ].join('\n');
+    case 'failed':
+      return [
+        '前回のミッションは失敗状態で終了しています。詳細確認は `melos status --plain` / `melos logs --plain` を使ってください。',
+        '再開ではなく新規ミッションとして始める場合は、TASK.json を退避または更新してから再実行してください。',
+      ].join('\n');
+    case 'aborted':
+      return [
+        '前回のミッションは中断されています。通常は `melos resume` で再開できます。',
+        '新規ミッションを開始する場合は、TASK.json を退避または更新してから再実行してください。',
+      ].join('\n');
+    default:
+      return 'TASK.json を手動で更新してから再実行してください。';
   }
 }
 

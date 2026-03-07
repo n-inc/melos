@@ -31,6 +31,7 @@ describe('createSignalController', () => {
 
     expect(controller.getExitCode()).toBe(130);
     expect(abort).toHaveBeenCalledTimes(1);
+    expect(abort).toHaveBeenCalledWith('SIGINT');
     expect(setExitCode).toHaveBeenCalledWith(130);
     expect(stopUI).not.toHaveBeenCalled();
     expect(exitNow).not.toHaveBeenCalled();
@@ -56,6 +57,7 @@ describe('createSignalController', () => {
     controller.handle('SIGINT');
 
     expect(abort).toHaveBeenCalledTimes(1);
+    expect(abort).toHaveBeenCalledWith('SIGINT');
     expect(stopUI).toHaveBeenCalledTimes(1);
     expect(exitNow).toHaveBeenCalledWith(130);
   });

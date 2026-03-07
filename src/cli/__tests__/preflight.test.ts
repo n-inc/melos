@@ -45,7 +45,7 @@ describe('cli preflight', () => {
       missionFilePath,
       prdFilePath: join(cwd, 'PRD.md'),
       resume: false,
-    })).rejects.toThrow(/終了状態 \(completed\)/);
+    })).rejects.toThrow(/終了状態 \(completed\).*melos status --plain.*melos logs --plain/s);
     expect(existsSync(missionFilePath)).toBe(true);
   });
 
