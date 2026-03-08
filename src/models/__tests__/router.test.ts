@@ -21,10 +21,10 @@ describe('models/router', () => {
     expect(assignments.planner.engine).toBe('claude');
     expect(assignments.worker.engine).toBe('codex');
     expect(assignments.planner.effort).toBe('max');
-    expect(assignments.worker.effort).toBe('xhigh');
+    expect(assignments.worker.effort).toBe('high');
     expect(router.resolveEngine('gpt-5.4')).toBe('codex');
     expect(router.resolveEffort('opus')).toBe('max');
-    expect(router.resolveEffort('gpt-5.4')).toBe('xhigh');
+    expect(router.resolveEffort('gpt-5.4')).toBe('high');
   });
 
   it('escalates model according to chain', () => {

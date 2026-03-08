@@ -428,7 +428,7 @@ export async function executeWithOptions(
     execution: fileConfig.execution,
     verification: fileConfig.verification,
     managerEffort: options.effort ?? 'high',
-    workerReasoningEffort: options.reasoningEffort ?? 'xhigh',
+    workerReasoningEffort: options.reasoningEffort ?? 'high',
     interactivePlanning: options.interactive === true,
     autoApprove: options.autoApprove === true,
     dryRun: options.dryRun === true,

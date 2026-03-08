@@ -1883,7 +1883,7 @@ describe('Orchestrator v0.8', () => {
     }).worker.config;
     expect(workerConfig.promptsDir)
       .toBe(expectedPromptsDir);
-    expect(workerConfig.reasoningEffort).toBe('xhigh');
+    expect(workerConfig.reasoningEffort).toBe('high');
   });
 
   it('keeps codex resume thread at mission scope across multiple features', async () => {

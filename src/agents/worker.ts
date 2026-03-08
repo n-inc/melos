@@ -850,7 +850,7 @@ export class WorkerAgent implements Agent {
     return {
       cwd: this.resolveExecutionCwd(input),
       model: resolveRuntimeModel(this.config.model, CODEX_LATEST_ALIAS),
-      reasoningEffort: this.config.reasoningEffort || 'xhigh',
+      reasoningEffort: this.config.reasoningEffort || 'high',
       enabledFeatures: this.shouldEnableJsRepl(input) ? ['js_repl'] : undefined,
       execMode: true,
       suppressTerminalOutput: this.config.suppressTerminalOutput === true,

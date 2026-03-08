@@ -252,7 +252,7 @@ export class Orchestrator {
       cwd: config.cwd,
       promptsDir,
       model: this.modelRouter.getModel('worker'),
-      reasoningEffort: config.workerReasoningEffort ?? 'xhigh',
+      reasoningEffort: config.workerReasoningEffort ?? 'high',
       claudeModel: this.modelRouter.getModel('worker'),
       claudeEffort: config.managerEffort ?? 'high',
       suppressTerminalOutput: config.runtimeUIMode !== 'plain',

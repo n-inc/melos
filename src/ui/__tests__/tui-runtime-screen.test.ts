@@ -62,7 +62,7 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
     ],
     modelAssignments: {
       planner: { role: 'planner', engine: 'claude', model: 'opus', effort: 'max' },
-      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'xhigh' },
+      worker: { role: 'worker', engine: 'codex', model: 'gpt-5.4', effort: 'high' },
     },
   };
   return {

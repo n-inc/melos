@@ -151,7 +151,7 @@ describe('AppServerEngine', () => {
     expect(transport.notifications.some((event) => event.method === 'initialized')).toBe(true);
     const turnStartRequest = transport.requests.find((request) => request.method === 'turn/start');
     expect(turnStartRequest).toBeDefined();
-    expect(turnStartRequest?.params).toMatchObject({ effort: 'xhigh' });
+    expect(turnStartRequest?.params).toMatchObject({ effort: 'high' });
   });
 
   it('sends turn/interrupt on abort', async () => {
