@@ -22,6 +22,7 @@ import {
 } from './state/runtime.js';
 import { loadSnapshot } from './state/snapshot.js';
 import { loadGitStrategyState, type PullRequestState } from './state/git-strategy.js';
+import { getCurrentBranch, isGitRepository } from './state/git.js';
 import type { MissionEvent } from './state/events.js';
 import {
   formatRuntimeWarningRecord,
@@ -1286,16 +1287,26 @@ export function resolveGitStrategy(
   options: CLIOptions,
   config: MelosConfig
 ): OrchestratorConfig['gitStrategy'] {
+  const cwd = process.cwd();
   const pullRequestEnabled = options.createPr ?? config.git?.pullRequest?.enabled ?? false;
-  const enabled = options.gitStrategy ?? config.git?.enabled ?? pullRequestEnabled;
+  const enabled = options.gitStrategy === true
+    ? true
+    : options.createPr === true
+      ? true
+      : typeof config.git?.enabled === 'boolean'
+        ? config.git.enabled
+        : pullRequestEnabled
+          ? true
+          : isGitRepository(cwd);
   if (!enabled) {
     return undefined;
   }
 
+  const inferredBaseBranch = getCurrentBranch(cwd).trim();
   const missionId = options.missionId ?? inferMissionIdFromCwd(process.cwd());
   return {
     enabled: true,
-    baseBranch: options.baseBranch ?? config.git?.baseBranch ?? 'main',
+    baseBranch: options.baseBranch ?? config.git?.baseBranch ?? (inferredBaseBranch || 'main'),
     missionId,
     autoPush: config.git?.autoPush ?? false,
     preMergeValidation: config.git?.preMergeValidation ?? true,

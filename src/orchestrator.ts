@@ -61,6 +61,7 @@ import {
   createBranch,
   checkoutBranch,
   getCurrentBranch,
+  getDirtyWorkingTreePaths,
   getHeadCommitHash,
   hasConflicts,
   isWorkingTreeClean,
@@ -880,6 +881,10 @@ export class Orchestrator {
       return;
     }
 
+    if (!await this.ensureGitExecutionPreconditions(pendingMilestone.id, nextFeature.id)) {
+      return;
+    }
+
     const scheduledRetry = this.findFeatureRetry(pendingMilestone.id, nextFeature.id);
     if (scheduledRetry) {
       await this.waitForScheduledFeatureRetry(scheduledRetry);
@@ -1339,6 +1344,13 @@ export class Orchestrator {
 
     if (this.state.gitStrategy) {
       baseBranch = this.state.gitStrategy.config.baseBranch;
+      if (this.requiresDedicatedFeatureBranch(feature) && !baseBranch) {
+        return this.buildGitStrategyFailureResult(
+          milestone,
+          feature,
+          'Git strategy is enabled but baseBranch is missing, so Melos cannot create a feature branch or request a commit.'
+        );
+      }
       if (this.state.gitStrategy.config.pullRequestEnabled) {
         const missionBranch = await this.ensureMissionBranch();
         currentBranch = missionBranch;
@@ -1390,6 +1402,14 @@ export class Orchestrator {
           });
         }
       }
+    }
+
+    if (this.state.gitStrategy && this.requiresDedicatedFeatureBranch(feature) && (!baseBranch || !currentBranch)) {
+      return this.buildGitStrategyFailureResult(
+        milestone,
+        feature,
+        'Git strategy is enabled but Melos could not resolve currentBranch/baseBranch for this implementation task, so the worker commit workflow cannot run.'
+      );
     }
 
     const runId = ++this.workerRunCounter;
@@ -1547,6 +1567,33 @@ export class Orchestrator {
     return feature.kind === 'implementation' || feature.kind === 'review_remediation';
   }
 
+  private async ensureGitExecutionPreconditions(milestoneId: string, featureId: string): Promise<boolean> {
+    if (!this.state.gitStrategy) {
+      return true;
+    }
+
+    const dirtyPaths = this.getBlockingGitWorkingTreePaths();
+    if (dirtyPaths.length === 0) {
+      return true;
+    }
+
+    const detail = [
+      'Git strategy requires a clean working tree before feature execution.',
+      `Clean or stash the local changes before retrying ${featureId}.`,
+      dirtyPaths.length > 0 ? `Dirty paths: ${dirtyPaths.join(', ')}` : null,
+    ].filter((line): line is string => Boolean(line)).join(' ');
+
+    await this.failMissionForGitPrecondition(
+      'git strategy requires a clean working tree before feature execution',
+      detail,
+      milestoneId,
+      featureId,
+      dirtyPaths
+    );
+
+    return false;
+  }
+
   private async ensureMissionBranch(): Promise<string> {
     if (!this.state.gitStrategy) {
       throw new Error('git strategy is not enabled');
@@ -1574,6 +1621,96 @@ export class Orchestrator {
 
   private shouldApplyWorkerWarningPolicy(feature: Feature): boolean {
     return feature.kind === 'implementation' || feature.kind === 'review_remediation';
+  }
+
+  private async failMissionForGitPrecondition(
+    reason: string,
+    detail: string,
+    milestoneId?: string,
+    featureId?: string,
+    dirtyPaths: string[] = []
+  ): Promise<void> {
+    let missionPlan = this.requireMissionPlan();
+    if (milestoneId) {
+      missionPlan = setActiveMilestone(missionPlan, milestoneId);
+      missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'failed');
+    }
+    if (milestoneId && featureId) {
+      missionPlan = setActiveFeature(missionPlan, featureId);
+      missionPlan = updateFeatureStatus(missionPlan, milestoneId, featureId, 'failed');
+    }
+    missionPlan = transitionMissionState(missionPlan, 'failed');
+    this.state.missionPlan = missionPlan;
+    this.kernelState.missionPlan = missionPlan;
+    this.activityLabel = truncateMessage(detail, 180);
+    this.emitEvent('error', 'system', {
+      reason,
+      milestoneId,
+      featureId,
+      dirtyPaths,
+      message: detail,
+    });
+    this.emitEvent('mission_failed', 'orchestrator', {
+      reason,
+      milestoneId,
+      featureId,
+      dirtyPaths,
+      detail,
+    });
+    await this.persistMissionPlan();
+    await this.emitStatusUpdate();
+  }
+
+  private buildGitStrategyFailureResult(
+    milestone: Milestone,
+    feature: Feature,
+    summary: string
+  ): WorkerResult {
+    this.emitEvent('error', 'system', {
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      message: summary,
+    });
+
+    return {
+      type: 'failed',
+      report: {
+        iteration: this.requireMissionPlan().totalIterations + 1,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'FAILED',
+        summary,
+        warnings: ['Git strategy branch context was missing, so Melos blocked worker execution before any commit could happen.'],
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        learnings: [],
+        requestsHelp: true,
+        createdAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  private getBlockingGitWorkingTreePaths(limit: number = 5): string[] {
+    if (!isWorkingTreeClean(this.config.cwd)) {
+      return getDirtyWorkingTreePaths(this.config.cwd)
+        .filter((path) => !this.isIgnoredGitWorkingTreePath(path))
+        .slice(0, limit);
+    }
+    return [];
+  }
+
+  private isIgnoredGitWorkingTreePath(path: string): boolean {
+    const resolved = isAbsolute(path) ? path : join(this.config.cwd, path);
+    return resolved === join(this.config.cwd, 'HANDOFF.md')
+      || resolved.startsWith(`${this.config.melosDir}/`)
+      || this.isProtectedRuntimePath(resolved);
   }
 
   private async syncPullRequestStateFromReport(
@@ -2242,12 +2379,14 @@ export class Orchestrator {
     report: WorkerFeatureReport
   ): Promise<{ ok: boolean; summary: string }> {
     try {
-      if (!isWorkingTreeClean(this.config.cwd)) {
+      const dirtyPaths = this.getBlockingGitWorkingTreePaths();
+      if (dirtyPaths.length > 0) {
         const message = [
           report.summary,
           `Commit required before merge into ${targetBranch} from ${branchName}.`,
+          dirtyPaths.length > 0 ? `Dirty paths: ${dirtyPaths.join(', ')}` : null,
           'Please commit the feature changes using the git-committer skill and retry.',
-        ].join('\n');
+        ].filter((line): line is string => Boolean(line)).join('\n');
         this.emitEvent('error', 'system', {
           branchName,
           featureId: report.featureId,

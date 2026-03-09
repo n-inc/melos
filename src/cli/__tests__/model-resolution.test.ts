@@ -1,3 +1,8 @@
+import { execSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { createProgram, resolveGitStrategy } from '../../cli.js';
 
 describe('CLI v0.8 options', () => {
@@ -74,7 +79,55 @@ describe('CLI v0.8 options', () => {
     expect(gitStrategy?.pullRequestEnabled).toBe(true);
   });
 
-  it('keeps pull request automation disabled by default', () => {
-    expect(resolveGitStrategy({}, {})).toBeUndefined();
+  it('auto-enables git strategy in git repositories and infers the current branch as baseBranch', () => {
+    const cwd = createGitRepository();
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(cwd);
+      const gitStrategy = resolveGitStrategy({}, {});
+      expect(gitStrategy).toMatchObject({
+        enabled: true,
+        baseBranch: execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim(),
+      });
+      expect(gitStrategy?.pullRequestEnabled).toBe(false);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('keeps git strategy disabled outside git repositories by default', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-cli-no-git-'));
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(cwd);
+      expect(resolveGitStrategy({}, {})).toBeUndefined();
+    } finally {
+      process.chdir(previousCwd);
+    }
+  });
+
+  it('respects explicit git.enabled=false as an opt-out', () => {
+    const cwd = createGitRepository();
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(cwd);
+      expect(resolveGitStrategy({}, { git: { enabled: false } })).toBeUndefined();
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 });
+
+function createGitRepository(): string {
+  const cwd = mkdtempSync(join(tmpdir(), 'melos-cli-git-'));
+  execSync('git init', { cwd, stdio: 'ignore' });
+  execSync('git config user.email "melos-test@example.com"', { cwd, stdio: 'ignore' });
+  execSync('git config user.name "Melos Test"', { cwd, stdio: 'ignore' });
+  writeFileSync(join(cwd, '.gitkeep'), 'seed\n', 'utf-8');
+  execSync('git add -A', { cwd, stdio: 'ignore' });
+  execSync('git commit -m "test: initial"', { cwd, stdio: 'ignore' });
+  return cwd;
+}

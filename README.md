@@ -20,11 +20,14 @@ npx melos run
 
 - `--interactive`: 対話型 planning
 - `--auto-approve`: plan 承認を自動化
-- `--git-strategy`: feature branch ハンドオフを有効化
-- `--base-branch <branch>`: Git 戦略のベースブランチ
+- `--git-strategy`: Git repo 以外でも feature branch ハンドオフを強制的に有効化
+- `--base-branch <branch>`: Git 戦略のベースブランチ（未指定時は現在の checkout branch、取得できない場合は `main`）
 - `--mission-id <id>`: ミッションID
 - `--planner-model <model>` / `--worker-model <model>`
 - `--dry-run`: 実装を実行せず状態遷移のみ確認
+
+Git 管理下のリポジトリでは、`--git-strategy` や `.melos.json` がなくても Git strategy がデフォルトで有効になります。
+無効化したい場合は `.melos.json` で `git.enabled: false` を明示してください。
 
 再開:
 
@@ -118,3 +121,9 @@ npx melos cancel
   }
 }
 ```
+
+- `git.enabled`:
+  - 未指定なら Git repo で自動有効
+  - `false` を指定すると明示 opt-out
+- `git.baseBranch`:
+  - 未指定なら現在の checkout branch を使い、取得できない場合のみ `main` を使います

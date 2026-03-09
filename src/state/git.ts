@@ -53,6 +53,35 @@ export function isWorkingTreeClean(cwd: string): boolean {
   return status.ok && status.stdout.length === 0;
 }
 
+export function getDirtyWorkingTreePaths(cwd: string, limit: number = Number.POSITIVE_INFINITY): string[] {
+  const status = runGit(cwd, ['status', '--porcelain']);
+  if (!status.ok || status.stdout.length === 0) {
+    return [];
+  }
+
+  const paths: string[] = [];
+  for (const line of status.stdout.split('\n')) {
+    if (line.trim().length === 0) {
+      continue;
+    }
+
+    const rawPath = line.replace(/^[A-Z? !]{1,2}\s+/, '').trim();
+    if (!rawPath) {
+      continue;
+    }
+
+    const normalizedPath = rawPath.includes(' -> ')
+      ? rawPath.split(' -> ').pop()?.trim() ?? rawPath
+      : rawPath;
+    paths.push(normalizedPath);
+    if (paths.length >= limit) {
+      break;
+    }
+  }
+
+  return paths;
+}
+
 export function createBranch(cwd: string, branchName: string, baseBranch: string): void {
   assertGit(cwd, ['checkout', baseBranch], `failed to checkout base branch ${baseBranch}`);
   assertGit(cwd, ['checkout', '-B', branchName], `failed to create branch ${branchName}`);

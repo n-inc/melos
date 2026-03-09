@@ -3615,6 +3615,166 @@ describe('Orchestrator v0.8', () => {
       },
     });
 
+  it('fails before worker execution when git-strategy starts from a dirty working tree', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-preflight-dirty-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Dirty working tree mission\n', 'utf-8');
+    initGitRepository(cwd);
+    writeFileSync(join(cwd, 'uncommitted.txt'), 'dirty\n', 'utf-8');
+    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
+
+    const planned = createMissionPlan({
+      missionId: 'dirty-preflight',
+      goal: 'Fail before dispatch when the repo is dirty',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['worker is never dispatched on a dirty tree'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement',
+              kind: 'implementation',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    const workerSpy = jest.spyOn(WorkerAgent.prototype, 'run');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'dirty-preflight',
+        baseBranch,
+        autoPush: false,
+        preMergeValidation: false,
+        validationCommands: [],
+        pullRequestEnabled: false,
+      },
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(false);
+    expect(result.reason).toBe('failed');
+    expect(workerSpy).not.toHaveBeenCalled();
+
+    const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
+      state: string;
+      milestones: Array<{ status: string; features: Array<{ status: string }> }>;
+    };
+    expect(mission.state).toBe('failed');
+    expect(mission.milestones[0]?.status).toBe('failed');
+    expect(mission.milestones[0]?.features[0]?.status).toBe('failed');
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('Git strategy requires a clean working tree before feature execution.');
+    expect(events).toContain('uncommitted.txt');
+  });
+
+  it('fails implementation dispatch when git strategy cannot resolve branch context', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-missing-branch-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Missing branch context mission\n', 'utf-8');
+
+    const plan = createMissionPlan({
+      missionId: 'missing-branch-context',
+      goal: 'Fail fast when git branch context is missing',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['worker is blocked before execution'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement',
+              kind: 'implementation',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const workerSpy = jest.spyOn(WorkerAgent.prototype, 'run');
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'missing-branch-context',
+        baseBranch: '',
+        autoPush: false,
+        preMergeValidation: false,
+        validationCommands: [],
+        pullRequestEnabled: false,
+      },
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      executeFeature: (milestone: MissionPlan['milestones'][number], feature: MissionPlan['milestones'][number]['features'][number], briefing?: string) => Promise<{ type: string; report: WorkerFeatureReport }>;
+    };
+    orchestratorAny.state.missionPlan = plan;
+    orchestratorAny.kernelState.missionPlan = plan;
+
+    const milestone = plan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    const result = await orchestratorAny.executeFeature(milestone, feature, 'briefing');
+
+    expect(result.type).toBe('failed');
+    expect(result.report.status).toBe('FAILED');
+    expect(result.report.summary).toContain('baseBranch is missing');
+    expect(result.report.requestsHelp).toBe(true);
+    expect(workerSpy).not.toHaveBeenCalled();
+  });
+
     const result = await orchestrator.run();
     expect(result.success).toBe(false);
     expect(result.reason).toBe('max_iterations');
