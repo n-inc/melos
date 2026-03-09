@@ -29,6 +29,7 @@ import {
   appendFeaturesToMilestone,
   incrementMissionIterations,
 } from './state/mission.js';
+import { resolveFeatureExecutionCwd } from './state/execution-cwd.js';
 import {
   type ProductReviewContract,
   type ProductReviewCheckpoint,
@@ -2404,8 +2405,14 @@ export class Orchestrator {
       }
 
       if (this.state.gitStrategy?.config.preMergeValidation) {
+        const missionPlan = this.requireMissionPlan();
+        const milestone = missionPlan.milestones.find((item) => item.id === report.milestoneId) ?? null;
+        const feature = milestone?.features.find((item) => item.id === report.featureId) ?? null;
+        const validationCwd = feature
+          ? resolveFeatureExecutionCwd(this.config.cwd, { feature, missionPlan })
+          : this.config.cwd;
         for (const command of this.state.gitStrategy.config.validationCommands) {
-          const result = runGitCommand(this.config.cwd, command);
+          const result = runGitCommand(validationCwd, command);
           this.emitEvent('command_executed', 'system', {
             command,
             exitCode: result.exitCode,

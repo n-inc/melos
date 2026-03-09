@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
@@ -10,6 +10,7 @@ import { WorkerAgent } from '../agents/worker.js';
 import type { WorkerFeatureReport } from '../agents/types.js';
 import { getDefaultPromptsDir } from '../prompts/index.js';
 import { createMissionPlan, type MissionPlan } from '../state/mission.js';
+import { createGitStrategyState } from '../state/git-strategy.js';
 import type { MissionControlState } from '../ui/tui-views.js';
 
 describe('Orchestrator v0.8', () => {
@@ -3862,6 +3863,220 @@ describe('Orchestrator v0.8', () => {
     const result = await orchestrator.run();
     expect(result.success).toBe(true);
     expect(execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim()).toBe(baseBranch);
+  });
+
+  it('runs pre-merge validation from feature.cwd when present', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-feature-cwd-validation-'));
+    const melosDir = join(cwd, '.melos');
+    const featureCwd = join(cwd, 'frontend/apps/web');
+    const traceDir = mkdtempSync(join(tmpdir(), 'melos-validation-trace-'));
+    const tracePath = join(traceDir, 'feature-cwd.txt');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(featureCwd, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Feature cwd validation mission\n', 'utf-8');
+    initGitRepository(cwd);
+    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
+    execSync('git checkout -B feature-branch', { cwd, stdio: 'ignore' });
+    writeFileSync(join(featureCwd, 'committed-change.txt'), 'ok', 'utf-8');
+    execSync('git add -A', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "feat(checkpoint): complete m1-f1"', { cwd, stdio: 'ignore' });
+    const validationCommand = `node -e 'require(\"node:fs\").writeFileSync(${JSON.stringify(tracePath)}, process.cwd())'`;
+
+    const planned = createMissionPlan({
+      missionId: 'feature-cwd-validation',
+      goal: 'Run git validation in feature cwd',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['validation respects feature cwd'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement workspace feature',
+              cwd: 'frontend/apps/web',
+              status: 'in_progress',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+      baseDir: cwd,
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'feature-cwd-validation',
+        baseBranch,
+        autoPush: false,
+        preMergeValidation: true,
+        validationCommands: [validationCommand],
+        pullRequestEnabled: false,
+      },
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      getBlockingGitWorkingTreePaths: () => string[];
+      runGitPostProcess: (branchName: string, targetBranch: string, report: WorkerFeatureReport) => Promise<{ ok: boolean; summary: string }>;
+    };
+    orchestratorAny.state.missionPlan = planned;
+    orchestratorAny.kernelState.missionPlan = planned;
+    orchestratorAny.state.gitStrategy = createGitStrategyState({
+      missionId: 'feature-cwd-validation',
+      baseBranch,
+      autoPush: false,
+      preMergeValidation: true,
+      validationCommands: [validationCommand],
+      pullRequestEnabled: false,
+    });
+    orchestratorAny.getBlockingGitWorkingTreePaths = () => [];
+
+    const result = await orchestratorAny.runGitPostProcess('feature-branch', baseBranch, {
+      iteration: 1,
+      milestoneId: 'm1',
+      featureId: 'm1-f1',
+      status: 'SUCCESS',
+      summary: 'implemented with commit',
+      warnings: [],
+      filesChanged: [],
+      validation: {
+        testsRun: true,
+        testsPassed: 1,
+        testsFailed: 0,
+        lintPassed: true,
+        typecheckPassed: true,
+      },
+      checks: [],
+      learnings: [],
+      requestsHelp: false,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(tracePath, 'utf-8')).toBe(realpathSync(featureCwd));
+  });
+
+  it('keeps repo-root pre-merge validation when feature.cwd is absent', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-root-validation-'));
+    const melosDir = join(cwd, '.melos');
+    const traceDir = mkdtempSync(join(tmpdir(), 'melos-validation-trace-'));
+    const tracePath = join(traceDir, 'root-cwd.txt');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Root validation mission\n', 'utf-8');
+    initGitRepository(cwd);
+    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
+    execSync('git checkout -B feature-branch', { cwd, stdio: 'ignore' });
+    writeFileSync(join(cwd, 'committed-change.txt'), 'ok', 'utf-8');
+    execSync('git add -A', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "feat(checkpoint): complete m1-f1"', { cwd, stdio: 'ignore' });
+    const validationCommand = `node -e 'require(\"node:fs\").writeFileSync(${JSON.stringify(tracePath)}, process.cwd())'`;
+
+    const planned = createMissionPlan({
+      missionId: 'root-validation',
+      goal: 'Run git validation at repo root',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['validation stays at repo root without feature cwd'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'Implement', status: 'in_progress', attempts: 0, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'root-validation',
+        baseBranch,
+        autoPush: false,
+        preMergeValidation: true,
+        validationCommands: [validationCommand],
+        pullRequestEnabled: false,
+      },
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      getBlockingGitWorkingTreePaths: () => string[];
+      runGitPostProcess: (branchName: string, targetBranch: string, report: WorkerFeatureReport) => Promise<{ ok: boolean; summary: string }>;
+    };
+    orchestratorAny.state.missionPlan = planned;
+    orchestratorAny.kernelState.missionPlan = planned;
+    orchestratorAny.state.gitStrategy = createGitStrategyState({
+      missionId: 'root-validation',
+      baseBranch,
+      autoPush: false,
+      preMergeValidation: true,
+      validationCommands: [validationCommand],
+      pullRequestEnabled: false,
+    });
+    orchestratorAny.getBlockingGitWorkingTreePaths = () => [];
+
+    const result = await orchestratorAny.runGitPostProcess('feature-branch', baseBranch, {
+      iteration: 1,
+      milestoneId: 'm1',
+      featureId: 'm1-f1',
+      status: 'SUCCESS',
+      summary: 'implemented with commit',
+      warnings: [],
+      filesChanged: [],
+      validation: {
+        testsRun: true,
+        testsPassed: 1,
+        testsFailed: 0,
+        lintPassed: true,
+        typecheckPassed: true,
+      },
+      checks: [],
+      learnings: [],
+      requestsHelp: false,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readFileSync(tracePath, 'utf-8')).toBe(realpathSync(cwd));
   });
 
   it('uses a dedicated mission branch and post-pr follow-up phase when pull request automation is enabled', async () => {

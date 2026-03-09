@@ -25,6 +25,7 @@ import {
   normalizeReviewFinding,
   type ProductReviewContract,
 } from '../state/review.js';
+import { resolveFeatureExecutionCwd } from '../state/execution-cwd.js';
 import type {
   Agent,
   AgentMode,
@@ -958,16 +959,10 @@ export class WorkerAgent implements Agent {
   }
 
   private resolveExecutionCwd(input: WorkerInput): string {
-    if (typeof input.feature.cwd === 'string' && input.feature.cwd.trim().length > 0) {
-      return resolve(this.config.cwd, input.feature.cwd);
-    }
-    if (input.feature.kind === 'review') {
-      const reviewCwd = input.missionPlan.productReviewContract?.cwd;
-      if (typeof reviewCwd === 'string' && reviewCwd.trim().length > 0) {
-        return resolve(this.config.cwd, reviewCwd);
-      }
-    }
-    return this.config.cwd;
+    return resolveFeatureExecutionCwd(this.config.cwd, {
+      feature: input.feature,
+      missionPlan: input.missionPlan,
+    });
   }
 
   private shouldEnableJsRepl(input: WorkerInput): boolean {
