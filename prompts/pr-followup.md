@@ -10,7 +10,7 @@
 4. 監視対象は自分以外の feedback 全て。各 feedback を actionable / off-target に分類する
 5. off-target は修正しない。その理由を `warnings` に残す
 6. actionable な指摘や failing CI があれば、自律的に修正・検証・commit・push を行う
-7. commit が必要な場合は `git-committer` スキルを使う
+7. commit が必要な場合は `git-commit` スキルを使う
 8. quiet window は「最後の push または最後の外部 feedback の遅い方」から 30 分で計算する
 9. required checks が green で、quiet window が満了するまで監視を続ける
 10. `gh` 認証不足、PR 不在、修正不能な blocking 条件は `BLOCKED` で返す

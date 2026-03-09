@@ -1,5 +1,5 @@
 import { writeFile } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
   AppServerEngine,
@@ -403,7 +403,7 @@ export class WorkerAgent implements Agent {
       `- Current branch: ${input.currentBranch ?? '(not set)'}`,
       `- Base branch: ${input.baseBranch ?? '(not set)'}`,
       `- melos-ci-fix-loop skill: ${this.resolveMelosCiFixLoopSkillPath()}`,
-      `- git-committer skill: ${this.resolveGitCommitterSkillPath()}`,
+      `- git-commit skill: ${this.resolveGitCommitSkillPath()}`,
       '- Gather PR state with `gh pr view --json ...`, `gh api graphql`, and `gh pr checks --required`',
       '- Never invoke nested `npx melos` from this follow-up step',
       '',
@@ -519,7 +519,7 @@ export class WorkerAgent implements Agent {
       sections.push(
         '',
         '## Commit Workflow',
-        `- Use the git-committer skill at: ${this.resolveGitCommitterSkillPath()}`,
+        `- Use the git-commit skill at: ${this.resolveGitCommitSkillPath()}`,
         '- Before committing, inspect: `git status --porcelain`, `git log --oneline -20`, `git diff --staged`',
         '- Create the commit only after implementation and validation are complete for this feature branch',
         '- Use `type(scope): subject` for the commit subject',
@@ -683,16 +683,24 @@ export class WorkerAgent implements Agent {
     return input.missionPlan.productReviewContract;
   }
 
-  private resolveGitCommitterSkillPath(): string {
-    return join(this.config.cwd, '.claude', 'skills', 'git-committer', 'SKILL.md');
+  private resolveSkillPath(skillId: string): string {
+    const skillPath = join(this.config.cwd, '.claude', 'skills', skillId, 'SKILL.md');
+    if (!existsSync(skillPath)) {
+      throw new Error(`Required skill not found: ${skillId} (${skillPath})`);
+    }
+    return skillPath;
+  }
+
+  private resolveGitCommitSkillPath(): string {
+    return this.resolveSkillPath('git-commit');
   }
 
   private resolveGitNewPullRequestSkillPath(): string {
-    return join(this.config.cwd, '.claude', 'skills', 'git-new-pull-request', 'SKILL.md');
+    return this.resolveSkillPath('git-new-pull-request');
   }
 
   private resolveMelosCiFixLoopSkillPath(): string {
-    return join(this.config.cwd, '.claude', 'skills', 'melos-ci-fix-loop', 'SKILL.md');
+    return this.resolveSkillPath('melos-ci-fix-loop');
   }
 
   private formatQaChecks(input: WorkerInput): string {

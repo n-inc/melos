@@ -59,7 +59,7 @@ reviewer / commenter / bot を区別せず、自分自身の comment だけ除�
 
 - 既存の branch / working tree をそのまま使う
 - 必要な検証を実行する
-- commit が必要なら `git-committer` スキルを使う
+- commit が必要なら `git-commit` スキルを使う
 - push が必要なら通常の `git push` を行う
 
 別の `melos` プロセスや `npx melos --ci-fix-only` は起動しない。

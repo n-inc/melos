@@ -1,5 +1,5 @@
 ---
-name: git-committer
+name: git-commit
 description: Analyze Git changes and create commits with appropriate commit messages following project conventions. Use when creating commits for staged changes.
 ---
 

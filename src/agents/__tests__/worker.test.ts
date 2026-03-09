@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -138,9 +138,9 @@ describe('WorkerAgent', () => {
 
     const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
     expect(prompt).toContain('# Worker Agent - Feature Executor');
-    expect(prompt).toContain('git-committer');
+    expect(prompt).toContain('git-commit');
     expect(prompt).toContain('type(scope): subject');
-    expect(prompt).toContain('.claude/skills/git-committer/SKILL.md');
+    expect(prompt).toContain('.claude/skills/git-commit/SKILL.md');
     expect(prompt).toContain('git status --porcelain');
     expect(prompt).toContain('git diff --staged');
     expect(prompt).toContain('## Runtime Context');
@@ -333,7 +333,7 @@ describe('WorkerAgent', () => {
     const prompt = String(claudeExecute.mock.calls[0]?.[0] ?? '');
     expect(prompt).toContain('# Post-PR Follow-up Worker');
     expect(prompt).toContain('.claude/skills/melos-ci-fix-loop/SKILL.md');
-    expect(prompt).toContain('.claude/skills/git-committer/SKILL.md');
+    expect(prompt).toContain('.claude/skills/git-commit/SKILL.md');
     expect(prompt).not.toContain('npx melos --ci-fix-only');
     expect(result.report.pullRequestFollowUp).toEqual({
       handledFeedbackIds: ['PRRC_1', 'PRRC_2'],
@@ -346,6 +346,22 @@ describe('WorkerAgent', () => {
   it('includes feature cwd in prompt and engine options', async () => {
     const repoCwd = await mkdtemp(join(tmpdir(), 'melos-worker-cwd-'));
     try {
+      await mkdir(join(repoCwd, '.claude', 'skills', 'git-commit'), { recursive: true });
+      await mkdir(join(repoCwd, '.claude', 'skills', 'git-new-pull-request'), { recursive: true });
+      await mkdir(join(repoCwd, '.claude', 'skills', 'melos-ci-fix-loop'), { recursive: true });
+      await writeFile(
+        join(repoCwd, '.claude', 'skills', 'git-commit', 'SKILL.md'),
+        '---\nname: git-commit\n---\n'
+      );
+      await writeFile(
+        join(repoCwd, '.claude', 'skills', 'git-new-pull-request', 'SKILL.md'),
+        '---\nname: git-new-pull-request\n---\n'
+      );
+      await writeFile(
+        join(repoCwd, '.claude', 'skills', 'melos-ci-fix-loop', 'SKILL.md'),
+        '---\nname: melos-ci-fix-loop\n---\n'
+      );
+
       const agent = new WorkerAgent({
         cwd: repoCwd,
         promptsDir: join(process.cwd(), 'prompts'),
@@ -424,6 +440,30 @@ describe('WorkerAgent', () => {
       );
     } finally {
       await rm(promptsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails with a clear error when a required skill is missing', async () => {
+    const repoCwd = await mkdtemp(join(tmpdir(), 'melos-worker-skill-missing-'));
+    const promptsDir = await mkdtemp(join(tmpdir(), 'melos-worker-prompts-'));
+    try {
+      await writeFile(
+        join(promptsDir, 'worker.md'),
+        '# Custom Worker Prompt\n\nUse this custom prompt.'
+      );
+
+      const agent = new WorkerAgent({
+        cwd: repoCwd,
+        promptsDir,
+        model: 'gpt-5.4',
+      });
+
+      await expect(agent.run(createRunInput())).rejects.toThrow(
+        `Required skill not found: git-commit (${join(repoCwd, '.claude', 'skills', 'git-commit', 'SKILL.md')})`
+      );
+    } finally {
+      await rm(promptsDir, { recursive: true, force: true });
+      await rm(repoCwd, { recursive: true, force: true });
     }
   });
 

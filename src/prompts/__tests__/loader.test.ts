@@ -15,7 +15,7 @@ describe('loader.ts', () => {
   it('loads the bundled worker prompt from path', async () => {
     const promptsDir = getDefaultPromptsDir();
     const content = await loadPromptFromPath(join(promptsDir, 'worker.md'));
-    expect(content).toContain('git-committer');
+    expect(content).toContain('git-commit');
     expect(content).toContain('type(scope): subject');
   });
 

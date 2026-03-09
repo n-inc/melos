@@ -2402,7 +2402,7 @@ export class Orchestrator {
           report.summary,
           `Commit required before merge into ${targetBranch} from ${branchName}.`,
           dirtyPaths.length > 0 ? `Dirty paths: ${dirtyPaths.join(', ')}` : null,
-          'Please commit the feature changes using the git-committer skill and retry.',
+          'Please commit the feature changes using the git-commit skill and retry.',
         ].filter((line): line is string => Boolean(line)).join('\n');
         this.emitEvent('error', 'system', {
           branchName,

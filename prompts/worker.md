@@ -21,8 +21,8 @@
 4. テスト・lint・typecheck を意識して実装する
 5. 失敗時は原因を `summary` へ明記する
 6. `implementation` / `review_remediation` feature で `currentBranch` / `baseBranch` が渡された場合にだけ、完了時にコミットを作成する
-7. コミット作成時は `git-committer` スキルの手順に従う（規約準拠の commit message を使う）
-   - スキル参照先: `.claude/skills/git-committer/SKILL.md`
+7. コミット作成時は `git-commit` スキルの手順に従う（規約準拠の commit message を使う）
+   - スキル参照先: `.claude/skills/git-commit/SKILL.md`
 8. commit message は `type(scope): subject` 形式を守り、`...` などの省略表記を使わない
 9. 本文を書く場合は「変更理由（why）」を簡潔に記載し、差分羅列だけで終わらせない
 10. `qa` feature は QA 実行完了そのものを返す。個々の QA 項目の pass/fail は `checks` の `checkId` ごとに返し、milestone validation に最終判定を委ねる
