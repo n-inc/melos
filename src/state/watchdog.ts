@@ -4,6 +4,7 @@ export class Watchdog {
   private checkIntervalMs: number;
   private timer: NodeJS.Timeout | null;
   private callback: (() => void) | null;
+  private stuckSignaled: boolean;
 
   constructor(options: { timeoutMs?: number; checkIntervalMs?: number } = {}) {
     this.lastEventAt = new Date();
@@ -11,6 +12,7 @@ export class Watchdog {
     this.checkIntervalMs = options.checkIntervalMs ?? 30 * 1000;
     this.timer = null;
     this.callback = null;
+    this.stuckSignaled = false;
   }
 
   start(): void {
@@ -18,9 +20,12 @@ export class Watchdog {
       return;
     }
 
+    this.stuckSignaled = false;
+
     this.timer = setInterval(() => {
       const elapsed = Date.now() - this.lastEventAt.getTime();
-      if (elapsed >= this.timeoutMs) {
+      if (elapsed >= this.timeoutMs && !this.stuckSignaled) {
+        this.stuckSignaled = true;
         this.callback?.();
       }
     }, this.checkIntervalMs);
@@ -33,10 +38,12 @@ export class Watchdog {
     }
     clearInterval(this.timer);
     this.timer = null;
+    this.stuckSignaled = false;
   }
 
   touch(): void {
     this.lastEventAt = new Date();
+    this.stuckSignaled = false;
   }
 
   onStuck(callback: () => void): void {

@@ -3531,6 +3531,309 @@ describe('Orchestrator v0.8', () => {
     });
     expect(gitStrategy.quietUntil).toBe('2026-03-07T00:30:00.000Z');
   });
+  it('continues a full mission run when worker returns BLOCKED without requestsHelp', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-blocked-run-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# blocked without help\n\nContinue automatically.', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'blocked-without-help',
+      goal: 'Keep running without manual resume',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['non-escalating blocked results do not pause the mission'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement flow',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Initial implementation',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateImplementationFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Address the remaining issue without human help',
+        trackingKey: 'remaining-issue',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+
+    let runCount = 0;
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
+      runCount += 1;
+
+      if (runCount === 1) {
+        return {
+          type: 'blocked',
+          report: {
+            iteration: 1,
+            milestoneId: input.milestone.id,
+            featureId: input.feature.id,
+            status: 'BLOCKED',
+            summary: 'remaining issue does not require human intervention',
+            warnings: ['continue automatically'],
+            filesChanged: [{ path: 'src/app.ts', additions: 1, deletions: 0 }],
+            validation: {
+              testsRun: true,
+              testsPassed: 0,
+              testsFailed: 1,
+              lintPassed: true,
+              typecheckPassed: false,
+            },
+            checks: [],
+            learnings: [],
+            requestsHelp: false,
+            createdAt: new Date().toISOString(),
+          },
+        };
+      }
+
+      return {
+        type: 'success',
+        report: {
+          iteration: 2,
+          milestoneId: input.milestone.id,
+          featureId: input.feature.id,
+          status: 'SUCCESS',
+          summary: 'done',
+          warnings: [],
+          filesChanged: [{ path: 'src/fix.ts', additions: 2, deletions: 0 }],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      execution: {
+        maxFeatureAttempts: 1,
+      },
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe('completed');
+    expect(runCount).toBe(2);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"action":"worker_blocked_auto_downgraded"');
+    expect(events).not.toContain('"type":"mission_interrupted"');
+  });
+
+  it('pauses and emits mission_interrupted on implementation BLOCKED reports when requestsHelp is true', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-escalating-blocked-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# escalating blocked\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'escalating-blocked',
+      goal: 'Pause when worker needs human help',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['mission is paused and records the interruption'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement flow',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    const runningPlan: MissionPlan = {
+      ...planned,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    writeFileSync(missionPath, `${JSON.stringify(runningPlan, null, 2)}\n`, 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleImplementationFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: {
+          type: 'blocked';
+          report: {
+            iteration: number;
+            milestoneId: string;
+            featureId: string;
+            status: 'BLOCKED';
+            summary: string;
+            warnings: string[];
+            filesChanged: Array<{ path: string; additions: number; deletions: number }>;
+            validation: {
+              testsRun: boolean;
+              testsPassed: number;
+              testsFailed: number;
+              lintPassed: boolean;
+              typecheckPassed: boolean;
+            };
+            checks: [];
+            learnings: string[];
+            requestsHelp: boolean;
+            createdAt: string;
+          };
+        }
+      ) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+
+    const milestone = runningPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleImplementationFeatureResult(milestone, feature, {
+      type: 'blocked',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'BLOCKED',
+        summary: 'missing secret from user',
+        warnings: ['human help required'],
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        learnings: [],
+        requestsHelp: true,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('paused');
+    expect(missionPlan.activeMilestoneId).toBe('m1');
+    expect(missionPlan.activeFeatureId).toBe('m1-f1');
+    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status }))).toEqual([
+      { id: 'm1-f1', status: 'pending' },
+    ]);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { type: string; payload: Record<string, unknown> });
+    const blockedIndex = events.findIndex((event) => event.type === 'iteration_completed' && event.payload.status === 'blocked');
+    const interruptedIndex = events.findIndex((event) => event.type === 'mission_interrupted');
+    expect(blockedIndex).toBeGreaterThanOrEqual(0);
+    expect(interruptedIndex).toBeGreaterThan(blockedIndex);
+    expect(events[interruptedIndex]?.payload.reason).toBe('worker blocked and requested help');
+  });
+
+  it('ignores watchdog timeout callbacks while mission is paused', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-watchdog-paused-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# paused watchdog\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const pausedPlan = createMissionPlan({
+      missionId: 'paused-watchdog',
+      goal: 'Ignore watchdog while paused',
+      constraints: [],
+      successCriteria: ['no timeout events while paused'],
+      milestones: [],
+      state: 'paused',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      watchdog: { callback?: (() => void) | null };
+    };
+    orchestratorAny.state.missionPlan = pausedPlan;
+    orchestratorAny.kernelState.missionPlan = pausedPlan;
+
+    orchestratorAny.watchdog.callback?.();
+
+    const eventsPath = join(melosDir, 'events.jsonl');
+    const events = existsSync(eventsPath) ? readFileSync(eventsPath, 'utf-8') : '';
+    expect(events).not.toContain('watchdog timeout');
+  });
+
 });
 
 function initGitRepository(cwd: string): void {

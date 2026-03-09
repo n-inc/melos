@@ -287,11 +287,19 @@ export class Orchestrator {
     this.kernelState = createInitialKernelState();
     this.kernelState.gitStrategy = this.state.gitStrategy;
     this.watchdog.onStuck(() => {
+      const missionState = this.state.missionPlan?.state;
+      if (missionState === 'paused' || missionState === 'completed' || missionState === 'aborted') {
+        return;
+      }
+
+      const hasActiveWorker = this.kernelState.activeWorkerRunId !== null;
       this.emitEvent('error', 'system', {
-        message: 'worker appears stuck (watchdog timeout)',
+        message: hasActiveWorker
+          ? 'worker appears stuck (watchdog timeout)'
+          : 'mission stalled without active worker (watchdog timeout)',
       });
       if (this.state.missionPlan?.state === 'running') {
-        this.pause();
+        this.pause(hasActiveWorker ? 'watchdog worker timeout' : 'watchdog mission stall');
       }
     });
   }
@@ -405,15 +413,18 @@ export class Orchestrator {
     }
   }
 
-  pause(): void {
+  pause(
+    reason: string = 'paused by user',
+    activityLabel: string = 'Mission paused. Press R to resume.'
+  ): void {
     if (!this.state.missionPlan || this.state.missionPlan.state !== 'running') {
       return;
     }
 
-    this.activityLabel = 'Mission paused. Press R to resume.';
+    this.activityLabel = activityLabel;
     this.state.missionPlan = transitionMissionState(this.state.missionPlan, 'paused');
     void this.persistMissionPlan();
-    this.emitEvent('mission_interrupted', 'orchestrator', { reason: 'paused by user' });
+    this.emitEvent('mission_interrupted', 'orchestrator', { reason });
     void this.emitStatusUpdate();
   }
 
@@ -1723,11 +1734,42 @@ export class Orchestrator {
     };
   }
 
+  private normalizeNonEscalatingImplementationBlock(
+    milestoneId: string,
+    featureId: string,
+    result: WorkerResult
+  ): WorkerResult {
+    if ((result.type !== 'blocked' && result.report.status !== 'BLOCKED') || result.report.requestsHelp) {
+      return result;
+    }
+
+    const downgradedStatus = result.report.filesChanged.length > 0 ? 'PARTIAL' : 'FAILED';
+    const downgradedType = downgradedStatus === 'PARTIAL' ? 'partial' : 'failed';
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'worker_blocked_auto_downgraded',
+      milestoneId,
+      featureId,
+      message: `Worker returned BLOCKED without requestsHelp; treating ${featureId} as ${downgradedStatus}.`,
+    });
+    return {
+      type: downgradedType,
+      report: {
+        ...result.report,
+        status: downgradedStatus,
+        warnings: Array.from(new Set([
+          ...result.report.warnings,
+          `Worker returned BLOCKED without requestsHelp; Melos treated it as ${downgradedStatus} so retry/follow-up can continue automatically.`,
+        ])),
+      },
+    };
+  }
+
   private async handleImplementationFeatureResult(
     milestone: Milestone,
     feature: Feature,
     result: WorkerResult
   ): Promise<void> {
+    result = this.normalizeNonEscalatingImplementationBlock(milestone.id, feature.id, result);
     let missionPlan = this.requireMissionPlan();
     missionPlan = incrementMissionIterations(missionPlan);
 
@@ -1737,7 +1779,6 @@ export class Orchestrator {
       missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
       missionPlan = setActiveMilestone(missionPlan, milestone.id);
       missionPlan = setActiveFeature(missionPlan, feature.id);
-      missionPlan = transitionMissionState(missionPlan, 'paused');
       this.state.missionPlan = missionPlan;
       this.kernelState.missionPlan = missionPlan;
       this.emitEvent('iteration_completed', 'orchestrator', {
@@ -1746,9 +1787,10 @@ export class Orchestrator {
         featureId: feature.id,
         status: 'blocked',
       });
-      this.activityLabel = `${feature.id} blocked. Resolve the worker issue and resume.`;
-      await this.persistMissionPlan();
-      await this.emitStatusUpdate();
+      this.pause(
+        'worker blocked and requested help',
+        `${feature.id} blocked. Resolve the worker issue and press R to resume.`
+      );
       return;
     }
 
