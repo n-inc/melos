@@ -613,7 +613,7 @@ export class ManagerAgent implements Agent {
         description: featureDescription,
         kind: 'implementation' as const,
         status: 'pending' as const,
-        model: inferFeatureModel(featureDescription),
+        model: CODEX_LATEST_ALIAS,
         attempts: 0,
       })),
     }));
@@ -922,179 +922,11 @@ function normalizeCheckType(
   return fallback;
 }
 
-function inferFeatureModel(description: string): string {
-  if (isUiFocusedFeature(description)) {
-    return CLAUDE_LATEST_ALIAS;
-  }
-  return CODEX_LATEST_ALIAS;
-}
-
 function resolveFeatureModel(
-  _model: string | undefined,
-  description: string
+  model: string | undefined,
+  _description: string
 ): string {
-  return inferFeatureModel(description);
-}
-
-function isUiFocusedFeature(description: string): boolean {
-  const normalized = sanitizeFeatureDescriptionForModelSelection(description).toLowerCase();
-
-  const strongSignalPatterns = [
-    /\bui\b/,
-    /\bux\b/,
-    /\bdesign\b/,
-    /\bredesign\b/,
-    /\blayout\b/,
-    /\bstyle\b/,
-    /\bstyling\b/,
-    /\bvisual\b/,
-    /\btheme\b/,
-    /\bcss\b/,
-    /\btailwind\b/,
-    /\bresponsive\b/,
-    /\bspacing\b/,
-    /\bcolor\b/,
-    /\btypography\b/,
-  ];
-  if (strongSignalPatterns.some((pattern) => pattern.test(normalized))) {
-    return true;
-  }
-
-  const japaneseStrongSignals = [
-    'レスポンシブ',
-    'デザイン',
-    'レイアウト',
-    'スタイル',
-    'スタイリング',
-    '見た目',
-    '画面デザイン',
-    '配色',
-    '余白',
-    'タイポグラフィ',
-  ];
-  if (japaneseStrongSignals.some((signal) => normalized.includes(signal))) {
-    return true;
-  }
-
-  const infraSignalPatterns = [
-    /\bruntime\b/,
-    /\bhook\b/,
-    /\bprovider\b/,
-    /\bcontext\b/,
-    /\btype\b/,
-    /\btypes\b/,
-    /\btyping\b/,
-    /\bjsx\b/,
-    /\btsx\b/,
-    /\bdependency\b/,
-    /\bdependencies\b/,
-    /\bpackage\b/,
-    /\bpackages\b/,
-    /\bsetup\b/,
-    /\bconfig\b/,
-    /\bconfiguration\b/,
-    /\bbuild\b/,
-    /\bbundl(?:e|er|ing)\b/,
-    /\bmodule\b/,
-    /\bimport\b/,
-    /\bexport\b/,
-    /\btest\b/,
-    /\btests\b/,
-    /\btesting\b/,
-    /\bvitest\b/,
-    /\bjest\b/,
-    /\btsconfig\b/,
-    /\blint\b/,
-    /\beslint\b/,
-    /\bcompiler\b/,
-    /\bcompile\b/,
-    /\bresolution\b/,
-    /\bresolver\b/,
-    /\bprops\b/,
-    /\bapi\b/,
-  ];
-  const japaneseInfraSignals = [
-    '型解決',
-    '型定義',
-    '型不整合',
-    '依存解決',
-    '依存関係',
-    '単一ランタイム',
-    'ランタイム',
-    'フック',
-    'プロバイダ',
-    'コンテキスト',
-    'テスト',
-    'テストセットアップ',
-    '設定',
-    '構成',
-    'パッケージ',
-    'ビルド',
-  ];
-  if (
-    infraSignalPatterns.some((pattern) => pattern.test(normalized))
-    || japaneseInfraSignals.some((signal) => normalized.includes(signal))
-  ) {
-    return false;
-  }
-
-  const uiTargets = [
-    'page',
-    'screen',
-    'component',
-    'modal',
-    'dialog',
-    'form',
-    'button',
-    'card',
-    'header',
-    'footer',
-    'navbar',
-    'sidebar',
-    'ページ',
-    '画面',
-    'コンポーネント',
-    'モーダル',
-    'ダイアログ',
-    'フォーム',
-    'ボタン',
-    'カード',
-    'ヘッダー',
-    'フッター',
-    'ナビゲーション',
-    'サイドバー',
-  ];
-  const uiActions = [
-    'create',
-    'build',
-    'implement',
-    'add',
-    'update',
-    'fix',
-    'adjust',
-    'refine',
-    'polish',
-    'tweak',
-    'repair',
-    '作成',
-    '新規',
-    '実装',
-    '追加',
-    '更新',
-    '修正',
-    '改修',
-    '調整',
-    '改善',
-  ];
-
-  return uiTargets.some((target) => normalized.includes(target))
-    && uiActions.some((action) => normalized.includes(action));
-}
-
-function sanitizeFeatureDescriptionForModelSelection(description: string): string {
-  return normalizeFeatureDescription(description)
-    .replace(/\b[\w@.-]+(?:[\\/][\w@.-]+){1,}\b/g, ' ')
-    .replace(/[`"'“”‘’]/g, ' ');
+  return normalizeModelName(model) ?? CODEX_LATEST_ALIAS;
 }
 
 function buildFeatureBriefing(input: ManagerInput): string {

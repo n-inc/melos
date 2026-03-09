@@ -993,7 +993,7 @@ describe('ManagerAgent', () => {
     expect(prompt).toContain('Do not use "claude-latest" for React/runtime/hooks/providers/contexts/types/dependencies/tests/config/build/tooling tasks');
   });
 
-  it('forces claude for Japanese UI repair tasks even when planner returns codex', async () => {
+  it('preserves planner-selected model for UI tasks', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
@@ -1020,7 +1020,7 @@ describe('ManagerAgent', () => {
             title: 'UI',
             description: 'Refresh landing page UI',
             validationContract: { staticChecks: [], testSuites: [] },
-            features: [{ id: 'm1-f1', description: 'LPのレイアウトを修正する', model: 'codex' }],
+            features: [{ id: 'm1-f1', description: 'LPのレイアウトを修正する', model: 'claude-latest' }],
           },
         ],
       })}\n\`\`\``,
@@ -1035,7 +1035,7 @@ describe('ManagerAgent', () => {
     expect(plan.milestones[0]?.features[0]?.model).toBe('claude-latest');
   });
 
-  it('forces codex for infra tasks even when planner returns claude and the description includes ui paths', async () => {
+  it('preserves planner-selected model for infra tasks even when descriptions include ui paths', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
       promptsDir: 'prompts',
@@ -1066,12 +1066,12 @@ describe('ManagerAgent', () => {
               {
                 id: 'm1-f1',
                 description: 'React と JSX の型解決を editor package 基準で統一し、shared/ui 由来コンポーネントを JSX で再び安全に扱えるようにする',
-                model: 'claude-latest',
+                model: 'codex-latest',
               },
               {
                 id: 'm1-f2',
                 description: 'Vitest 実行時の React 単一ランタイム保証を追加し、web app から参照する editor/ui/shared の hook 実行を安定化する',
-                model: 'claude-latest',
+                model: 'codex-latest',
               },
             ],
           },
@@ -1087,6 +1087,53 @@ describe('ManagerAgent', () => {
 
     expect(plan.milestones[0]?.features[0]?.model).toBe('codex-latest');
     expect(plan.milestones[0]?.features[1]?.model).toBe('codex-latest');
+  });
+
+  it('defaults to codex when planner does not specify a model', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify({
+        goal: 'Locale fallback redirect cutover',
+        constraints: ['No backward compatibility'],
+        successCriteria: ['Middleware owns locale-less redirects'],
+        milestones: [
+          {
+            id: 'm1',
+            title: 'Redirect matrix',
+            description: 'Move locale-less redirects into middleware',
+            validationContract: { staticChecks: [], testSuites: [] },
+            features: [
+              {
+                id: 'm1-f1',
+                description: '`frontend/apps/web/middleware.ts` に locale-less パス解決器を追加し、ペルソナ LP、機能 LP、法律ページ、`/salespolicies` 例外を固定 locale の 308 redirect に集約する。',
+              },
+            ],
+          },
+        ],
+      })}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const plan = await agent.generateMissionPlan({
+      missionId: 'locale-fallback-redirect',
+      prd: '# Locale fallback redirect',
+    });
+
+    expect(plan.milestones[0]?.features[0]?.model).toBe('codex-latest');
   });
 
   it('embeds repository context and asks planner to inspect related files before planning', async () => {
