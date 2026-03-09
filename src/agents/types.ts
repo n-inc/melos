@@ -1,6 +1,11 @@
 import type { MissionPlan, Milestone, Feature } from '../state/mission.js';
 import type { ValidationCheckResult, ValidationReport } from '../state/validation.js';
-import type { ReviewArtifact, ReviewFinding, ReviewType } from '../state/review.js';
+import type {
+  ProductReviewCheckpointResult,
+  ReviewArtifact,
+  ReviewFinding,
+  ReviewType,
+} from '../state/review.js';
 import type { PullRequestState, PullRequestFollowUpState } from '../state/git-strategy.js';
 
 export type AgentMode = 'manager' | 'worker';
@@ -46,6 +51,7 @@ export interface WorkerFeatureReport {
     summary: string;
     findings: ReviewFinding[];
     artifacts: ReviewArtifact[];
+    checkpointResults?: ProductReviewCheckpointResult[];
   };
   learnings: string[];
   requestsHelp: boolean;
@@ -88,12 +94,14 @@ export interface WorkerInput {
 }
 
 export interface FollowUpFeatureDraft {
+  decision?: 'feature' | 'ignore';
   description: string;
   trackingKey?: string;
   priority: 'high' | 'medium' | 'low';
   affectedChecks?: string[];
   rationale?: string;
   model?: string;
+  waivedReason?: string;
 }
 
 export interface Agent {

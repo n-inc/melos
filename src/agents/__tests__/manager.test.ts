@@ -544,6 +544,7 @@ describe('ManagerAgent', () => {
 
     expect(followUps).toHaveLength(1);
     expect(followUps[0]).toEqual({
+      decision: 'feature',
       description: 'Resolve flaky jest setup',
       trackingKey: 'shared-jest-root-cause',
       priority: 'high',
@@ -551,6 +552,65 @@ describe('ManagerAgent', () => {
       rationale: 'More specific',
       model: 'codex-latest',
     });
+  });
+
+  it('accepts ignore follow-up decisions for out-of-scope validation failures', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify([
+        {
+          decision: 'ignore',
+          affectedChecks: ['m1-unrelated-check'],
+          rationale: 'outside the requested Text Complete removal scope',
+          waivedReason: 'unrelated validation failure',
+        },
+      ])}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const followUps = await agent.generateFollowUpFeatures({
+      milestoneId: 'm1',
+      failures: [
+        {
+          checkId: 'm1-unrelated-check',
+          passed: false,
+          failure: {
+            summary: 'Unrelated validation failed',
+            affectedFiles: ['src/elsewhere.ts'],
+            errorMessages: ['error'],
+          },
+        },
+      ],
+      missionPlan: await agent.generateMissionPlan({
+        missionId: 'sample',
+        prd: '# Sample',
+      }),
+    });
+
+    expect(followUps).toEqual([
+      {
+        decision: 'ignore',
+        description: 'Ignore validation failures in m1-unrelated-check',
+        priority: 'medium',
+        affectedChecks: ['m1-unrelated-check'],
+        rationale: 'outside the requested Text Complete removal scope',
+        waivedReason: 'unrelated validation failure',
+      },
+    ]);
   });
 
   it('requests planning output in the same language as PRD', async () => {

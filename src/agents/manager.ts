@@ -14,9 +14,16 @@ import {
 } from '../state/mission.js';
 import type { ProductReviewContract, ReviewFinding, ReviewType } from '../state/review.js';
 import { normalizeProductReviewContract } from '../state/review.js';
-import type { ValidationArtifact, ValidationCheckResult, ValidationRunner } from '../state/validation.js';
+import type {
+  ValidationArtifact,
+  ValidationEvidenceMode,
+  ValidationCheckResult,
+  ValidationExpectedOutcome,
+  ValidationRunner,
+} from '../state/validation.js';
 import {
   createEmptyValidationContract,
+  normalizeValidationExpectedOutcome,
 } from '../state/validation.js';
 import type { CheckType } from '../state/validation.js';
 import {
@@ -157,7 +164,15 @@ interface MissionPlanningOutput {
     target?: string;
     startup?: Array<{ cwd?: string; command?: string } | string>;
     preconditions?: string[];
-    checkpoints?: Array<{ id?: string; description?: string; claim?: string; visual?: boolean } | string>;
+    checkpoints?: Array<{
+      id?: string;
+      description?: string;
+      claim?: string;
+      visual?: boolean;
+      evidenceMode?: ValidationEvidenceMode;
+      reproduceBefore?: boolean;
+      requiredArtifacts?: ValidationArtifact[];
+    } | string>;
     artifactsDir?: string;
     video?: boolean;
   };
@@ -166,8 +181,22 @@ interface MissionPlanningOutput {
     title: string;
     description: string;
     validationContract?: {
-      staticChecks?: Array<{ id: string; description: string; command?: string; type?: string }>;
-      testSuites?: Array<{ id: string; description: string; command?: string; type?: string }>;
+      staticChecks?: Array<{
+        id: string;
+        description: string;
+        command?: string;
+        type?: string;
+        expectedOutcome?: ValidationExpectedOutcome;
+        waivedReason?: string;
+      }>;
+      testSuites?: Array<{
+        id: string;
+        description: string;
+        command?: string;
+        type?: string;
+        expectedOutcome?: ValidationExpectedOutcome;
+        waivedReason?: string;
+      }>;
       qaChecks?: Array<{
         id: string;
         description: string;
@@ -175,6 +204,8 @@ interface MissionPlanningOutput {
         type?: string;
         requiredRunner?: string;
         requiredArtifacts?: string[];
+        evidenceMode?: ValidationEvidenceMode;
+        reproduceBefore?: boolean;
       }>;
     };
     features: Array<{
@@ -336,20 +367,35 @@ export class ManagerAgent implements Agent {
     if (failedChecks.length === 0) {
       return [];
     }
+    const milestone = input.missionPlan.milestones.find((item) => item.id === input.milestoneId);
+    const milestoneContext = milestone
+      ? JSON.stringify({
+        id: milestone.id,
+        title: milestone.title,
+        description: milestone.description,
+        successCriteria: input.missionPlan.mission.successCriteria,
+      }, null, 2)
+      : '(milestone not found)';
 
     const prompt = [
       'You are a technical manager.',
       'Generate follow-up features to repair failed milestone validation.',
+      'Create a feature only when the failed check blocks the current milestone scope, mission goal, or stated success criteria.',
+      'If a failed check is outside the requested scope, or the failure is caused by Melos runtime/validation semantics rather than product code, return an ignore decision for that check instead of creating a feature.',
       'Group failures by root cause. Merge checks that should be fixed together into the same follow-up.',
       'Prefer reusing the same tracking key for the same root cause.',
+      'Never ask workers to edit TASK.json or `.melos` runtime files.',
       'Return JSON array only.',
       '',
+      `Mission goal: ${input.missionPlan.mission.goal}`,
       `Milestone ID: ${input.milestoneId}`,
+      'Milestone context:',
+      milestoneContext,
       'Failed checks:',
       JSON.stringify(failedChecks, null, 2),
       '',
       'Schema:',
-      '[{"description":"...","trackingKey":"stable-root-cause-key","priority":"high|medium|low","affectedChecks":["check-id"],"rationale":"...","model":"codex-latest|claude-latest|explicit-model"}]',
+      '[{"decision":"feature","description":"...","trackingKey":"stable-root-cause-key","priority":"high|medium|low","affectedChecks":["check-id"],"rationale":"...","model":"codex-latest|claude-latest|explicit-model"},{"decision":"ignore","affectedChecks":["check-id"],"rationale":"out of scope or Melos runtime issue","waivedReason":"why this failure should not expand mission scope"}]',
     ].join('\n');
 
     const result = await this.executeWithConfiguredEngine(prompt, 'high', {
@@ -613,6 +659,10 @@ export class ManagerAgent implements Agent {
           description: check.description,
           type: normalizeCheckType(check.type, 'command'),
           command: check.command,
+          expectedOutcome: normalizeValidationExpectedOutcome(check.expectedOutcome, {
+            description: check.description,
+            command: check.command,
+          }) ?? 'exit_code_zero',
           passed: false,
           failureCount: 0,
         })),
@@ -621,6 +671,10 @@ export class ManagerAgent implements Agent {
           description: check.description,
           type: normalizeCheckType(check.type, 'auto:test'),
           command: check.command,
+          expectedOutcome: normalizeValidationExpectedOutcome(check.expectedOutcome, {
+            description: check.description,
+            command: check.command,
+          }) ?? 'exit_code_zero',
           passed: false,
           failureCount: 0,
         })),
@@ -695,7 +749,7 @@ export class ManagerAgent implements Agent {
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"...","type":"auto:typecheck","command":"..."}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"qaChecks":[{"id":"m1-qa-hero","description":"Open /settings/profile with playwright-interactive, capture before screenshot to artifacts/screenshots/m1-qa-hero-before.png before the first repo-tracked file edit, then capture after screenshot to artifacts/screenshots/m1-qa-hero-after.png and compare the updated hero state.","type":"browser","requiredRunner":"playwright-interactive","requiredArtifacts":["screenshot"]}]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true,"evidenceMode":"before_after","reproduceBefore":true,"requiredArtifacts":["screenshot"]}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"No legacy runtime references remain","type":"command","command":"rg -n \\"legacy_symbol\\" src","expectedOutcome":"no_match"}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"qaChecks":[{"id":"m1-qa-hero","description":"Open /settings/profile with playwright-interactive and verify the target state.","type":"browser","requiredRunner":"playwright-interactive","requiredArtifacts":["screenshot"],"evidenceMode":"before_after","reproduceBefore":true}]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -705,14 +759,16 @@ export class ManagerAgent implements Agent {
       '- One feature must represent a cohesive implementation slice that can be completed in one focused worker session.',
       '- If scope is too large, fold details into phase descriptions and keep executable features compact.',
       '- Each milestone requires validationContract with executable commands where possible',
+      '- For absence checks such as `rg`/`grep` assertions that something no longer exists, set `expectedOutcome` to `"no_match"` instead of wrapping the command in ad-hoc shell helpers.',
       '- Provide productReviewContract for the final interactive product review. It must include cwd, target, startup/preconditions, and concrete checkpoints derived from the PRD.',
       '- If the PRD/repository mentions `.port`, `CONDUCTOR_PORT`, or `make info`, validation commands must reuse that local URL resolution strategy and must not hardcode port 8000 except as a final fallback through `${CONDUCTOR_PORT:-8000}` or `.port`.',
       '- Set feature.cwd only when the implementation or QA must run from a workspace subdirectory. cwd must be repo-relative (example: `frontend/apps/web`).',
       '- Feature IDs must follow mX-fY',
-      '- Put interactive browser/manual/e2e verification in `validationContract.qaChecks`. Do not output a dedicated qa feature; Melos synthesizes it automatically when qaChecks exist.',
-      '- When the change affects a user-visible screen, the relevant qaChecks must describe before/after evidence explicitly so it is visible in TASK.json and the TUI. Do not use generic QA descriptions.',
-      '- Before evidence must be captured after the QA inventory/target screen is known and before the first repo-tracked file edit. Encode that timing expectation directly in the qaChecks description.',
-      '- Use canonical artifact names in qaChecks descriptions: `artifacts/screenshots/<qa-check-id>-before.png`, `artifacts/screenshots/<qa-check-id>-after.png`, `artifacts/videos/<qa-check-id>-before.webm`, and `artifacts/videos/<qa-check-id>-after.webm`.',
+      '- Put interactive browser/manual/e2e verification in `validationContract.qaChecks`. Do not output dedicated qa features; Melos synthesizes baseline/after QA features automatically when qaChecks exist.',
+      '- For user-visible changes, set structured evidence requirements on the relevant qaChecks instead of burying them only in prose. Use `evidenceMode: "before_after"` and `reproduceBefore: true` when a reproducible before/after comparison is required.',
+      '- Before evidence must be capturable before the first repo-tracked file edit; Melos inserts a baseline QA step for checks that set `evidenceMode: "before_after"` with `reproduceBefore: true`.',
+      '- Use canonical artifact names when you describe QA expectations: `artifacts/screenshots/<qa-check-id>-before.png`, `artifacts/screenshots/<qa-check-id>-after.png`, `artifacts/videos/<qa-check-id>-before.webm`, and `artifacts/videos/<qa-check-id>-after.webm`.',
+      '- Final product review checkpoints may also require structured evidence. Use `evidenceMode`, `reproduceBefore`, and `requiredArtifacts` on `productReviewContract.checkpoints` when sign-off needs a strict before/after comparison.',
       '- Use screenshots for static visual diffs (copy/layout/color/final state). Use video for motion or multi-step interaction diffs (animation/hover/accordion/loading/drag). When final visual state also matters, mention both video and after screenshot.',
       '- Default feature model is codex-latest',
       '- Use model "claude-latest" only when the primary deliverable is a user-visible UI change in the rendered surface.',
@@ -1095,7 +1151,7 @@ function buildFeatureBriefing(input: ManagerInput): string {
 
   const constraintLines = [
     ...toBulletItems(input.missionPlan.mission.constraints, 'ミッション制約は未定義。TASK.json を確認すること。'),
-    'source of truth は TASK.json の feature description / checks / validationContract。',
+    'source of truth は TASK.json の feature description / checks / validationContract。ただし TASK.json 自体は orchestrator 管理なので worker は編集しない。',
     `現在の試行回数: ${feature.attempts}`,
   ];
 
@@ -1137,17 +1193,24 @@ function buildFeatureBriefing(input: ManagerInput): string {
 
 function getValidationFocusLines(contract: MissionPlan['milestones'][number]['validationContract']): string[] {
   return [
-    ...contract.staticChecks.map((check) => formatValidationCheckLine('static', check.description, check.command)),
-    ...contract.testSuites.map((check) => formatValidationCheckLine('test', check.description, check.command)),
-    ...(contract.qaChecks ?? []).map((check) => formatValidationCheckLine(`qa:${check.type}`, check.description, check.command)),
+    ...contract.staticChecks.map((check) => formatValidationCheckLine('static', check)),
+    ...contract.testSuites.map((check) => formatValidationCheckLine('test', check)),
+    ...(contract.qaChecks ?? []).map((check) => formatValidationCheckLine(`qa:${check.type}`, check)),
   ].filter((line) => line.trim().length > 0);
 }
 
-function formatValidationCheckLine(kind: string, description: string, command?: string): string {
-  if (command && command.trim().length > 0) {
-    return `${kind}: ${description} (${command.trim()})`;
+function formatValidationCheckLine(
+  kind: string,
+  check: Pick<MissionPlan['milestones'][number]['validationContract']['staticChecks'][number], 'description' | 'command' | 'expectedOutcome' | 'waivedReason'>
+): string {
+  const expectation = check.expectedOutcome && check.expectedOutcome !== 'exit_code_zero'
+    ? ` expected=${check.expectedOutcome}`
+    : '';
+  const waived = check.waivedReason ? ` waived=${check.waivedReason}` : '';
+  if (check.command && check.command.trim().length > 0) {
+    return `${kind}: ${check.description} (${check.command.trim()})${expectation}${waived}`;
   }
-  return `${kind}: ${description}`;
+  return `${kind}: ${check.description}${waived}`;
 }
 
 function toBulletItems(items: Array<string | null | undefined>, fallback: string | null): string[] {
@@ -1179,7 +1242,28 @@ function normalizeFollowUpDrafts(
     }
 
     const record = candidate as Record<string, unknown>;
+    const decision = record.decision === 'ignore' ? 'ignore' : 'feature';
     const affectedChecks = toStringArray(record.affectedChecks);
+    const priority = String(record.priority ?? 'medium').toLowerCase();
+    const normalizedPriority = priority === 'high' || priority === 'low' ? priority : 'medium';
+    const rationale = toNonEmptyString(record.rationale) ?? undefined;
+
+    if (decision === 'ignore') {
+      const waivedReason = toNonEmptyString(record.waivedReason) ?? rationale ?? 'Out of mission scope';
+      if (affectedChecks.length === 0) {
+        continue;
+      }
+      drafts.push({
+        decision,
+        description: toNonEmptyString(record.description) ?? `Ignore validation failures in ${affectedChecks.join(', ')}`,
+        priority: normalizedPriority,
+        affectedChecks,
+        rationale,
+        waivedReason,
+      });
+      continue;
+    }
+
     const trackingKey = normalizeFollowUpTrackingKey(
       toNonEmptyString(record.trackingKey)
       ?? deriveTrackingKeyFromChecks(affectedChecks, failures)
@@ -1195,13 +1279,13 @@ function normalizeFollowUpDrafts(
       continue;
     }
 
-    const priority = String(record.priority ?? 'medium').toLowerCase();
     drafts.push({
+      decision,
       description,
       trackingKey,
-      priority: priority === 'high' || priority === 'low' ? priority : 'medium',
+      priority: normalizedPriority,
       affectedChecks,
-      rationale: toNonEmptyString(record.rationale) ?? undefined,
+      rationale,
       model: resolveFeatureModel(
         typeof record.model === 'string' ? record.model : undefined,
         description
@@ -1213,26 +1297,56 @@ function normalizeFollowUpDrafts(
 }
 
 function mergeFollowUpDrafts(drafts: FollowUpFeatureDraft[]): FollowUpFeatureDraft[] {
-  const grouped = new Map<string, FollowUpFeatureDraft>();
+  const featureGroups = new Map<string, FollowUpFeatureDraft>();
+  const ignoreGroups = new Map<string, FollowUpFeatureDraft>();
   for (const draft of drafts) {
+    if (draft.decision === 'ignore') {
+      const affectedChecks = Array.from(new Set(draft.affectedChecks ?? []));
+      if (affectedChecks.length === 0) {
+        continue;
+      }
+      const ignoreKey = affectedChecks.slice().sort().join(',');
+      const existing = ignoreGroups.get(ignoreKey);
+      if (!existing) {
+        ignoreGroups.set(ignoreKey, {
+          ...draft,
+          decision: 'ignore',
+          affectedChecks,
+        });
+        continue;
+      }
+      ignoreGroups.set(ignoreKey, {
+        ...existing,
+        decision: 'ignore',
+        description: pickMoreSpecificDescription(existing.description, draft.description) ?? existing.description,
+        priority: pickHigherPriority(existing.priority, draft.priority),
+        affectedChecks,
+        rationale: pickMoreSpecificDescription(existing.rationale, draft.rationale),
+        waivedReason: pickMoreSpecificDescription(existing.waivedReason, draft.waivedReason),
+      });
+      continue;
+    }
+
     const trackingKey = normalizeFollowUpTrackingKey(draft.trackingKey)
       ?? normalizeFollowUpTrackingKey(deriveTrackingKeyFromText(draft.description));
     if (!trackingKey) {
       continue;
     }
 
-    const existing = grouped.get(trackingKey);
+    const existing = featureGroups.get(trackingKey);
     if (!existing) {
-      grouped.set(trackingKey, {
+      featureGroups.set(trackingKey, {
         ...draft,
+        decision: 'feature',
         trackingKey,
         affectedChecks: Array.from(new Set(draft.affectedChecks ?? [])),
       });
       continue;
     }
 
-    grouped.set(trackingKey, {
+    featureGroups.set(trackingKey, {
       description: draft.description || existing.description,
+      decision: 'feature',
       trackingKey,
       priority: pickHigherPriority(existing.priority, draft.priority),
       affectedChecks: Array.from(new Set([...(existing.affectedChecks ?? []), ...(draft.affectedChecks ?? [])])),
@@ -1241,7 +1355,10 @@ function mergeFollowUpDrafts(drafts: FollowUpFeatureDraft[]): FollowUpFeatureDra
     });
   }
 
-  return Array.from(grouped.values());
+  return [
+    ...Array.from(featureGroups.values()),
+    ...Array.from(ignoreGroups.values()),
+  ];
 }
 
 function groupValidationFailuresByTrackingKey(
@@ -1717,6 +1834,19 @@ function appendFinalReviewMilestone(
 ): MissionPlan['milestones'] {
   const nextMilestoneIndex = milestones.length + 1;
   const milestoneId = `m${nextMilestoneIndex}`;
+  const qaChecks = productReviewContract.checkpoints
+    .filter((checkpoint) => checkpoint.evidenceMode === 'before_after' || checkpoint.reproduceBefore === true)
+    .map((checkpoint) => ({
+      id: checkpoint.id,
+      description: checkpoint.description,
+      type: 'browser' as const,
+      requiredRunner: 'playwright-interactive' as const,
+      requiredArtifacts: checkpoint.requiredArtifacts ?? ['screenshot'],
+      evidenceMode: checkpoint.evidenceMode ?? (checkpoint.reproduceBefore ? 'before_after' : 'single'),
+      reproduceBefore: checkpoint.reproduceBefore,
+      passed: false,
+      failureCount: 0,
+    }));
   return [
     ...milestones,
     {
@@ -1724,7 +1854,10 @@ function appendFinalReviewMilestone(
       title: 'Final Review',
       description: 'Run final product review and code review before mission completion.',
       status: 'pending' as const,
-      validationContract: createEmptyValidationContract(),
+      validationContract: {
+        ...createEmptyValidationContract(),
+        qaChecks: qaChecks.length > 0 ? qaChecks : undefined,
+      },
       features: [
         {
           id: `${milestoneId}-f1`,
@@ -1893,11 +2026,25 @@ function normalizeValidationContract(value: unknown): MissionPlanningOutput['mil
 
 function normalizeValidationChecks(
   value: unknown
-): Array<{ id: string; description: string; command?: string; type?: string }> | undefined {
+): Array<{
+  id: string;
+  description: string;
+  command?: string;
+  type?: string;
+  expectedOutcome?: ValidationExpectedOutcome;
+  waivedReason?: string;
+}> | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
-  const checks: Array<{ id: string; description: string; command?: string; type?: string }> = [];
+  const checks: Array<{
+    id: string;
+    description: string;
+    command?: string;
+    type?: string;
+    expectedOutcome?: ValidationExpectedOutcome;
+    waivedReason?: string;
+  }> = [];
   value.forEach((check, index) => {
     if (!check || typeof check !== 'object' || Array.isArray(check)) {
       return;
@@ -1915,6 +2062,11 @@ function normalizeValidationChecks(
       description,
       type: type ?? undefined,
       command: normalizeValidationCommand(command),
+      expectedOutcome: normalizeValidationExpectedOutcome(record.expectedOutcome, {
+        description,
+        command,
+      }),
+      waivedReason: toNonEmptyString(record.waivedReason) ?? undefined,
     });
   });
   return checks.length > 0 ? checks : undefined;
@@ -1929,6 +2081,8 @@ function normalizeQaValidationChecks(
   type?: string;
   requiredRunner?: ValidationRunner;
   requiredArtifacts?: ValidationArtifact[];
+  evidenceMode?: ValidationEvidenceMode;
+  reproduceBefore?: boolean;
 }> | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -1941,6 +2095,8 @@ function normalizeQaValidationChecks(
     type?: string;
     requiredRunner?: ValidationRunner;
     requiredArtifacts?: ValidationArtifact[];
+    evidenceMode?: ValidationEvidenceMode;
+    reproduceBefore?: boolean;
   }> = [];
 
   value.forEach((check, index) => {
@@ -1962,6 +2118,10 @@ function normalizeQaValidationChecks(
       command: normalizeValidationCommand(command),
       requiredRunner: normalizeValidationRunner(record.requiredRunner),
       requiredArtifacts: normalizeValidationArtifacts(record.requiredArtifacts),
+      evidenceMode: normalizeValidationEvidenceMode(record.evidenceMode, record.reproduceBefore),
+      reproduceBefore: normalizeValidationEvidenceMode(record.evidenceMode, record.reproduceBefore) === 'before_after'
+        ? record.reproduceBefore === true
+        : undefined,
     });
   });
 
@@ -1972,6 +2132,19 @@ function normalizeValidationRunner(value: unknown): ValidationRunner | undefined
   return value === 'playwright-interactive' || value === 'browser-test'
     ? value
     : undefined;
+}
+
+function normalizeValidationEvidenceMode(
+  value: unknown,
+  reproduceBefore?: unknown
+): ValidationEvidenceMode | undefined {
+  if (value === 'before_after') {
+    return 'before_after';
+  }
+  if (value === 'single') {
+    return 'single';
+  }
+  return reproduceBefore === true ? 'before_after' : undefined;
 }
 
 function normalizeQaCheckType(

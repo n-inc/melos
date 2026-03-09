@@ -36,6 +36,54 @@ describe('state/validation', () => {
     expect(contract.staticChecks[0]?.failureCount).toBe(0);
     expect(contract.qaChecks?.[0]?.requiredRunner).toBe('playwright-interactive');
     expect(contract.qaChecks?.[0]?.requiredArtifacts).toEqual(['screenshot', 'video']);
+    expect(contract.qaChecks?.[0]?.evidenceMode).toBe('single');
+  });
+
+  it('normalizes before_after browser evidence requirements', () => {
+    const contract = normalizeValidationContract({
+      qaChecks: [
+        {
+          id: 'browser-before-after',
+          description: 'Browser QA with before/after evidence',
+          type: 'browser',
+          requiredRunner: 'playwright-interactive',
+          requiredArtifacts: ['screenshot'],
+          evidenceMode: 'before_after',
+          reproduceBefore: true,
+          passed: false,
+          failureCount: 0,
+        },
+      ],
+      staticChecks: [],
+      testSuites: [],
+    });
+
+    expect(contract.qaChecks?.[0]).toMatchObject({
+      evidenceMode: 'before_after',
+      reproduceBefore: true,
+    });
+  });
+
+  it('infers no_match expectedOutcome for rg-based absence checks and applies waivers as passed', () => {
+    const contract = normalizeValidationContract({
+      staticChecks: [
+        {
+          id: 'absence',
+          description: 'フロントエンド実装コードに legacy 参照が残っていないことを確認する',
+          type: 'command',
+          command: 'rg -n "legacy" src',
+          passed: false,
+          failureCount: 2,
+          waivedReason: 'outside mission scope',
+        },
+      ],
+      testSuites: [],
+    });
+
+    expect(contract.staticChecks[0]?.expectedOutcome).toBe('no_match');
+    expect(contract.staticChecks[0]?.waivedReason).toBe('outside mission scope');
+    expect(contract.staticChecks[0]?.passed).toBe(true);
+    expect(contract.staticChecks[0]?.failureCount).toBe(0);
   });
 
   it('increments failure count on failed checks and clears pass status on success', () => {
@@ -85,6 +133,8 @@ describe('state/validation', () => {
     });
 
     expect(failedOnce.staticChecks[0]?.passed).toBe(true);
+    expect(failedOnce.staticChecks[0]?.failureCount).toBe(0);
+    expect(failedOnce.staticChecks[0]?.lastFailure).toBeUndefined();
     expect(failedOnce.testSuites[0]?.failureCount).toBe(1);
 
     const failedTwice = mergeValidationResults(failedOnce, {

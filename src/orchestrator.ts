@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { writeFile, readFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { isAbsolute, join, relative } from 'node:path';
 
 import { ManagerAgent, MissionPlanningError, type ManagerAgentConfig } from './agents/manager.js';
 import { WorkerAgent, type WorkerAgentConfig } from './agents/worker.js';
@@ -29,6 +30,9 @@ import {
   incrementMissionIterations,
 } from './state/mission.js';
 import {
+  type ProductReviewContract,
+  type ProductReviewCheckpoint,
+  type ProductReviewCheckpointResult,
   type ReviewReport,
   isBlockingReviewFinding,
 } from './state/review.js';
@@ -982,6 +986,23 @@ export class Orchestrator {
     const evidenceByCheckId = this.kernelState.validationEvidence?.[milestoneId] ?? {};
 
     for (const check of checks) {
+      if (check.waivedReason) {
+        const warning = `validation waived: ${check.waivedReason}`;
+        const result: ValidationCheckResult = {
+          checkId: check.id,
+          passed: true,
+          output: `waived: ${check.waivedReason}`,
+          warning,
+        };
+        results.push(result);
+        this.emitValidationWarning({
+          milestoneId,
+          checkId: check.id,
+          message: warning,
+        });
+        continue;
+      }
+
       if (check.type === 'browser') {
         const result = evaluateBrowserValidationCheck(this.config.cwd, check, evidenceByCheckId[check.id]);
         results.push(result);
@@ -1031,25 +1052,7 @@ export class Orchestrator {
       }
 
       const commandResult = runGitCommand(this.config.cwd, check.command);
-      const passed = commandResult.exitCode === 0;
-
-      results.push({
-        checkId: check.id,
-        passed,
-        exitCode: commandResult.exitCode,
-        durationMs: commandResult.durationMs,
-        output: `${commandResult.stdout}\n${commandResult.stderr}`.trim(),
-        failure: passed
-          ? undefined
-          : {
-            summary: `${check.id} failed (${commandResult.exitCode})`,
-            affectedFiles: [],
-            errorMessages: truncateLines(
-              `${commandResult.stdout}\n${commandResult.stderr}`.split(/\r?\n/).filter((line) => line.trim().length > 0),
-              8
-            ),
-          },
-      });
+      results.push(this.evaluateCommandValidationCheck(check, commandResult));
 
       this.emitEvent('command_executed', 'system', {
         checkId: check.id,
@@ -1173,13 +1176,25 @@ export class Orchestrator {
     missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
     this.state.missionPlan = missionPlan;
     this.kernelState.missionPlan = missionPlan;
-    this.activityLabel = `Validation failed for ${milestoneId}. Generated follow-up features.`;
+    this.activityLabel = followUpResult.waivedCheckIds.length > 0 && followUpResult.addedFeatures.length === 0 && followUpResult.updatedFeatures.length === 0
+      ? `Validation failed for ${milestoneId}. Waived out-of-scope checks.`
+      : `Validation failed for ${milestoneId}. Generated follow-up features.`;
 
-    if (followUpResult.addedFeatures.length > 0) {
+    if (followUpResult.addedFeatures.length > 0 || followUpResult.updatedFeatures.length > 0) {
       this.emitEvent('task_added', 'manager', {
         milestoneId,
-        features: followUpResult.addedFeatures,
+        features: [
+          ...followUpResult.updatedFeatures,
+          ...followUpResult.addedFeatures,
+        ],
         followUpFeatures: followUpResult.addedFeatures,
+      });
+    }
+    if (followUpResult.waivedCheckIds.length > 0) {
+      this.emitEvent('manager_decision', 'manager', {
+        action: 'validation_checks_waived',
+        milestoneId,
+        message: `Waived validation checks: ${followUpResult.waivedCheckIds.join(', ')}`,
       });
     }
 
@@ -1227,6 +1242,49 @@ export class Orchestrator {
         ],
         rootCause: `${check.type}-evidence-missing`,
       },
+    };
+  }
+
+  private evaluateCommandValidationCheck(
+    check: ValidationCheck,
+    commandResult: { exitCode: number; stdout: string; stderr: string; durationMs: number }
+  ): ValidationCheckResult {
+    const combinedOutput = `${commandResult.stdout}\n${commandResult.stderr}`.trim();
+    const expectedOutcome = check.expectedOutcome ?? 'exit_code_zero';
+    const noMatchSuccess = expectedOutcome === 'no_match'
+      && commandResult.exitCode === 1
+      && commandResult.stdout.trim().length === 0
+      && commandResult.stderr.trim().length === 0;
+    const passed = expectedOutcome === 'no_match'
+      ? noMatchSuccess
+      : commandResult.exitCode === 0;
+    const defaultOutput = expectedOutcome === 'no_match' && passed
+      ? 'expected no matches; command returned exitCode=1 with no output'
+      : combinedOutput;
+
+    return {
+      checkId: check.id,
+      passed,
+      exitCode: commandResult.exitCode,
+      durationMs: commandResult.durationMs,
+      output: defaultOutput,
+      failure: passed
+        ? undefined
+        : {
+          summary: expectedOutcome === 'no_match'
+            ? `${check.id} failed (expected no matches)`
+            : `${check.id} failed (${commandResult.exitCode})`,
+          affectedFiles: [],
+          errorMessages: truncateLines(
+            combinedOutput.length > 0
+              ? combinedOutput.split(/\r?\n/).filter((line) => line.trim().length > 0)
+              : [`exitCode=${commandResult.exitCode}`],
+            8
+          ),
+          rootCause: expectedOutcome === 'no_match'
+            ? 'absence-check-mismatch'
+            : undefined,
+        },
     };
   }
 
@@ -1433,6 +1491,7 @@ export class Orchestrator {
       workerReplyStream.push(chunk);
     };
 
+    const protectedRuntimeSnapshot = this.captureProtectedRuntimeSnapshot();
     let result: WorkerResult;
     try {
       result = await this.worker.run(workerInput);
@@ -1440,6 +1499,7 @@ export class Orchestrator {
     } finally {
       workerReplyStream.flush();
     }
+    result = this.enforceProtectedRuntimeWritePolicy(feature, result, protectedRuntimeSnapshot);
 
     if (resolvedExecutionModel.engine === 'codex') {
       const activeThreadId = this.worker.getActiveThreadId();
@@ -1740,6 +1800,101 @@ export class Orchestrator {
           'Worker warnings are configured as blocking failures.',
           warningSummary,
         ].filter((line) => line.trim().length > 0).join('\n'),
+        requestsHelp: true,
+      },
+    };
+  }
+
+  private captureProtectedRuntimeSnapshot(): Map<string, string> {
+    const snapshot = new Map<string, string>();
+    for (const path of this.listProtectedRuntimeFiles()) {
+      if (!existsSync(path)) {
+        continue;
+      }
+      snapshot.set(path, createHash('sha1').update(readFileSync(path)).digest('hex'));
+    }
+    return snapshot;
+  }
+
+  private listProtectedRuntimeFiles(): string[] {
+    return Array.from(new Set([
+      this.config.missionFile,
+      join(this.config.melosDir, 'state.json'),
+      ...this.listProtectedRuntimeArtifacts(join(this.config.melosDir, 'validations')),
+      ...this.listProtectedRuntimeArtifacts(join(this.config.melosDir, 'reviews')),
+    ]));
+  }
+
+  private listProtectedRuntimeArtifacts(directory: string): string[] {
+    if (!existsSync(directory)) {
+      return [];
+    }
+    return readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => join(directory, entry.name));
+  }
+
+  private diffProtectedRuntimeSnapshot(before: Map<string, string>): string[] {
+    const after = this.captureProtectedRuntimeSnapshot();
+    const changed = new Set<string>();
+    for (const path of before.keys()) {
+      if (before.get(path) !== after.get(path)) {
+        changed.add(path);
+      }
+    }
+    for (const path of after.keys()) {
+      if (before.get(path) !== after.get(path)) {
+        changed.add(path);
+      }
+    }
+    return Array.from(changed);
+  }
+
+  private isProtectedRuntimePath(path: string): boolean {
+    const resolved = isAbsolute(path) ? path : join(this.config.cwd, path);
+    const validationsDir = join(this.config.melosDir, 'validations');
+    const reviewsDir = join(this.config.melosDir, 'reviews');
+    return resolved === this.config.missionFile
+      || resolved === join(this.config.melosDir, 'state.json')
+      || resolved.startsWith(`${validationsDir}/`)
+      || resolved.startsWith(`${reviewsDir}/`);
+  }
+
+  private enforceProtectedRuntimeWritePolicy(
+    feature: Feature,
+    result: WorkerResult,
+    before: Map<string, string>
+  ): WorkerResult {
+    const reported = result.report.filesChanged
+      .map((file) => file.path)
+      .filter((path) => typeof path === 'string' && this.isProtectedRuntimePath(path))
+      .map((path) => (isAbsolute(path) ? path : join(this.config.cwd, path)));
+    const changed = this.diffProtectedRuntimeSnapshot(before);
+    const protectedPaths = Array.from(new Set([...reported, ...changed]));
+    if (protectedPaths.length === 0) {
+      return result;
+    }
+
+    const labels = protectedPaths.map((path) => relative(this.config.cwd, path) || path);
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'protected_runtime_write_blocked',
+      featureId: feature.id,
+      message: `Worker edited protected runtime files: ${labels.join(', ')}`,
+    });
+    return {
+      type: 'failed',
+      report: {
+        ...result.report,
+        status: 'FAILED',
+        summary: [
+          result.report.summary,
+          'Worker edited protected runtime files.',
+          `Protected files: ${labels.join(', ')}`,
+        ].filter((line) => line.trim().length > 0).join('\n'),
+        warnings: Array.from(new Set([
+          ...result.report.warnings,
+          'Do not edit TASK.json or Melos runtime state files from worker tasks.',
+        ])),
         requestsHelp: true,
       },
     };
@@ -2194,7 +2349,11 @@ export class Orchestrator {
     milestone: Milestone
   ): Promise<'retry' | 'skip' | 'abort' | 'modify'> {
     if (!this.config.interactivePlanning || !process.stdin.isTTY) {
-      return 'retry';
+      this.emitEvent('escalation_answered', 'orchestrator', {
+        milestoneId: milestone.id,
+        answer: 'modify',
+      });
+      return 'modify';
     }
 
     const promptMessage = this.isTuiInputMode()
@@ -2309,7 +2468,11 @@ export class Orchestrator {
     feature: Feature,
     result: WorkerResult
   ): Promise<void> {
-    const reviewReport = this.createReviewReport(milestone.id, feature, result.report);
+    const reviewReport = this.enforceProductReviewEvidenceContract(
+      milestone.id,
+      feature,
+      this.createReviewReport(milestone.id, feature, result.report)
+    );
     this.state.latestReviewReport = reviewReport;
     this.kernelState.latestReviewReport = reviewReport;
     await this.persistReviewReport(reviewReport);
@@ -2331,23 +2494,34 @@ export class Orchestrator {
     missionPlan = incrementMissionIterations(missionPlan);
 
     if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
-      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
-      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
-      missionPlan = setActiveMilestone(missionPlan, milestone.id);
-      missionPlan = setActiveFeature(missionPlan, feature.id);
-      missionPlan = transitionMissionState(missionPlan, 'paused');
-      this.state.missionPlan = missionPlan;
-      this.kernelState.missionPlan = missionPlan;
-      this.emitEvent('iteration_completed', 'orchestrator', {
-        iteration: missionPlan.totalIterations,
+      if (blockingFindings.length === 0) {
+        missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+        missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+        missionPlan = setActiveMilestone(missionPlan, milestone.id);
+        missionPlan = setActiveFeature(missionPlan, feature.id);
+        this.state.missionPlan = missionPlan;
+        this.kernelState.missionPlan = missionPlan;
+        this.emitEvent('iteration_completed', 'orchestrator', {
+          iteration: missionPlan.totalIterations,
+          milestoneId: milestone.id,
+          featureId: feature.id,
+          status: 'blocked',
+        });
+        this.pause(
+          'review blocked and requested help',
+          `${formatReviewLabel(feature)} blocked. Resolve the review environment or contract issue and press R to resume.`
+        );
+        return;
+      }
+
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'review_blocked_auto_downgraded',
         milestoneId: milestone.id,
         featureId: feature.id,
-        status: 'blocked',
+        reviewType: reviewReport.reviewType,
+        generation: reviewReport.generation,
+        message: `Review returned BLOCKED with ${blockingFindings.length} blocking finding${blockingFindings.length === 1 ? '' : 's'}; generating remediation follow-ups instead of pausing.`,
       });
-      this.activityLabel = `${formatReviewLabel(feature)} blocked. Resolve the review environment or contract issue and resume.`;
-      await this.persistMissionPlan();
-      await this.emitStatusUpdate();
-      return;
     }
 
     if (blockingFindings.length === 0 && reviewReport.passed) {
@@ -2456,7 +2630,58 @@ export class Orchestrator {
       summary: report.review?.summary?.trim() || report.summary,
       findings,
       artifacts,
+      checkpointResults: report.review?.checkpointResults?.map((result) => ({ ...result })),
       blockingFindingCount: findings.filter((finding) => isBlockingReviewFinding(finding)).length,
+    };
+  }
+
+  private enforceProductReviewEvidenceContract(
+    milestoneId: string,
+    feature: Feature,
+    reviewReport: ReviewReport
+  ): ReviewReport {
+    if (feature.reviewType !== 'product') {
+      return reviewReport;
+    }
+
+    const contract = this.requireMissionPlan().productReviewContract;
+    if (!contract) {
+      return reviewReport;
+    }
+
+    const evidenceByCheckId = this.kernelState.validationEvidence?.[milestoneId] ?? {};
+    const completenessFailures = evaluateProductReviewCheckpointResults(
+      this.config.cwd,
+      contract,
+      reviewReport.checkpointResults,
+      reviewReport.artifacts,
+      evidenceByCheckId
+    );
+    if (completenessFailures.length === 0) {
+      return reviewReport;
+    }
+
+    const finding = {
+      id: 'product-review-evidence-incomplete',
+      reviewType: 'product' as const,
+      priority: 'P1' as const,
+      summary: 'Final product review evidence is incomplete',
+      rationale: completenessFailures.join('; '),
+      suggestedFix: 'Capture the required baseline and after evidence for each product review checkpoint before sign-off.',
+      trackingKey: 'product-review-evidence-incomplete',
+      surface: 'final-review-evidence',
+      affectedFiles: [] as string[],
+    };
+    const findings = [...reviewReport.findings, finding];
+
+    return {
+      ...reviewReport,
+      passed: false,
+      findings,
+      blockingFindingCount: findings.filter((item) => isBlockingReviewFinding(item)).length,
+      summary: reviewReport.summary.trim().length > 0
+        ? `${reviewReport.summary}\nEvidence completeness check failed.`
+        : 'Evidence completeness check failed.',
     };
   }
 
@@ -2508,11 +2733,7 @@ export class Orchestrator {
     for (const draft of followUps) {
       const trackingKey = draft.trackingKey?.trim();
       const matchIndex = trackingKey
-        ? features.findIndex((candidate) =>
-          candidate.kind !== 'review'
-          && candidate.trackingKey === trackingKey
-          && (candidate.status === 'pending' || candidate.status === 'in_progress' || candidate.status === 'failed')
-        )
+        ? this.findReusableFollowUpFeatureIndex(features, trackingKey)
         : -1;
 
       if (matchIndex >= 0) {
@@ -2523,7 +2744,7 @@ export class Orchestrator {
           description: this.pickMoreSpecificFeatureDescription(existing.description, draft.description),
           trackingKey: existing.trackingKey ?? trackingKey,
           model: existing.model ?? normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
-          status: existing.status === 'failed' ? 'pending' : existing.status,
+          status: existing.status === 'in_progress' ? 'in_progress' : 'pending',
         };
         features[matchIndex] = merged;
         updatedFeatures.push(merged);
@@ -2599,14 +2820,18 @@ export class Orchestrator {
     missionPlan: MissionPlan,
     milestoneId: string,
     followUps: Array<{
+      decision?: 'feature' | 'ignore';
       description: string;
       trackingKey?: string;
       model?: string;
+      affectedChecks?: string[];
+      waivedReason?: string;
     }>
   ): {
     plan: MissionPlan;
     addedFeatures: Feature[];
     updatedFeatures: Feature[];
+    waivedCheckIds: string[];
   } {
     const milestone = missionPlan.milestones.find((item) => item.id === milestoneId);
     if (!milestone || followUps.length === 0) {
@@ -2614,20 +2839,31 @@ export class Orchestrator {
         plan: missionPlan,
         addedFeatures: [],
         updatedFeatures: [],
+        waivedCheckIds: [],
       };
     }
 
     const updatedFeatures: Feature[] = [];
     const features = milestone.features.map((feature) => ({ ...feature }));
     const appendDrafts: Array<{ description: string; trackingKey?: string; model?: string }> = [];
+    const waivers = new Map<string, string>();
 
     for (const draft of followUps) {
+      if (draft.decision === 'ignore') {
+        const reason = draft.waivedReason?.trim() || draft.description.trim();
+        for (const checkId of draft.affectedChecks ?? []) {
+          const existingReason = waivers.get(checkId);
+          waivers.set(
+            checkId,
+            existingReason ? this.pickMoreSpecificFeatureDescription(existingReason, reason) : reason
+          );
+        }
+        continue;
+      }
+
       const trackingKey = draft.trackingKey?.trim();
       const matchIndex = trackingKey
-        ? features.findIndex((feature) =>
-          feature.trackingKey === trackingKey
-          && (feature.status === 'pending' || feature.status === 'in_progress' || feature.status === 'failed')
-        )
+        ? this.findReusableFollowUpFeatureIndex(features, trackingKey)
         : -1;
 
       if (matchIndex >= 0) {
@@ -2637,7 +2873,7 @@ export class Orchestrator {
           description: this.pickMoreSpecificFeatureDescription(existing.description, draft.description),
           trackingKey: existing.trackingKey ?? trackingKey,
           model: existing.model ?? normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
-          status: existing.status === 'failed' ? 'pending' : existing.status,
+          status: existing.status === 'in_progress' ? 'in_progress' : 'pending',
         };
         features[matchIndex] = merged;
         updatedFeatures.push(merged);
@@ -2651,9 +2887,59 @@ export class Orchestrator {
       });
     }
 
+    const waivedCheckIds: string[] = [];
+    const validationContract = waivers.size === 0
+      ? milestone.validationContract
+      : {
+        ...milestone.validationContract,
+        staticChecks: milestone.validationContract.staticChecks.map((check) => {
+          const waivedReason = waivers.get(check.id);
+          if (!waivedReason) {
+            return { ...check };
+          }
+          waivedCheckIds.push(check.id);
+          return {
+            ...check,
+            passed: true,
+            failureCount: 0,
+            lastFailure: undefined,
+            waivedReason,
+          };
+        }),
+        testSuites: milestone.validationContract.testSuites.map((check) => {
+          const waivedReason = waivers.get(check.id);
+          if (!waivedReason) {
+            return { ...check };
+          }
+          waivedCheckIds.push(check.id);
+          return {
+            ...check,
+            passed: true,
+            failureCount: 0,
+            lastFailure: undefined,
+            waivedReason,
+          };
+        }),
+        qaChecks: milestone.validationContract.qaChecks?.map((check) => {
+          const waivedReason = waivers.get(check.id);
+          if (!waivedReason) {
+            return { ...check };
+          }
+          waivedCheckIds.push(check.id);
+          return {
+            ...check,
+            passed: true,
+            failureCount: 0,
+            lastFailure: undefined,
+            waivedReason,
+          };
+        }),
+      };
+
     let nextPlan = this.replaceMilestone(missionPlan, milestoneId, (current) => ({
       ...current,
       features,
+      validationContract,
     }));
 
     if (appendDrafts.length === 0) {
@@ -2661,6 +2947,7 @@ export class Orchestrator {
         plan: nextPlan,
         addedFeatures: [],
         updatedFeatures,
+        waivedCheckIds: Array.from(new Set(waivedCheckIds)),
       };
     }
 
@@ -2681,7 +2968,22 @@ export class Orchestrator {
       plan: nextPlan,
       addedFeatures,
       updatedFeatures,
+      waivedCheckIds: Array.from(new Set(waivedCheckIds)),
     };
+  }
+
+  private findReusableFollowUpFeatureIndex(features: Feature[], trackingKey: string): number {
+    for (let index = features.length - 1; index >= 0; index -= 1) {
+      const feature = features[index];
+      if (feature.trackingKey !== trackingKey) {
+        continue;
+      }
+      if (feature.kind === 'qa' || feature.kind === 'review' || feature.kind === 'pull_request' || feature.kind === 'pr_followup') {
+        continue;
+      }
+      return index;
+    }
+    return -1;
   }
 
   private pickMoreSpecificFeatureDescription(left: string, right: string): string {
@@ -2804,16 +3106,10 @@ export class Orchestrator {
       ...(this.kernelState.validationEvidence?.[milestoneId] ?? {}),
     };
     for (const check of checks) {
-      nextMilestoneEvidence[check.checkId] = {
-        ...check,
-        failure: check.failure
-          ? {
-            ...check.failure,
-            affectedFiles: [...check.failure.affectedFiles],
-            errorMessages: [...check.failure.errorMessages],
-          }
-          : undefined,
-      };
+      nextMilestoneEvidence[check.checkId] = mergeValidationEvidenceResult(
+        nextMilestoneEvidence[check.checkId],
+        check
+      );
     }
 
     this.kernelState.validationEvidence = {
@@ -2954,6 +3250,8 @@ export class Orchestrator {
         failureCount: check.failureCount,
         requiredRunner: check.requiredRunner,
         requiredArtifacts: check.requiredArtifacts,
+        evidenceMode: check.evidenceMode,
+        reproduceBefore: check.reproduceBefore,
       })),
     }));
 
@@ -3246,10 +3544,10 @@ function buildTaskPreviewLines(
       const reviewMeta = feature.kind === 'review'
         ? ` [review:${feature.reviewType ?? 'unknown'} g${feature.reviewGeneration ?? 1}]`
         : feature.kind === 'qa'
-          ? ' [qa]'
-        : feature.kind === 'review_remediation'
-          ? ' [review-remediation]'
-          : '';
+          ? ` [qa:${feature.qaPhase ?? 'after'}]`
+          : feature.kind === 'review_remediation'
+            ? ' [review-remediation]'
+            : '';
       lines.push(
         `  ${activeMark}${asFeatureCheckbox(feature.status)} ${feature.id} [${feature.status}]${reviewMeta} [${badge}:${resolveDisplayModel(modelState.model)}] attempts=${feature.attempts} ${feature.description}`
       );
@@ -3275,7 +3573,11 @@ function buildTaskPreviewLines(
               : check.type === 'browser'
                 ? 'browser QA (worker evidence required)'
                 : 'command not specified');
-        lines.push(`    - [${check.passed ? 'x' : ' '}] ${check.id} (${check.type}) ${description} :: ${actionLabel}`);
+        const evidenceNotes = [
+          check.evidenceMode ? `evidence=${check.evidenceMode}` : null,
+          check.reproduceBefore ? 'before-required' : null,
+        ].filter((item): item is string => Boolean(item));
+        lines.push(`    - [${check.passed ? 'x' : ' '}] ${check.id} (${check.type}) ${description}${evidenceNotes.length > 0 ? ` [${evidenceNotes.join(' ')}]` : ''} :: ${actionLabel}`);
       }
       const qaChecks = milestone.validationContract.qaChecks ?? [];
       if (qaChecks.length > 0) {
@@ -3346,6 +3648,12 @@ function evaluateBrowserValidationCheck(
     return createBrowserValidationFailure(check.id, 'browser validation is missing required evidence', missingArtifacts, evidence);
   }
 
+  if (check.evidenceMode === 'before_after' && check.reproduceBefore === true && evidence.beforeReproduced !== true) {
+    return createBrowserValidationFailure(check.id, 'browser validation did not confirm the reproduced before state', [
+      'beforeReproduced must be true for before_after checks that require baseline reproduction',
+    ], evidence);
+  }
+
   const missingPaths = getMissingBrowserArtifactPaths(cwd, evidence);
   if (missingPaths.length > 0) {
     return createBrowserValidationFailure(check.id, 'browser validation reported artifact paths that do not exist', missingPaths, evidence);
@@ -3382,6 +3690,29 @@ function getMissingBrowserArtifacts(check: ValidationCheck, evidence: Validation
   const requiredArtifacts = check.requiredArtifacts && check.requiredArtifacts.length > 0
     ? check.requiredArtifacts
     : undefined;
+  if (check.evidenceMode === 'before_after') {
+    const missing: string[] = [];
+    const required = requiredArtifacts ?? ['screenshot'];
+    for (const artifact of required) {
+      if (artifact === 'screenshot') {
+        if (!hasAnyValue(evidence.beforeScreenshotPath, evidence.beforeScreenshotUrl)) {
+          missing.push('missing before screenshot');
+        }
+        if (!hasAnyValue(evidence.afterScreenshotPath, evidence.afterScreenshotUrl)) {
+          missing.push('missing after screenshot');
+        }
+      }
+      if (artifact === 'video') {
+        if (!hasAnyValue(evidence.beforeVideoPath, evidence.beforeVideoUrl)) {
+          missing.push('missing before video');
+        }
+        if (!hasAnyValue(evidence.afterVideoPath, evidence.afterVideoUrl)) {
+          missing.push('missing after video');
+        }
+      }
+    }
+    return missing;
+  }
   const available = new Set<string>();
 
   if (hasNonEmptyValue(evidence.screenshotPath) || hasNonEmptyValue(evidence.screenshotUrl)) {
@@ -3411,8 +3742,142 @@ function getMissingBrowserArtifactPaths(cwd: string, evidence: ValidationCheckRe
   if (hasNonEmptyValue(evidence.videoPath) && !existsSync(resolveArtifactPath(cwd, evidence.videoPath))) {
     missing.push(`videoPath not found: ${evidence.videoPath}`);
   }
+  if (hasNonEmptyValue(evidence.beforeScreenshotPath) && !existsSync(resolveArtifactPath(cwd, evidence.beforeScreenshotPath))) {
+    missing.push(`beforeScreenshotPath not found: ${evidence.beforeScreenshotPath}`);
+  }
+  if (hasNonEmptyValue(evidence.afterScreenshotPath) && !existsSync(resolveArtifactPath(cwd, evidence.afterScreenshotPath))) {
+    missing.push(`afterScreenshotPath not found: ${evidence.afterScreenshotPath}`);
+  }
+  if (hasNonEmptyValue(evidence.beforeVideoPath) && !existsSync(resolveArtifactPath(cwd, evidence.beforeVideoPath))) {
+    missing.push(`beforeVideoPath not found: ${evidence.beforeVideoPath}`);
+  }
+  if (hasNonEmptyValue(evidence.afterVideoPath) && !existsSync(resolveArtifactPath(cwd, evidence.afterVideoPath))) {
+    missing.push(`afterVideoPath not found: ${evidence.afterVideoPath}`);
+  }
 
   return missing;
+}
+
+function mergeValidationEvidenceResult(
+  existing: ValidationCheckResult | undefined,
+  incoming: ValidationCheckResult
+): ValidationCheckResult {
+  const merged: ValidationCheckResult = {
+    ...(existing ? cloneValidationCheckResult(existing) : {}),
+    ...cloneValidationCheckResult(incoming),
+  };
+
+  if (existing) {
+    merged.beforeScreenshotPath = incoming.beforeScreenshotPath ?? existing.beforeScreenshotPath;
+    merged.afterScreenshotPath = incoming.afterScreenshotPath ?? existing.afterScreenshotPath;
+    merged.beforeVideoPath = incoming.beforeVideoPath ?? existing.beforeVideoPath;
+    merged.afterVideoPath = incoming.afterVideoPath ?? existing.afterVideoPath;
+    merged.beforeScreenshotUrl = incoming.beforeScreenshotUrl ?? existing.beforeScreenshotUrl;
+    merged.afterScreenshotUrl = incoming.afterScreenshotUrl ?? existing.afterScreenshotUrl;
+    merged.beforeVideoUrl = incoming.beforeVideoUrl ?? existing.beforeVideoUrl;
+    merged.afterVideoUrl = incoming.afterVideoUrl ?? existing.afterVideoUrl;
+    merged.beforeReproduced = incoming.beforeReproduced ?? existing.beforeReproduced;
+    merged.beforeObserved = incoming.beforeObserved ?? existing.beforeObserved;
+    merged.afterObserved = incoming.afterObserved ?? existing.afterObserved;
+  }
+
+  return merged;
+}
+
+function cloneValidationCheckResult(result: ValidationCheckResult): ValidationCheckResult {
+  return {
+    ...result,
+    failure: result.failure
+      ? {
+        ...result.failure,
+        affectedFiles: [...result.failure.affectedFiles],
+        errorMessages: [...result.failure.errorMessages],
+      }
+      : undefined,
+  };
+}
+
+function evaluateProductReviewCheckpointResults(
+  cwd: string,
+  contract: ProductReviewContract,
+  checkpointResults: ProductReviewCheckpointResult[] | undefined,
+  artifacts: ReviewReport['artifacts'],
+  evidenceByCheckId: Record<string, ValidationCheckResult>
+): string[] {
+  const failures: string[] = [];
+  const resultsById = new Map((checkpointResults ?? []).map((result) => [result.checkpointId, result]));
+
+  for (const checkpoint of contract.checkpoints) {
+    const evidenceMode = checkpoint.evidenceMode ?? (checkpoint.reproduceBefore ? 'before_after' : 'single');
+    const requiredArtifacts = checkpoint.requiredArtifacts ?? ['screenshot'];
+    const checkpointArtifacts = artifacts.filter((artifact) => artifact.checkpointId === checkpoint.id);
+    const checkpointResult = resultsById.get(checkpoint.id);
+    const baselineEvidence = evidenceByCheckId[checkpoint.id];
+
+    if (evidenceMode === 'before_after' && checkpoint.reproduceBefore) {
+      if (!baselineEvidence) {
+        failures.push(`${checkpoint.id}: missing baseline QA evidence`);
+      } else {
+        const baselineMissing = getMissingBrowserArtifacts({
+          id: checkpoint.id,
+          description: checkpoint.description,
+          type: 'browser',
+          requiredArtifacts,
+          evidenceMode: 'before_after',
+          reproduceBefore: true,
+          passed: false,
+          failureCount: 0,
+        }, baselineEvidence)
+          .filter((message) => message.startsWith('missing before '));
+        if (baselineMissing.length > 0) {
+          failures.push(`${checkpoint.id}: ${baselineMissing.join(', ')}`);
+        }
+      }
+    }
+
+    if (!checkpointResult) {
+      failures.push(`${checkpoint.id}: missing checkpointResults entry`);
+      continue;
+    }
+    if (checkpointResult.passed === false) {
+      failures.push(`${checkpoint.id}: checkpointResult reported failure`);
+    }
+    if (evidenceMode === 'before_after' && checkpoint.reproduceBefore && checkpointResult.beforeReproduced !== true) {
+      failures.push(`${checkpoint.id}: beforeReproduced was not confirmed`);
+    }
+
+    for (const artifact of requiredArtifacts) {
+      if (artifact === 'screenshot') {
+        const hasAfterScreenshot = hasAnyValue(checkpointResult.afterScreenshotPath, undefined)
+          || checkpointArtifacts.some((item) => item.kind === 'screenshot' && item.phase === 'after');
+        if (!hasAfterScreenshot) {
+          failures.push(`${checkpoint.id}: missing after screenshot`);
+        }
+      }
+      if (artifact === 'video') {
+        const hasAfterVideo = hasAnyValue(checkpointResult.afterVideoPath, undefined)
+          || checkpointArtifacts.some((item) => item.kind === 'video' && item.phase === 'after');
+        if (!hasAfterVideo) {
+          failures.push(`${checkpoint.id}: missing after video`);
+        }
+      }
+    }
+
+    const checkpointPaths = [
+      checkpointResult.beforeScreenshotPath,
+      checkpointResult.afterScreenshotPath,
+      checkpointResult.beforeVideoPath,
+      checkpointResult.afterVideoPath,
+      ...checkpointArtifacts.map((artifact) => artifact.path),
+    ].filter((value): value is string => hasNonEmptyValue(value));
+    for (const path of checkpointPaths) {
+      if (!existsSync(resolveArtifactPath(cwd, path))) {
+        failures.push(`${checkpoint.id}: artifact not found: ${path}`);
+      }
+    }
+  }
+
+  return Array.from(new Set(failures));
 }
 
 function resolveArtifactPath(cwd: string, artifactPath: string): string {
@@ -3421,6 +3886,10 @@ function resolveArtifactPath(cwd: string, artifactPath: string): string {
 
 function hasNonEmptyValue(value: string | undefined): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function hasAnyValue(pathValue?: string, urlValue?: string): boolean {
+  return hasNonEmptyValue(pathValue) || hasNonEmptyValue(urlValue);
 }
 
 type FeatureModelSource = 'explicit' | 'default';

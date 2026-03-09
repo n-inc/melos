@@ -144,6 +144,11 @@ describe('WorkerAgent', () => {
     expect(prompt).toContain('git status --porcelain');
     expect(prompt).toContain('git diff --staged');
     expect(prompt).toContain('## Runtime Context');
+    expect(prompt).toContain('## Protected Runtime Files');
+    expect(prompt).toContain('Never edit TASK.json.');
+    expect(prompt).toContain('Never edit `.melos/state.json`, `.melos/validations/*`, or `.melos/reviews/*`.');
+    expect(prompt).toContain('`BLOCKED` は人手の介入が必要で、Melos が自動では前進できない場合にだけ使う');
+    expect(prompt).toContain('`requestsHelp` は、人手の介入が必要で自動実行を止めるべきときだけ `true` にする');
     expect(prompt).toContain('Mission goal: Sample goal');
   });
 
@@ -180,6 +185,8 @@ describe('WorkerAgent', () => {
                 type: 'browser',
                 requiredRunner: 'playwright-interactive',
                 requiredArtifacts: ['screenshot'],
+                evidenceMode: 'before_after',
+                reproduceBefore: true,
                 passed: false,
                 failureCount: 0,
               },
@@ -218,7 +225,10 @@ describe('WorkerAgent', () => {
     expect(qaFeature.kind).toBe('qa');
     expect(prompt).toContain('## QA Mode');
     expect(prompt).toContain('## QA Checks');
+    expect(prompt).toContain('## Protected Runtime Files');
     expect(prompt).toContain('playwright-interactive');
+    expect(prompt).toContain('evidenceMode=before_after');
+    expect(prompt).toContain('reproduceBefore=true');
     expect(prompt).not.toContain('## Commit Workflow');
     expect(options?.enabledFeatures).toEqual(['js_repl']);
   });

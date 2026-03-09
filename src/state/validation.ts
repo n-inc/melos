@@ -7,18 +7,24 @@ export type CheckType =
   | 'e2e'
   | 'manual';
 
+export type ValidationExpectedOutcome = 'exit_code_zero' | 'no_match';
+
 export type ValidationRunner = 'playwright-interactive' | 'browser-test';
 
 export type ValidationArtifact = 'screenshot' | 'video';
+export type ValidationEvidenceMode = 'single' | 'before_after';
 
 export interface ValidationCheck {
   id: string;
   description: string;
   type: CheckType;
   command?: string;
-  expectedOutcome?: string;
+  expectedOutcome?: ValidationExpectedOutcome;
+  waivedReason?: string;
   requiredRunner?: ValidationRunner;
   requiredArtifacts?: ValidationArtifact[];
+  evidenceMode?: ValidationEvidenceMode;
+  reproduceBefore?: boolean;
   passed: boolean;
   failureCount: number;
   lastFailure?: string;
@@ -49,6 +55,17 @@ export interface ValidationCheckResult {
   videoPath?: string;
   screenshotUrl?: string;
   videoUrl?: string;
+  beforeScreenshotPath?: string;
+  afterScreenshotPath?: string;
+  beforeVideoPath?: string;
+  afterVideoPath?: string;
+  beforeScreenshotUrl?: string;
+  afterScreenshotUrl?: string;
+  beforeVideoUrl?: string;
+  afterVideoUrl?: string;
+  beforeReproduced?: boolean;
+  beforeObserved?: string;
+  afterObserved?: string;
   failure?: ValidationCheckFailure;
 }
 
@@ -92,26 +109,82 @@ export function cloneValidationContract(contract: ValidationContract): Validatio
   };
 }
 
+export function inferValidationExpectedOutcome(
+  description: string | null | undefined,
+  command: string | null | undefined
+): ValidationExpectedOutcome | undefined {
+  const normalizedCommand = command?.trim() ?? '';
+  if (!/^rg(?:\s|$)/.test(normalizedCommand)) {
+    return undefined;
+  }
+
+  const normalizedDescription = description?.trim().toLowerCase() ?? '';
+  if (normalizedDescription.length === 0) {
+    return undefined;
+  }
+
+  const absencePatterns = [
+    /残っていない/,
+    /残存.*ない/,
+    /存在しない/,
+    /ゼロ/,
+    /\bno\b.*\bremain/,
+    /\bno\b.*\breference/,
+    /\bdoes not exist\b/,
+    /\bshould not\b/,
+    /\babsence\b/,
+    /\bremoved?\b/,
+    /\bwithout\b/,
+  ];
+  return absencePatterns.some((pattern) => pattern.test(normalizedDescription))
+    ? 'no_match'
+    : undefined;
+}
+
+export function normalizeValidationExpectedOutcome(
+  value: unknown,
+  fallback?: {
+    description?: string | null | undefined;
+    command?: string | null | undefined;
+  }
+): ValidationExpectedOutcome | undefined {
+  if (value === 'exit_code_zero' || value === 'no_match') {
+    return value;
+  }
+  return inferValidationExpectedOutcome(fallback?.description, fallback?.command);
+}
+
 export function normalizeValidationCheck(input: Partial<ValidationCheck>, index: number): ValidationCheck {
   const requiredArtifacts = Array.isArray(input.requiredArtifacts)
     ? input.requiredArtifacts.filter((artifact): artifact is ValidationArtifact => artifact === 'screenshot' || artifact === 'video')
     : [];
+  const waivedReason = typeof input.waivedReason === 'string' && input.waivedReason.trim().length > 0
+    ? input.waivedReason.trim()
+    : undefined;
+  const expectedOutcome = normalizeValidationExpectedOutcome(input.expectedOutcome, {
+    description: input.description,
+    command: input.command,
+  }) ?? 'exit_code_zero';
+  const evidenceMode = input.evidenceMode === 'before_after' ? 'before_after' : 'single';
 
   return {
     id: input.id?.trim() || `check-${index + 1}`,
     description: input.description?.trim() || 'Unnamed validation check',
     type: input.type ?? 'command',
     command: input.command?.trim() || undefined,
-    expectedOutcome: input.expectedOutcome?.trim() || undefined,
+    expectedOutcome,
+    waivedReason,
     requiredRunner: input.requiredRunner === 'playwright-interactive' || input.requiredRunner === 'browser-test'
       ? input.requiredRunner
       : undefined,
     requiredArtifacts: requiredArtifacts.length > 0 ? requiredArtifacts : undefined,
-    passed: Boolean(input.passed),
-    failureCount: typeof input.failureCount === 'number' && input.failureCount > 0
+    evidenceMode,
+    reproduceBefore: evidenceMode === 'before_after' ? input.reproduceBefore === true : undefined,
+    passed: waivedReason ? true : Boolean(input.passed),
+    failureCount: waivedReason ? 0 : (typeof input.failureCount === 'number' && input.failureCount > 0
       ? Math.floor(input.failureCount)
-      : 0,
-    lastFailure: input.lastFailure?.trim() || undefined,
+      : 0),
+    lastFailure: waivedReason ? undefined : (input.lastFailure?.trim() || undefined),
   };
 }
 
@@ -146,6 +219,8 @@ export function mergeValidationResults(
         return {
           ...check,
           passed: true,
+          failureCount: 0,
+          lastFailure: undefined,
         };
       }
       return {

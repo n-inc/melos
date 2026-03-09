@@ -18,6 +18,7 @@ export type MissionState =
 
 export type FeatureStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped';
 export type FeatureKind = 'implementation' | 'qa' | 'review' | 'review_remediation' | 'pull_request' | 'pr_followup';
+export type QaPhase = 'baseline' | 'after';
 export type MilestoneStatus =
   | 'pending'
   | 'in_progress'
@@ -64,6 +65,7 @@ export interface Feature {
   cwd?: string;
   checks?: CheckItem[];
   kind: FeatureKind;
+  qaPhase?: QaPhase;
   reviewType?: ReviewType;
   reviewGeneration?: number;
   status: FeatureStatus;
@@ -71,9 +73,10 @@ export interface Feature {
   attempts: number;
 }
 
-interface CreateMissionFeatureInput extends Omit<Feature, 'model' | 'kind' | 'reviewType' | 'reviewGeneration'> {
+interface CreateMissionFeatureInput extends Omit<Feature, 'model' | 'kind' | 'qaPhase' | 'reviewType' | 'reviewGeneration'> {
   model?: string;
   kind?: FeatureKind;
+  qaPhase?: QaPhase;
   reviewType?: ReviewType;
   reviewGeneration?: number;
   requestedModel?: string;
@@ -105,6 +108,8 @@ const POST_PR_MILESTONE_DESCRIPTION = 'Create the PR and address actionable PR f
 const PULL_REQUEST_FEATURE_DESCRIPTION = 'Create or update GitHub pull request';
 const PR_FOLLOWUP_FEATURE_DESCRIPTION = 'Wait for PR feedback and fix actionable issues';
 const QA_FEATURE_DESCRIPTION = 'Execute milestone QA checklist';
+const BASELINE_QA_FEATURE_DESCRIPTION = 'Capture baseline QA evidence before implementation changes';
+const AFTER_QA_FEATURE_DESCRIPTION = 'Execute milestone QA checklist after implementation';
 
 export function missionFileExists(path: string): boolean {
   return existsSync(path);
@@ -334,12 +339,31 @@ export function appendFeaturesToMilestone(
           id: asTrimmedString(feature.id) || `${milestoneId}-f${milestone.features.length + index + 1}`,
         })
       );
-      const existingQaFeatures = milestone.features.filter((feature) => feature.kind === 'qa');
+      const existingBaselineQaFeatures = milestone.features.filter(
+        (feature) => feature.kind === 'qa' && feature.qaPhase === 'baseline'
+      );
+      const existingAfterQaFeatures = milestone.features.filter(
+        (feature) => feature.kind === 'qa' && feature.qaPhase !== 'baseline'
+      );
       const existingNonQaFeatures = milestone.features.filter((feature) => feature.kind !== 'qa');
+      const insertedBaselineQaFeatures = normalizedFeatures.filter(
+        (feature) => feature.kind === 'qa' && feature.qaPhase === 'baseline'
+      );
+      const insertedAfterQaFeatures = normalizedFeatures.filter(
+        (feature) => feature.kind === 'qa' && feature.qaPhase !== 'baseline'
+      );
+      const insertedNonQaFeatures = normalizedFeatures.filter((feature) => feature.kind !== 'qa');
 
       return {
         ...milestone,
-        features: [...existingNonQaFeatures, ...normalizedFeatures, ...existingQaFeatures],
+        features: [
+          ...existingBaselineQaFeatures,
+          ...insertedBaselineQaFeatures,
+          ...existingNonQaFeatures,
+          ...insertedNonQaFeatures,
+          ...existingAfterQaFeatures,
+          ...insertedAfterQaFeatures,
+        ],
       };
     }),
   };
@@ -505,7 +529,7 @@ function normalizeMilestone(milestone: unknown, index: number, baseDir?: string)
     id: normalizedId,
     title: asTrimmedString(rawMilestone.title) || `Milestone ${index + 1}`,
     description: asTrimmedString(rawMilestone.description) || 'No description provided',
-    features: ensureMilestoneQaFeature(
+    features: ensureMilestoneQaFeatures(
       normalizedId,
       normalizeFeatureList(rawMilestone.features, normalizedId, baseDir),
       validationContract
@@ -545,6 +569,7 @@ function normalizeFeature(feature: unknown, fallbackId?: string, baseDir?: strin
     cwd: normalizeFeatureCwd(rawFeature.cwd, baseDir),
     checks,
     kind: normalizeFeatureKind(rawFeature.kind, reviewType),
+    qaPhase: normalizeQaPhase(rawFeature.qaPhase, normalizeFeatureKind(rawFeature.kind, reviewType)),
     reviewType,
     reviewGeneration: normalizeReviewGeneration(rawFeature.reviewGeneration),
     status: normalizeFeatureStatus(rawFeature.status),
@@ -581,7 +606,7 @@ function normalizeFeatureCwd(value: unknown, baseDir?: string): string | undefin
   return normalized.replace(/\\/g, '/');
 }
 
-function ensureMilestoneQaFeature(
+function ensureMilestoneQaFeatures(
   milestoneId: string,
   features: Feature[],
   validationContract: ValidationContract
@@ -592,21 +617,42 @@ function ensureMilestoneQaFeature(
     return nonQaFeatures;
   }
 
-  const existingQaFeature = features.find((feature) => feature.kind === 'qa');
+  const existingBaselineQaFeature = features.find((feature) => feature.kind === 'qa' && feature.qaPhase === 'baseline');
+  const existingAfterQaFeature = features.find((feature) => feature.kind === 'qa' && feature.qaPhase !== 'baseline');
   const derivedCwd = deriveQaFeatureCwd(nonQaFeatures);
-  const qaFeature: Feature = {
-    id: existingQaFeature?.id ?? `${milestoneId}-f${nonQaFeatures.length + 1}`,
-    description: existingQaFeature?.description?.trim() || QA_FEATURE_DESCRIPTION,
-    trackingKey: existingQaFeature?.trackingKey,
-    cwd: existingQaFeature?.cwd ?? derivedCwd,
-    checks: existingQaFeature?.checks,
+  const needsBaselineQa = qaChecks.some((check) => check.evidenceMode === 'before_after' && check.reproduceBefore === true);
+  const baselineQaFeature: Feature | null = needsBaselineQa
+    ? {
+      id: existingBaselineQaFeature?.id ?? `${milestoneId}-f1-baseline`,
+      description: existingBaselineQaFeature?.description?.trim() || BASELINE_QA_FEATURE_DESCRIPTION,
+      trackingKey: existingBaselineQaFeature?.trackingKey,
+      cwd: existingBaselineQaFeature?.cwd ?? derivedCwd,
+      checks: existingBaselineQaFeature?.checks,
+      kind: 'qa',
+      qaPhase: 'baseline',
+      status: existingBaselineQaFeature?.status ?? 'pending',
+      model: CODEX_LATEST_ALIAS,
+      attempts: existingBaselineQaFeature?.attempts ?? 0,
+    }
+    : null;
+  const afterQaFeature: Feature = {
+    id: existingAfterQaFeature?.id ?? `${milestoneId}-f${nonQaFeatures.length + (needsBaselineQa ? 2 : 1)}`,
+    description: existingAfterQaFeature?.description?.trim() || (needsBaselineQa ? AFTER_QA_FEATURE_DESCRIPTION : QA_FEATURE_DESCRIPTION),
+    trackingKey: existingAfterQaFeature?.trackingKey,
+    cwd: existingAfterQaFeature?.cwd ?? derivedCwd,
+    checks: existingAfterQaFeature?.checks,
     kind: 'qa',
-    status: existingQaFeature?.status ?? 'pending',
+    qaPhase: 'after',
+    status: existingAfterQaFeature?.status ?? 'pending',
     model: CODEX_LATEST_ALIAS,
-    attempts: existingQaFeature?.attempts ?? 0,
+    attempts: existingAfterQaFeature?.attempts ?? 0,
   };
 
-  return [...nonQaFeatures, qaFeature];
+  return [
+    ...(baselineQaFeature ? [baselineQaFeature] : []),
+    ...nonQaFeatures,
+    afterQaFeature,
+  ];
 }
 
 function deriveQaFeatureCwd(features: Feature[]): string | undefined {
@@ -634,6 +680,13 @@ function normalizeFeatureChecks(value: unknown): CheckItem[] | undefined {
     })
     .filter((check) => check.text.length > 0);
   return checks.length > 0 ? checks : undefined;
+}
+
+function normalizeQaPhase(value: unknown, kind: FeatureKind): QaPhase | undefined {
+  if (kind !== 'qa') {
+    return undefined;
+  }
+  return value === 'baseline' ? 'baseline' : 'after';
 }
 
 function asTrimmedString(value: unknown): string {
@@ -793,12 +846,16 @@ function validateMissionPlan(plan: unknown): asserts plan is MissionPlan {
       throw new Error(`Milestone ${milestone.id} must include features`);
     }
 
-    const qaFeatureCount = milestone.features.filter((feature) => feature.kind === 'qa').length;
-    if (qaFeatureCount > 1) {
-      throw new Error(`Milestone ${milestone.id} may include at most one qa feature`);
+    const qaFeatures = milestone.features.filter((feature) => feature.kind === 'qa');
+    if (qaFeatures.length > 2) {
+      throw new Error(`Milestone ${milestone.id} may include at most two qa features`);
     }
-    if (qaFeatureCount === 1 && (milestone.validationContract.qaChecks?.length ?? 0) === 0) {
+    if (qaFeatures.length > 0 && (milestone.validationContract.qaChecks?.length ?? 0) === 0) {
       throw new Error(`Milestone ${milestone.id} has a qa feature but no qaChecks`);
+    }
+    const qaPhases = new Set(qaFeatures.map((feature) => feature.qaPhase ?? 'after'));
+    if (qaPhases.size !== qaFeatures.length) {
+      throw new Error(`Milestone ${milestone.id} has duplicate qa phases`);
     }
 
     const featureIds = new Set<string>();

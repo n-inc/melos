@@ -1,4 +1,8 @@
 import { isAbsolute, normalize, relative, resolve, sep } from 'node:path';
+import type {
+  ValidationArtifact,
+  ValidationEvidenceMode,
+} from './validation.js';
 
 export type ReviewType = 'product' | 'code';
 export type ReviewFindingPriority = 'P1' | 'P2' | 'P3';
@@ -19,6 +23,8 @@ export interface ReviewArtifact {
   kind: 'screenshot' | 'video' | 'note';
   path: string;
   label?: string;
+  checkpointId?: string;
+  phase?: 'before' | 'after' | 'final';
 }
 
 export interface ProductReviewCheckpoint {
@@ -26,6 +32,9 @@ export interface ProductReviewCheckpoint {
   description: string;
   claim?: string;
   visual?: boolean;
+  evidenceMode?: ValidationEvidenceMode;
+  reproduceBefore?: boolean;
+  requiredArtifacts?: ValidationArtifact[];
 }
 
 export interface ProductReviewStartupStep {
@@ -43,6 +52,18 @@ export interface ProductReviewContract {
   video?: boolean;
 }
 
+export interface ProductReviewCheckpointResult {
+  checkpointId: string;
+  passed: boolean;
+  beforeReproduced?: boolean;
+  beforeObserved?: string;
+  afterObserved?: string;
+  beforeScreenshotPath?: string;
+  afterScreenshotPath?: string;
+  beforeVideoPath?: string;
+  afterVideoPath?: string;
+}
+
 export interface ReviewReport {
   milestoneId: string;
   featureId: string;
@@ -53,6 +74,7 @@ export interface ReviewReport {
   summary: string;
   findings: ReviewFinding[];
   artifacts: ReviewArtifact[];
+  checkpointResults?: ProductReviewCheckpointResult[];
   blockingFindingCount: number;
 }
 
@@ -140,6 +162,36 @@ export function normalizeReviewArtifact(value: unknown): ReviewArtifact | null {
     kind,
     path,
     label: asTrimmedString(record.label) || undefined,
+    checkpointId: asTrimmedString(record.checkpointId) || undefined,
+    phase: record.phase === 'before' || record.phase === 'after' || record.phase === 'final'
+      ? record.phase
+      : undefined,
+  };
+}
+
+export function normalizeProductReviewCheckpointResult(
+  value: unknown
+): ProductReviewCheckpointResult | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const checkpointId = asTrimmedString(record.checkpointId);
+  if (!checkpointId) {
+    return null;
+  }
+
+  return {
+    checkpointId,
+    passed: record.passed !== false,
+    beforeReproduced: typeof record.beforeReproduced === 'boolean' ? record.beforeReproduced : undefined,
+    beforeObserved: asTrimmedString(record.beforeObserved) || undefined,
+    afterObserved: asTrimmedString(record.afterObserved) || undefined,
+    beforeScreenshotPath: asTrimmedString(record.beforeScreenshotPath) || undefined,
+    afterScreenshotPath: asTrimmedString(record.afterScreenshotPath) || undefined,
+    beforeVideoPath: asTrimmedString(record.beforeVideoPath) || undefined,
+    afterVideoPath: asTrimmedString(record.afterVideoPath) || undefined,
   };
 }
 
@@ -153,7 +205,7 @@ function normalizeProductReviewCheckpoints(value: unknown): ProductReviewCheckpo
   }
 
   return value
-    .map((entry, index) => {
+    .map((entry, index): ProductReviewCheckpoint | null => {
       if (typeof entry === 'string') {
         const description = entry.trim();
         if (!description) {
@@ -177,6 +229,11 @@ function normalizeProductReviewCheckpoints(value: unknown): ProductReviewCheckpo
         description,
         claim: asTrimmedString(record.claim) || undefined,
         visual: typeof record.visual === 'boolean' ? record.visual : undefined,
+        evidenceMode: record.evidenceMode === 'before_after' ? 'before_after' : 'single',
+        reproduceBefore: record.evidenceMode === 'before_after' || record.reproduceBefore === true
+          ? record.reproduceBefore === true
+          : undefined,
+        requiredArtifacts: normalizeValidationArtifacts(record.requiredArtifacts),
       };
     })
     .filter((entry): entry is ProductReviewCheckpoint => Boolean(entry));
@@ -230,6 +287,16 @@ function normalizeStringList(value: unknown): string[] {
   return value
     .map((entry) => asTrimmedString(entry))
     .filter((entry) => entry.length > 0);
+}
+
+function normalizeValidationArtifacts(value: unknown): ValidationArtifact[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const artifacts = value.filter(
+    (artifact): artifact is ValidationArtifact => artifact === 'screenshot' || artifact === 'video'
+  );
+  return artifacts.length > 0 ? artifacts : undefined;
 }
 
 function normalizeRelativePath(value: unknown, baseDir?: string): string | undefined {

@@ -19,9 +19,10 @@ This review is Codex-only. You must use the Codex app-server with `js_repl` enab
 4. If startup commands are provided, run them first and wait until the app is reachable.
 5. Resolve the runtime URL using the contract target and the local port strategy already described in the contract.
 6. Verify each checkpoint interactively, including realistic user actions and likely failure-prone edge cases.
-7. Capture screenshots in the contract `artifactsDir` for the most important states. Use stable filenames.
-8. If the contract requests visual checks, inspect layout, copy, states, disabled/error states, and obvious regressions.
-9. If `js_repl`, Playwright, startup, or the contract is unusable, return `BLOCKED` with a blocking finding instead of guessing.
+7. For each checkpoint, honor its structured evidence contract. When `evidenceMode` is `before_after`, capture both phases with stable filenames and report them in `checkpointResults`.
+8. Capture screenshots in the contract `artifactsDir` for the most important states. Use stable filenames and tag them with the checkpoint id.
+9. If the contract requests visual checks, inspect layout, copy, states, disabled/error states, and obvious regressions.
+10. If `js_repl`, Playwright, startup, or the contract is unusable, return `BLOCKED` with a blocking finding instead of guessing.
 
 ## Review rules
 
@@ -36,6 +37,8 @@ This review is Codex-only. You must use the Codex app-server with `js_repl` enab
 
 - Save screenshots under the contract `artifactsDir`.
 - Include artifact paths in the structured output.
+- Include `checkpointId` and `phase` for each screenshot/video artifact whenever the checkpoint contract is phase-aware.
+- If a checkpoint requires `before_after`, do not omit the `checkpointResults` entry for that checkpoint.
 - If you could not collect a planned artifact, mention that in a finding or warning.
 
 ## Output
@@ -65,7 +68,20 @@ The JSON must match this shape:
     {
       "kind": "screenshot",
       "path": "artifacts/screenshots/final-home.png",
-      "label": "Home after verification"
+      "label": "Home after verification",
+      "checkpointId": "hero",
+      "phase": "after"
+    }
+  ],
+  "checkpointResults": [
+    {
+      "checkpointId": "hero",
+      "passed": true,
+      "beforeReproduced": true,
+      "beforeObserved": "What was visible before the fix",
+      "afterObserved": "What is visible after the fix",
+      "beforeScreenshotPath": "artifacts/screenshots/hero-before.png",
+      "afterScreenshotPath": "artifacts/screenshots/hero-after.png"
     }
   ],
   "requestsHelp": false

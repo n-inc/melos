@@ -7,6 +7,7 @@ import { jest } from '@jest/globals';
 import { Orchestrator } from '../orchestrator.js';
 import { ManagerAgent, MissionPlanningError } from '../agents/manager.js';
 import { WorkerAgent } from '../agents/worker.js';
+import type { WorkerFeatureReport } from '../agents/types.js';
 import { getDefaultPromptsDir } from '../prompts/index.js';
 import { createMissionPlan, type MissionPlan } from '../state/mission.js';
 import type { MissionControlState } from '../ui/tui-views.js';
@@ -172,6 +173,8 @@ describe('Orchestrator v0.8', () => {
     const prdPath = join(cwd, 'PRD.md');
     const missionPath = join(cwd, 'TASK.json');
     writeFileSync(prdPath, '# Final review mission\n\nVerify the final sign-off flow.', 'utf-8');
+    mkdirSync(join(cwd, 'artifacts', 'screenshots'), { recursive: true });
+    writeFileSync(join(cwd, 'artifacts', 'screenshots', 'home.png'), 'png', 'utf-8');
 
     const planned = createMissionPlan({
       missionId: 'final-review-pass',
@@ -297,7 +300,15 @@ describe('Orchestrator v0.8', () => {
             summary: 'product review passed',
             findings: [],
             artifacts: [
-              { kind: 'screenshot', path: 'artifacts/screenshots/home.png', label: 'Home' },
+              { kind: 'screenshot', path: 'artifacts/screenshots/home.png', label: 'Home', checkpointId: 'hero', phase: 'after' },
+            ],
+            checkpointResults: [
+              {
+                checkpointId: 'hero',
+                passed: true,
+                afterObserved: 'Hero flow satisfies the PRD.',
+                afterScreenshotPath: 'artifacts/screenshots/home.png',
+              },
             ],
           },
           learnings: [],
@@ -366,6 +377,8 @@ describe('Orchestrator v0.8', () => {
     const prdPath = join(cwd, 'PRD.md');
     const missionPath = join(cwd, 'TASK.json');
     writeFileSync(prdPath, '# Final review rerun mission\n', 'utf-8');
+    mkdirSync(join(cwd, 'artifacts', 'screenshots'), { recursive: true });
+    writeFileSync(join(cwd, 'artifacts', 'screenshots', 'checkout-after.png'), 'png', 'utf-8');
 
     const planned = createMissionPlan({
       missionId: 'final-review-rerun',
@@ -563,7 +576,22 @@ describe('Orchestrator v0.8', () => {
             passed: true,
             summary: 'product review passed after remediation',
             findings: [],
-            artifacts: [],
+            artifacts: [
+              {
+                kind: 'screenshot',
+                path: 'artifacts/screenshots/checkout-after.png',
+                checkpointId: 'checkout',
+                phase: 'after',
+              },
+            ],
+            checkpointResults: [
+              {
+                checkpointId: 'checkout',
+                passed: true,
+                afterObserved: 'Checkout now satisfies the PRD.',
+                afterScreenshotPath: 'artifacts/screenshots/checkout-after.png',
+              },
+            ],
           },
           learnings: [],
           requestsHelp: false,
@@ -637,6 +665,285 @@ describe('Orchestrator v0.8', () => {
     expect(existsSync(join(melosDir, 'reviews', 'm2-f1.json'))).toBe(true);
     expect(existsSync(join(melosDir, 'reviews', 'm2-f4.json'))).toBe(true);
     expect(existsSync(join(melosDir, 'reviews', 'm2-f5.json'))).toBe(true);
+  });
+
+  it('continues with remediation follow-ups when a product review returns BLOCKED with actionable findings', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-final-review-blocked-followup-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Final review blocked follow-up mission\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'final-review-blocked-followup',
+      goal: 'Continue after actionable blocked review',
+      constraints: [],
+      successCriteria: ['blocked reviews with actionable findings create remediation work instead of pausing'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+            {
+              id: 'm1-f2',
+              description: 'Run final code review',
+              kind: 'review',
+              reviewType: 'code',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 8,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const reviewFollowUps = jest.spyOn(ManagerAgent.prototype, 'generateReviewFollowUpFeatures')
+      .mockResolvedValue([
+        {
+          description: 'Restore ActionCable and ml runtime required for final review sign-off',
+          trackingKey: 'product-review-runtime-missing-cable-and-ml',
+          priority: 'high',
+          model: 'codex-latest',
+        },
+      ]);
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleReviewFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: {
+          type: 'blocked';
+          report: WorkerFeatureReport;
+        }
+      ) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = {
+      ...runningPlan,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    orchestratorAny.kernelState.missionPlan = orchestratorAny.state.missionPlan;
+
+    const milestone = orchestratorAny.state.missionPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleReviewFeatureResult(milestone, feature, {
+      type: 'blocked',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'BLOCKED',
+        summary: 'product review could not sign off due to missing runtime pieces',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        review: {
+          reviewType: 'product',
+          generation: 1,
+          passed: false,
+          summary: 'product review could not sign off due to missing runtime pieces',
+          findings: [
+            {
+              id: 'product-review-blocked',
+              reviewType: 'product',
+              priority: 'P1',
+              summary: 'Review runtime is incomplete',
+              rationale: 'ActionCable and ml are unavailable so remaining AI features cannot be signed off',
+              suggestedFix: 'Restore ActionCable and ml runtime required for final review sign-off',
+              trackingKey: 'product-review-runtime-missing-cable-and-ml',
+              surface: 'review-runtime',
+            },
+          ],
+          artifacts: [],
+        },
+        learnings: [],
+        requestsHelp: true,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('running');
+    expect(missionPlan.activeMilestoneId).toBe('m1');
+    expect(missionPlan.activeFeatureId).toBeNull();
+    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status, kind: item.kind }))).toEqual([
+      { id: 'm1-f1', status: 'done', kind: 'review' },
+      { id: 'm1-f2', status: 'skipped', kind: 'review' },
+      { id: 'm1-f3', status: 'pending', kind: 'review_remediation' },
+      { id: 'm1-f4', status: 'pending', kind: 'review' },
+      { id: 'm1-f5', status: 'pending', kind: 'review' },
+    ]);
+    expect(missionPlan.milestones[0]?.features[2]?.trackingKey).toBe('product-review-runtime-missing-cable-and-ml');
+    expect(reviewFollowUps).toHaveBeenCalledWith(expect.objectContaining({
+      milestoneId: 'm1',
+      reviewType: 'product',
+      generation: 1,
+    }));
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"action":"review_blocked_auto_downgraded"');
+    expect(events).toContain('"type":"task_added"');
+    expect(events).not.toContain('"type":"mission_interrupted"');
+  });
+
+  it('pauses and emits mission_interrupted when a blocked review has no actionable findings', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-final-review-blocked-pause-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Final review blocked pause mission\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'final-review-blocked-pause',
+      goal: 'Pause only when blocked review has no actionable findings',
+      constraints: [],
+      successCriteria: ['truly blocked reviews still pause'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 8,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleReviewFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: {
+          type: 'blocked';
+          report: WorkerFeatureReport;
+        }
+      ) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = {
+      ...runningPlan,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    orchestratorAny.kernelState.missionPlan = orchestratorAny.state.missionPlan;
+
+    const milestone = orchestratorAny.state.missionPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleReviewFeatureResult(milestone, feature, {
+      type: 'blocked',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'BLOCKED',
+        summary: 'product review contract unusable',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        review: {
+          reviewType: 'product',
+          generation: 1,
+          passed: false,
+          summary: 'product review contract unusable',
+          findings: [],
+          artifacts: [],
+        },
+        learnings: [],
+        requestsHelp: true,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('paused');
+    expect(missionPlan.activeMilestoneId).toBe('m1');
+    expect(missionPlan.activeFeatureId).toBe('m1-f1');
+    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status }))).toEqual([
+      { id: 'm1-f1', status: 'pending' },
+    ]);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"type":"mission_interrupted"');
+    expect(events).toContain('review blocked and requested help');
   });
 
   it('fails manual validation when manual evidence is missing', async () => {
@@ -723,7 +1030,7 @@ describe('Orchestrator v0.8', () => {
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 3,
+      maxIterations: 6,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -1522,6 +1829,135 @@ describe('Orchestrator v0.8', () => {
         passed: false,
         failure: expect.objectContaining({
           summary: 'browser validation reported artifact paths that do not exist',
+        }),
+      }),
+    ]));
+  });
+
+  it('fails before_after browser validation when baseline evidence is missing', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-browser-before-after-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(cwd, 'artifacts', 'screenshots'), { recursive: true });
+    writeFileSync(join(cwd, 'artifacts', 'screenshots', 'after.png'), 'png', 'utf-8');
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Browser before/after mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'browser-before-after',
+      goal: 'Before/after browser evidence must include the baseline',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['browser validation fails without baseline evidence'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement and verify',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            qaChecks: [
+              {
+                id: 'browser-qa',
+                description: 'Check browser flow before and after',
+                type: 'browser',
+                requiredRunner: 'playwright-interactive',
+                requiredArtifacts: ['screenshot'],
+                evidenceMode: 'before_after',
+                reproduceBefore: true,
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Capture missing baseline browser evidence',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: input.milestone.id,
+        featureId: input.feature.id,
+        status: 'SUCCESS',
+        summary: 'done',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: input.feature.kind === 'qa' && input.feature.qaPhase === 'after'
+          ? [
+            {
+              checkId: 'browser-qa',
+              passed: true,
+              runner: 'playwright-interactive',
+              beforeReproduced: false,
+              afterScreenshotPath: 'artifacts/screenshots/after.png',
+            },
+          ]
+          : [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    }));
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 3,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(false);
+    const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
+      passed: boolean;
+      results: Array<{ checkId: string; passed: boolean; failure?: { summary: string; errorMessages: string[] } }>;
+    };
+    expect(report.passed).toBe(false);
+    expect(report.results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        checkId: 'browser-qa',
+        passed: false,
+        failure: expect.objectContaining({
+          summary: 'browser validation is missing required evidence',
+          errorMessages: expect.arrayContaining(['missing before screenshot']),
         }),
       }),
     ]));
@@ -3531,6 +3967,340 @@ describe('Orchestrator v0.8', () => {
     });
     expect(gitStrategy.quietUntil).toBe('2026-03-07T00:30:00.000Z');
   });
+
+  it('treats no_match validation outcomes as success', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-no-match-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# no-match', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      evaluateCommandValidationCheck: (
+        check: {
+          id: string;
+          description: string;
+          type: 'command';
+          expectedOutcome: 'no_match';
+          passed: boolean;
+          failureCount: number;
+        },
+        result: { exitCode: number; stdout: string; stderr: string; durationMs: number }
+      ) => { passed: boolean; output?: string };
+    };
+
+    const result = orchestratorAny.evaluateCommandValidationCheck(
+      {
+        id: 'absence-check',
+        description: 'No matches remain',
+        type: 'command',
+        expectedOutcome: 'no_match',
+        passed: false,
+        failureCount: 0,
+      },
+      {
+        exitCode: 1,
+        stdout: '',
+        stderr: '',
+        durationMs: 5,
+      }
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.output).toContain('expected no matches');
+  });
+
+  it('reuses completed validation follow-up features by trackingKey instead of appending duplicates', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-reuse-done-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# reuse done', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const plan = createMissionPlan({
+      missionId: 'reuse-done',
+      goal: 'Reuse done follow-ups',
+      constraints: [],
+      successCriteria: ['No duplicate follow-up features'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Resolve shared validation root cause',
+              trackingKey: 'shared-root-cause',
+              status: 'done',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      applyValidationFollowUps: (
+        missionPlan: MissionPlan,
+        milestoneId: string,
+        followUps: Array<{ description: string; trackingKey?: string; model?: string }>
+      ) => {
+        plan: MissionPlan;
+        addedFeatures: Array<{ id: string }>;
+        updatedFeatures: Array<{ id: string; status: string; description: string }>;
+      };
+    };
+
+    const followUpResult = orchestratorAny.applyValidationFollowUps(plan, 'm1', [{
+      description: 'Resolve shared validation root cause with more context',
+      trackingKey: 'shared-root-cause',
+      model: 'codex-latest',
+    }]);
+
+    expect(followUpResult.addedFeatures).toHaveLength(0);
+    expect(followUpResult.updatedFeatures).toHaveLength(1);
+    expect(followUpResult.updatedFeatures[0]?.id).toBe('m1-f1');
+    expect(followUpResult.updatedFeatures[0]?.status).toBe('pending');
+    expect(followUpResult.plan.milestones[0]?.features).toHaveLength(1);
+  });
+
+  it('fails worker results that mutate protected runtime files', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-protected-runtime-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# protected runtime', 'utf-8');
+    writeFileSync(missionPath, '{"version":3}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      captureProtectedRuntimeSnapshot: () => Map<string, string>;
+      enforceProtectedRuntimeWritePolicy: (
+        feature: { id: string },
+        result: {
+          type: 'success';
+          report: {
+            status: 'SUCCESS';
+            summary: string;
+            warnings: string[];
+            filesChanged: Array<{ path: string; additions: number; deletions: number }>;
+            requestsHelp: boolean;
+          };
+        },
+        before: Map<string, string>
+      ) => {
+        type: string;
+        report: {
+          status: string;
+          summary: string;
+          warnings: string[];
+          requestsHelp: boolean;
+        };
+      };
+    };
+    const before = orchestratorAny.captureProtectedRuntimeSnapshot();
+    writeFileSync(missionPath, '{"version":3,"changed":true}\n', 'utf-8');
+
+    const blocked = orchestratorAny.enforceProtectedRuntimeWritePolicy(
+      { id: 'm1-f1' },
+      {
+        type: 'success',
+        report: {
+          status: 'SUCCESS',
+          summary: 'worker said success',
+          warnings: [],
+          filesChanged: [],
+          requestsHelp: false,
+        },
+      },
+      before
+    );
+
+    expect(blocked.type).toBe('failed');
+    expect(blocked.report.status).toBe('FAILED');
+    expect(blocked.report.summary).toContain('Worker edited protected runtime files.');
+    expect(blocked.report.summary).toContain('TASK.json');
+    expect(blocked.report.requestsHelp).toBe(true);
+  });
+
+  it('does not pause on implementation BLOCKED reports when requestsHelp is false', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-non-escalating-blocked-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# non escalating blocked\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'non-escalating-blocked',
+      goal: 'Continue automatically when worker does not need human help',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['non-escalating blocked results do not pause the mission'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement flow',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    const runningPlan: MissionPlan = {
+      ...planned,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    writeFileSync(missionPath, `${JSON.stringify(runningPlan, null, 2)}\n`, 'utf-8');
+
+    jest.spyOn(ManagerAgent.prototype, 'generateImplementationFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Address remaining type debt outside the current feature scope',
+        trackingKey: 'remaining-type-debt',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      execution: {
+        maxFeatureAttempts: 1,
+      },
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleImplementationFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: {
+          type: 'blocked';
+          report: {
+            iteration: number;
+            milestoneId: string;
+            featureId: string;
+            status: 'BLOCKED';
+            summary: string;
+            warnings: string[];
+            filesChanged: Array<{ path: string; additions: number; deletions: number }>;
+            validation: {
+              testsRun: boolean;
+              testsPassed: number;
+              testsFailed: number;
+              lintPassed: boolean;
+              typecheckPassed: boolean;
+            };
+            checks: [];
+            learnings: string[];
+            requestsHelp: boolean;
+            createdAt: string;
+          };
+        }
+      ) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+
+    const milestone = runningPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleImplementationFeatureResult(milestone, feature, {
+      type: 'blocked',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'BLOCKED',
+        summary: 'repo-wide type debt remains',
+        warnings: ['remaining work does not require human intervention'],
+        filesChanged: [{ path: 'src/app.ts', additions: 1, deletions: 0 }],
+        validation: {
+          testsRun: true,
+          testsPassed: 0,
+          testsFailed: 1,
+          lintPassed: true,
+          typecheckPassed: false,
+        },
+        checks: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('running');
+    expect(missionPlan.activeMilestoneId).toBe('m1');
+    expect(missionPlan.activeFeatureId).toBeNull();
+    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status }))).toEqual([
+      { id: 'm1-f1', status: 'failed' },
+      { id: 'm1-f2', status: 'pending' },
+    ]);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"action":"worker_blocked_auto_downgraded"');
+  });
+
   it('continues a full mission run when worker returns BLOCKED without requestsHelp', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-blocked-run-'));
     const melosDir = join(cwd, '.melos');

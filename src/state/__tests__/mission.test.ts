@@ -213,6 +213,57 @@ describe('state/mission', () => {
     expect(plan.milestones[0]?.features.at(-1)?.id).toBe('m1-f2');
   });
 
+  it('inserts baseline and after qa features when qaChecks require before/after reproduction', () => {
+    const plan = createMissionPlan({
+      goal: 'QA baseline plan',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Implementation',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            qaChecks: [
+              {
+                id: 'm1-qa-1',
+                description: 'Verify hero before/after state',
+                type: 'browser',
+                requiredRunner: 'playwright-interactive',
+                requiredArtifacts: ['screenshot'],
+                evidenceMode: 'before_after',
+                reproduceBefore: true,
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement hero',
+              cwd: 'frontend/apps/web',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(plan.milestones[0]?.features.map((feature) => ({
+      id: feature.id,
+      kind: feature.kind,
+      qaPhase: feature.qaPhase,
+    }))).toEqual([
+      { id: 'm1-f1-baseline', kind: 'qa', qaPhase: 'baseline' },
+      { id: 'm1-f1', kind: 'implementation', qaPhase: undefined },
+      { id: 'm1-f3', kind: 'qa', qaPhase: 'after' },
+    ]);
+  });
+
   it('appends a single post-pr follow-up milestone with claude workers', () => {
     const plan = createMissionPlan({
       goal: 'PR automation',

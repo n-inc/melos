@@ -33,6 +33,8 @@ export interface MissionQaCheckView {
   failureCount: number;
   requiredRunner?: string;
   requiredArtifacts?: string[];
+  evidenceMode?: string;
+  reproduceBefore?: boolean;
 }
 
 export interface MissionMilestoneView {

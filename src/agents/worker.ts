@@ -14,9 +14,13 @@ import {
   isCodexFamily,
   resolveRuntimeModel,
 } from '../models/registry.js';
-import type { ValidationCheckFailure, ValidationCheckResult } from '../state/validation.js';
+import type {
+  ValidationCheckFailure,
+  ValidationCheckResult,
+} from '../state/validation.js';
 import {
   isBlockingReviewFinding,
+  normalizeProductReviewCheckpointResult,
   normalizeReviewArtifact,
   normalizeReviewFinding,
   type ProductReviewContract,
@@ -198,6 +202,16 @@ export class WorkerAgent implements Agent {
       .map((checkpoint) => `- ${checkpoint.id} :: ${checkpoint.description}${checkpoint.claim ? ` (claim: ${checkpoint.claim})` : ''}${checkpoint.visual ? ' [visual]' : ''}`)
       .join('\n') || '- none';
     const preconditions = (contract?.preconditions ?? []).map((item) => `- ${item}`).join('\n') || '- none';
+    const reviewEvidenceRules = (contract?.checkpoints ?? [])
+      .map((checkpoint) => {
+        const requirements = [
+          checkpoint.evidenceMode ? `evidenceMode=${checkpoint.evidenceMode}` : null,
+          checkpoint.reproduceBefore ? 'reproduceBefore=true' : null,
+          checkpoint.requiredArtifacts?.length ? `artifacts=${checkpoint.requiredArtifacts.join(',')}` : null,
+        ].filter((value): value is string => Boolean(value));
+        return `- ${checkpoint.id} :: ${requirements.join(' ') || 'default screenshot evidence'}`;
+      })
+      .join('\n') || '- none';
 
     return [
       promptTemplate.trim(),
@@ -220,6 +234,9 @@ export class WorkerAgent implements Agent {
       '',
       '## Checkpoints',
       checkpoints,
+      '',
+      '## Evidence Rules',
+      reviewEvidenceRules,
       '',
       '## Manager Briefing',
       input.briefing?.trim() || '(none)',
@@ -249,6 +266,19 @@ export class WorkerAgent implements Agent {
             kind: 'screenshot',
             path: `${contract?.artifactsDir ?? 'artifacts/screenshots'}/signoff-home.png`,
             label: 'Hero state after verification',
+            checkpointId: contract?.checkpoints?.[0]?.id ?? 'prd-goal',
+            phase: 'after',
+          },
+        ],
+        checkpointResults: [
+          {
+            checkpointId: contract?.checkpoints?.[0]?.id ?? 'prd-goal',
+            passed: true,
+            beforeReproduced: true,
+            beforeObserved: 'Describe what was present before the fix.',
+            afterObserved: 'Describe the verified post-fix state.',
+            beforeScreenshotPath: `${contract?.artifactsDir ?? 'artifacts/screenshots'}/${contract?.checkpoints?.[0]?.id ?? 'prd-goal'}-before.png`,
+            afterScreenshotPath: `${contract?.artifactsDir ?? 'artifacts/screenshots'}/${contract?.checkpoints?.[0]?.id ?? 'prd-goal'}-after.png`,
           },
         ],
         requestsHelp: false,
@@ -430,7 +460,13 @@ export class WorkerAgent implements Agent {
         const action = typeof check.command === 'string' && check.command.trim().length > 0
           ? check.command.trim()
           : 'no command';
-        return `- ${check.id} [${check.type}] ${check.description} :: ${action}`;
+        const notes = [
+          check.expectedOutcome && check.expectedOutcome !== 'exit_code_zero'
+            ? `expected=${check.expectedOutcome}`
+            : null,
+          check.waivedReason ? `waived=${check.waivedReason}` : null,
+        ].filter((item): item is string => Boolean(item));
+        return `- ${check.id} [${check.type}] ${check.description}${notes.length > 0 ? ` [${notes.join(' ')}]` : ''} :: ${action}`;
       })
       .join('\n');
     const validationCommands = [
@@ -458,6 +494,11 @@ export class WorkerAgent implements Agent {
       '',
       '## Manager Briefing',
       input.briefing?.trim() || '(none)',
+      '',
+      '## Protected Runtime Files',
+      '- Never edit TASK.json.',
+      '- Never edit `.melos/state.json`, `.melos/validations/*`, or `.melos/reviews/*`.',
+      '- If validation semantics look wrong, report that in `warnings` instead of patching runtime state.',
       '',
       '## PRD',
       input.prd?.trim() || '(PRD not found)',
@@ -523,15 +564,18 @@ export class WorkerAgent implements Agent {
       .map((check) => check.command)
       .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
       .join('\n');
+    const qaPhase = input.feature.qaPhase === 'baseline' ? 'baseline' : 'after';
 
     return [
       promptTemplate.trim(),
       '',
       '## QA Mode',
-      '- This feature is the dedicated milestone QA execution step.',
+      `- This feature is the dedicated milestone QA execution step (${qaPhase}).`,
       '- Do not change code unless the QA environment is completely blocked and the manager explicitly briefed a setup-only change.',
       '- Do not create commits or branches from this step.',
-      '- Execute the qaChecks below and report every checkId in `checks`.',
+      qaPhase === 'baseline'
+        ? '- Capture only baseline/before evidence for qaChecks that require `evidenceMode=before_after` with `reproduceBefore=true`. Do not invent after evidence in this phase.'
+        : '- Execute the qaChecks below and report every checkId in `checks`. For before/after checks, attach the after evidence and preserve any baseline linkage.',
       '- If a qaCheck fails, keep that failure inside `checks`. Return feature status `SUCCESS` once the QA checklist itself was executed and evidence was captured.',
       '- Return `BLOCKED` only when QA could not be executed due to environment, credentials, startup, or tooling blockers.',
       '',
@@ -543,6 +587,10 @@ export class WorkerAgent implements Agent {
       '',
       '## Manager Briefing',
       input.briefing?.trim() || '(none)',
+      '',
+      '## Protected Runtime Files',
+      '- Never edit TASK.json.',
+      '- Never edit `.melos/state.json`, `.melos/validations/*`, or `.melos/reviews/*`.',
       '',
       '## PRD',
       input.prd?.trim() || '(PRD not found)',
@@ -570,7 +618,11 @@ export class WorkerAgent implements Agent {
             checkId: 'm1-qa-1',
             passed: true,
             runner: 'playwright-interactive',
-            screenshotPath: 'artifacts/screenshots/example.png',
+            beforeReproduced: true,
+            beforeScreenshotPath: 'artifacts/screenshots/m1-qa-1-before.png',
+            afterScreenshotPath: 'artifacts/screenshots/m1-qa-1-after.png',
+            beforeObserved: 'Describe the reproduced before state.',
+            afterObserved: 'Describe the verified after state.',
           },
           {
             checkId: 'm1-qa-2',
@@ -655,6 +707,8 @@ export class WorkerAgent implements Agent {
         const requirementNotes = [
           check.requiredRunner ? `runner=${check.requiredRunner}` : null,
           check.requiredArtifacts?.length ? `artifacts=${check.requiredArtifacts.join(',')}` : null,
+          check.evidenceMode ? `evidenceMode=${check.evidenceMode}` : null,
+          check.reproduceBefore ? 'reproduceBefore=true' : null,
         ].filter((item): item is string => Boolean(item));
         const requirements = requirementNotes.length > 0 ? ` [${requirementNotes.join(' ')}]` : '';
         return `- ${check.id} [${check.type}] ${check.description}${requirements} :: ${action}`;
@@ -744,6 +798,11 @@ export class WorkerAgent implements Agent {
             : [])
             .map((artifact) => normalizeReviewArtifact(artifact))
             .filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact));
+          const checkpointResults = (Array.isArray((parsed as { checkpointResults?: unknown[] }).checkpointResults)
+            ? (parsed as { checkpointResults?: unknown[] }).checkpointResults ?? []
+            : [])
+            .map((result) => normalizeProductReviewCheckpointResult(result))
+            .filter((result): result is NonNullable<typeof result> => Boolean(result));
           report.review = {
             reviewType,
             generation: input.feature.reviewGeneration ?? 1,
@@ -753,6 +812,7 @@ export class WorkerAgent implements Agent {
             summary: typeof parsed.summary === 'string' ? parsed.summary : '',
             findings,
             artifacts,
+            checkpointResults: checkpointResults.length > 0 ? checkpointResults : undefined,
           };
         }
         if (Array.isArray(parsed.learnings)) {
@@ -986,6 +1046,39 @@ function normalizeValidationCheckResults(value: unknown): ValidationCheckResult[
     }
     if (typeof record.videoUrl === 'string' && record.videoUrl.trim().length > 0) {
       result.videoUrl = record.videoUrl.trim();
+    }
+    if (typeof record.beforeScreenshotPath === 'string' && record.beforeScreenshotPath.trim().length > 0) {
+      result.beforeScreenshotPath = record.beforeScreenshotPath.trim();
+    }
+    if (typeof record.afterScreenshotPath === 'string' && record.afterScreenshotPath.trim().length > 0) {
+      result.afterScreenshotPath = record.afterScreenshotPath.trim();
+    }
+    if (typeof record.beforeVideoPath === 'string' && record.beforeVideoPath.trim().length > 0) {
+      result.beforeVideoPath = record.beforeVideoPath.trim();
+    }
+    if (typeof record.afterVideoPath === 'string' && record.afterVideoPath.trim().length > 0) {
+      result.afterVideoPath = record.afterVideoPath.trim();
+    }
+    if (typeof record.beforeScreenshotUrl === 'string' && record.beforeScreenshotUrl.trim().length > 0) {
+      result.beforeScreenshotUrl = record.beforeScreenshotUrl.trim();
+    }
+    if (typeof record.afterScreenshotUrl === 'string' && record.afterScreenshotUrl.trim().length > 0) {
+      result.afterScreenshotUrl = record.afterScreenshotUrl.trim();
+    }
+    if (typeof record.beforeVideoUrl === 'string' && record.beforeVideoUrl.trim().length > 0) {
+      result.beforeVideoUrl = record.beforeVideoUrl.trim();
+    }
+    if (typeof record.afterVideoUrl === 'string' && record.afterVideoUrl.trim().length > 0) {
+      result.afterVideoUrl = record.afterVideoUrl.trim();
+    }
+    if (typeof record.beforeReproduced === 'boolean') {
+      result.beforeReproduced = record.beforeReproduced;
+    }
+    if (typeof record.beforeObserved === 'string' && record.beforeObserved.trim().length > 0) {
+      result.beforeObserved = record.beforeObserved.trim();
+    }
+    if (typeof record.afterObserved === 'string' && record.afterObserved.trim().length > 0) {
+      result.afterObserved = record.afterObserved.trim();
     }
 
     const failure = normalizeValidationCheckFailure(record.failure);
