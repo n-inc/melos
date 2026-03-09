@@ -206,6 +206,7 @@ export class Orchestrator {
   private statusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private fatalFailureReason: string | null = null;
   private abortSignal: NodeJS.Signals | null = null;
+  private allowedProtectedRuntimeWrites: Set<string> | null = null;
 
   private setGitStrategyState(next: GitStrategyState | null): void {
     this.state.gitStrategy = next;
@@ -1513,6 +1514,7 @@ export class Orchestrator {
     };
 
     const protectedRuntimeSnapshot = this.captureProtectedRuntimeSnapshot();
+    this.allowedProtectedRuntimeWrites = new Set<string>();
     let result: WorkerResult;
     try {
       result = await this.worker.run(workerInput);
@@ -1521,6 +1523,7 @@ export class Orchestrator {
       workerReplyStream.flush();
     }
     result = this.enforceProtectedRuntimeWritePolicy(feature, result, protectedRuntimeSnapshot);
+    this.allowedProtectedRuntimeWrites = null;
 
     if (resolvedExecutionModel.engine === 'codex') {
       const activeThreadId = this.worker.getActiveThreadId();
@@ -1988,6 +1991,18 @@ export class Orchestrator {
     return Array.from(changed);
   }
 
+  private recordAllowedProtectedRuntimeWrite(...paths: string[]): void {
+    if (!this.allowedProtectedRuntimeWrites) {
+      return;
+    }
+    for (const path of paths) {
+      const resolved = isAbsolute(path) ? path : join(this.config.cwd, path);
+      if (this.isProtectedRuntimePath(resolved)) {
+        this.allowedProtectedRuntimeWrites.add(resolved);
+      }
+    }
+  }
+
   private isProtectedRuntimePath(path: string): boolean {
     const resolved = isAbsolute(path) ? path : join(this.config.cwd, path);
     const validationsDir = join(this.config.melosDir, 'validations');
@@ -2007,7 +2022,8 @@ export class Orchestrator {
       .map((file) => file.path)
       .filter((path) => typeof path === 'string' && this.isProtectedRuntimePath(path))
       .map((path) => (isAbsolute(path) ? path : join(this.config.cwd, path)));
-    const changed = this.diffProtectedRuntimeSnapshot(before);
+    const changed = this.diffProtectedRuntimeSnapshot(before)
+      .filter((path) => !this.allowedProtectedRuntimeWrites?.has(path));
     const protectedPaths = Array.from(new Set([...reported, ...changed]));
     if (protectedPaths.length === 0) {
       return result;
@@ -3500,6 +3516,7 @@ export class Orchestrator {
       return;
     }
 
+    this.recordAllowedProtectedRuntimeWrite(this.config.missionFile);
     await saveMissionPlan(this.config.missionFile, this.state.missionPlan);
     this.kernelState.missionPlan = this.state.missionPlan;
     await this.persistRuntimeState();
@@ -3520,6 +3537,7 @@ export class Orchestrator {
 
   private async persistRuntimeState(): Promise<void> {
     this.kernelState.gitStrategy = this.state.gitStrategy;
+    this.recordAllowedProtectedRuntimeWrite(join(this.config.melosDir, 'state.json'));
     await saveSnapshot(this.config.melosDir, {
       seq: this.eventLog.getCurrentSeq(),
       savedAt: new Date().toISOString(),
@@ -3538,6 +3556,7 @@ export class Orchestrator {
       'validations',
       `${report.milestoneId}-attempt-${report.attempt}.json`
     );
+    this.recordAllowedProtectedRuntimeWrite(path);
     await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf-8');
   }
 
@@ -3547,6 +3566,7 @@ export class Orchestrator {
       'reviews',
       `${report.featureId}.json`
     );
+    this.recordAllowedProtectedRuntimeWrite(path);
     await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf-8');
   }
 

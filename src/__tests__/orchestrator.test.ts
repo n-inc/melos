@@ -4528,6 +4528,79 @@ describe('Orchestrator v0.8', () => {
     expect(blocked.report.requestsHelp).toBe(true);
   });
 
+  it('does not flag protected runtime files when Melos updates them during worker execution', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-allowed-runtime-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    const statePath = join(melosDir, 'state.json');
+    writeFileSync(prdPath, '# allowed runtime', 'utf-8');
+    writeFileSync(missionPath, '{"version":3}\n', 'utf-8');
+    writeFileSync(statePath, '{"seq":1}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      allowedProtectedRuntimeWrites: Set<string> | null;
+      captureProtectedRuntimeSnapshot: () => Map<string, string>;
+      recordAllowedProtectedRuntimeWrite: (...paths: string[]) => void;
+      enforceProtectedRuntimeWritePolicy: (
+        feature: { id: string },
+        result: {
+          type: 'success';
+          report: {
+            status: 'SUCCESS';
+            summary: string;
+            warnings: string[];
+            filesChanged: Array<{ path: string; additions: number; deletions: number }>;
+            requestsHelp: boolean;
+          };
+        },
+        before: Map<string, string>
+      ) => {
+        type: string;
+        report: {
+          status: string;
+          summary: string;
+          warnings: string[];
+          requestsHelp: boolean;
+        };
+      };
+    };
+    const before = orchestratorAny.captureProtectedRuntimeSnapshot();
+    orchestratorAny.allowedProtectedRuntimeWrites = new Set<string>();
+    orchestratorAny.recordAllowedProtectedRuntimeWrite(missionPath, statePath);
+    writeFileSync(missionPath, '{"version":3,"state":"aborted"}\n', 'utf-8');
+    writeFileSync(statePath, '{"seq":2}\n', 'utf-8');
+
+    const result = orchestratorAny.enforceProtectedRuntimeWritePolicy(
+      { id: 'm1-f1' },
+      {
+        type: 'success',
+        report: {
+          status: 'SUCCESS',
+          summary: 'worker said success',
+          warnings: [],
+          filesChanged: [],
+          requestsHelp: false,
+        },
+      },
+      before
+    );
+
+    expect(result.type).toBe('success');
+    expect(result.report.status).toBe('SUCCESS');
+    expect(result.report.summary).toBe('worker said success');
+  });
+
   it('does not pause on implementation BLOCKED reports when requestsHelp is false', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-non-escalating-blocked-'));
     const melosDir = join(cwd, '.melos');
