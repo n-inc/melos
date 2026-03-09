@@ -8,7 +8,7 @@
 - Milestone context
 - Feature context
 - Validation contract
-- Branch information (`currentBranch`, `baseBranch`)
+- Branch information (`currentBranch`, optional `baseBranch`)
 - Manager briefing
 
 ## 実行ルール
@@ -20,7 +20,7 @@
 3. 後方互換レイヤーを作らない
 4. テスト・lint・typecheck を意識して実装する
 5. 失敗時は原因を `summary` へ明記する
-6. `implementation` / `review_remediation` feature で `currentBranch` / `baseBranch` が渡された場合にだけ、完了時にコミットを作成する
+6. `implementation` / `review_remediation` feature で `currentBranch` が渡された場合にだけ、完了時に現在の branch へコミットを作成する
 7. コミット作成時は `git-commit` スキルの手順に従う（規約準拠の commit message を使う）
    - スキル参照先: `.claude/skills/git-commit/SKILL.md`
 8. commit message は `type(scope): subject` 形式を守り、`...` などの省略表記を使わない

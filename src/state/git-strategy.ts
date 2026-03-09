@@ -28,23 +28,9 @@ export interface PullRequestFollowUpState {
   quietUntil: string | null;
 }
 
-export interface FeatureBranch {
-  name: string;
-  taskIds: string[];
-  baseBranch: string;
-  baseCommitHash: string;
-  status: 'pending' | 'active' | 'ready' | 'validated' | 'merged' | 'abandoned';
-  commits: string[];
-  lastCheckpoint: string | null;
-  createdAt: string;
-  mergedAt: string | null;
-}
-
 export interface GitStrategyState {
   config: GitStrategyConfig;
-  branches: FeatureBranch[];
   activeBranch: string | null;
-  missionBranch: string | null;
   pullRequest: PullRequestState | null;
   handledFeedbackIds: string[];
   lastExternalActivityAt: string | null;
@@ -76,9 +62,7 @@ export async function saveGitStrategyState(melosDir: string, state: GitStrategyS
 export function createGitStrategyState(config: GitStrategyConfig): GitStrategyState {
   return {
     config,
-    branches: [],
     activeBranch: null,
-    missionBranch: null,
     pullRequest: null,
     handledFeedbackIds: [],
     lastExternalActivityAt: null,
@@ -86,116 +70,13 @@ export function createGitStrategyState(config: GitStrategyConfig): GitStrategySt
   };
 }
 
-export function createMissionBranchName(missionId: string): string {
-  const safeMissionId = typeof missionId === 'string' && missionId.trim().length > 0
-    ? missionId.trim()
-    : 'mission';
-  return `melos/${safeMissionId}/mission`;
-}
-
-export function createFeatureBranchName(
-  missionId: string,
-  featureId: string,
-  featureDescription: string
-): string {
-  const safeMissionId = typeof missionId === 'string' && missionId.trim().length > 0
-    ? missionId.trim()
-    : 'mission';
-  const safeFeatureId = typeof featureId === 'string' && featureId.trim().length > 0
-    ? featureId.trim()
-    : 'feature';
-  const safeDescription = typeof featureDescription === 'string' && featureDescription.trim().length > 0
-    ? featureDescription.trim()
-    : 'no-description';
-
-  const slug = `${safeFeatureId}-${safeDescription}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
-  return `melos/${safeMissionId}/${slug || safeFeatureId}`;
-}
-
-export function registerFeatureBranch(
-  state: GitStrategyState,
-  params: {
-    name: string;
-    taskId: string;
-    baseCommitHash: string;
-    checkpoint?: string | null;
-  }
-): GitStrategyState {
-  const now = new Date().toISOString();
-  const existing = state.branches.find((branch) => branch.name === params.name);
-  if (existing) {
-    if (!existing.taskIds.includes(params.taskId)) {
-      existing.taskIds.push(params.taskId);
-    }
-    existing.status = 'active';
-    state.activeBranch = existing.name;
-    return {
-      ...state,
-      branches: [...state.branches],
-    };
-  }
-
-  return {
-    ...state,
-    activeBranch: params.name,
-    branches: [
-      ...state.branches,
-      {
-        name: params.name,
-        taskIds: [params.taskId],
-        baseBranch: state.config.baseBranch,
-        baseCommitHash: params.baseCommitHash,
-        status: 'active',
-        commits: [],
-        lastCheckpoint: params.checkpoint ?? null,
-        createdAt: now,
-        mergedAt: null,
-      },
-    ],
-  };
-}
-
-export function setMissionBranch(
+export function setActiveBranch(
   state: GitStrategyState,
   branchName: string
 ): GitStrategyState {
   return {
     ...state,
-    missionBranch: branchName,
     activeBranch: branchName,
-  };
-}
-
-export function updateFeatureBranchStatus(
-  state: GitStrategyState,
-  branchName: string,
-  status: FeatureBranch['status'],
-  options: { commitHash?: string; checkpoint?: string | null; mergedAt?: string | null } = {}
-): GitStrategyState {
-  return {
-    ...state,
-    activeBranch: status === 'merged' || status === 'abandoned'
-      ? state.missionBranch
-      : state.activeBranch,
-    branches: state.branches.map((branch) => {
-      if (branch.name !== branchName) {
-        return branch;
-      }
-      const commits = options.commitHash
-        ? [...branch.commits, options.commitHash]
-        : branch.commits;
-      return {
-        ...branch,
-        status,
-        commits,
-        lastCheckpoint: options.checkpoint ?? branch.lastCheckpoint,
-        mergedAt: options.mergedAt ?? (status === 'merged' ? new Date().toISOString() : branch.mergedAt),
-      };
-    }),
   };
 }
 
@@ -246,9 +127,7 @@ function normalizeGitStrategyState(value: Partial<GitStrategyState>): GitStrateg
       ...config,
       pullRequestEnabled: config.pullRequestEnabled === true,
     },
-    branches: Array.isArray(value.branches) ? value.branches : [],
     activeBranch: typeof value.activeBranch === 'string' ? value.activeBranch : null,
-    missionBranch: typeof value.missionBranch === 'string' ? value.missionBranch : null,
     pullRequest: value.pullRequest && typeof value.pullRequest.url === 'string'
       ? {
         ...value.pullRequest,

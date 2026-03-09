@@ -376,7 +376,7 @@ export class WorkerAgent implements Agent {
           url: 'https://github.com/owner/repo/pull/123',
           title: 'feat: PR title',
           baseBranch: input.baseBranch ?? 'main',
-          headBranch: input.currentBranch ?? 'melos/mission/mission',
+          headBranch: input.currentBranch ?? 'current-branch',
           draft: false,
           action: 'created',
         },
@@ -432,7 +432,7 @@ export class WorkerAgent implements Agent {
           url: 'https://github.com/owner/repo/pull/123',
           title: 'feat: PR title',
           baseBranch: input.baseBranch ?? 'main',
-          headBranch: input.currentBranch ?? 'melos/mission/mission',
+          headBranch: input.currentBranch ?? 'current-branch',
           draft: false,
           action: 'updated',
         },
@@ -521,7 +521,7 @@ export class WorkerAgent implements Agent {
         '## Commit Workflow',
         `- Use the git-commit skill at: ${this.resolveGitCommitSkillPath()}`,
         '- Before committing, inspect: `git status --porcelain`, `git log --oneline -20`, `git diff --staged`',
-        '- Create the commit only after implementation and validation are complete for this feature branch',
+        '- Create the commit only after implementation and validation are complete for the current branch',
         '- Use `type(scope): subject` for the commit subject',
         '- Do not use `...` or other abbreviated placeholders in the commit message',
         '- If you add a commit body, briefly explain why the change is needed'
@@ -726,7 +726,7 @@ export class WorkerAgent implements Agent {
   }
 
   private shouldIncludeCommitWorkflow(input: WorkerInput): boolean {
-    if (!input.currentBranch || !input.baseBranch) {
+    if (!input.currentBranch) {
       return false;
     }
     return input.feature.kind === 'implementation' || input.feature.kind === 'review_remediation';

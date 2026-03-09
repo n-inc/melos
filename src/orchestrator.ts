@@ -32,7 +32,6 @@ import {
 import { resolveFeatureExecutionCwd } from './state/execution-cwd.js';
 import {
   type ProductReviewContract,
-  type ProductReviewCheckpoint,
   type ProductReviewCheckpointResult,
   type ReviewReport,
   isBlockingReviewFinding,
@@ -48,25 +47,16 @@ import {
 import {
   type GitStrategyState,
   createGitStrategyState,
-  createMissionBranchName,
-  createFeatureBranchName,
-  registerFeatureBranch,
   saveGitStrategyState,
   loadGitStrategyState,
-  setMissionBranch,
+  setActiveBranch,
   updatePullRequestState,
   updatePullRequestFollowUpState,
-  updateFeatureBranchStatus,
 } from './state/git-strategy.js';
 import {
-  createBranch,
-  checkoutBranch,
   getCurrentBranch,
   getDirtyWorkingTreePaths,
-  getHeadCommitHash,
-  hasConflicts,
   isWorkingTreeClean,
-  mergeBranch,
   runGitCommand,
 } from './state/git.js';
 import { EventLog } from './state/events.js';
@@ -644,6 +634,7 @@ export class Orchestrator {
         this.setGitStrategyState(persisted);
       }
     }
+    await this.syncCurrentGitBranchState(true);
 
     if (this.state.missionPlan && this.state.gitStrategy?.config.pullRequestEnabled) {
       const nextPlan = ensurePullRequestFollowUpMilestone(this.state.missionPlan);
@@ -915,8 +906,7 @@ export class Orchestrator {
       featureId: updatedFeature.id,
       message: `Manager started feature briefing for ${updatedFeature.id}`,
     });
-    let briefing: string | undefined;
-    briefing = await this.manager.generateFeatureBriefing({
+    const briefing = await this.manager.generateFeatureBriefing({
       ...this.buildManagerInput(updatedMilestone, updatedFeature),
       onAppServerEvent: (method, params) => {
         const detail = formatAgentEventDetail(method, params);
@@ -1339,79 +1329,13 @@ export class Orchestrator {
     };
     this.worker.setRuntimeModel(modelState.model);
 
-    let branchName: string | null = null;
     let currentBranch: string | null = null;
     let baseBranch: string | undefined;
-    let mergeTargetBranch: string | undefined;
 
     if (this.state.gitStrategy) {
       baseBranch = this.state.gitStrategy.config.baseBranch;
-      if (this.requiresDedicatedFeatureBranch(feature) && !baseBranch) {
-        return this.buildGitStrategyFailureResult(
-          milestone,
-          feature,
-          'Git strategy is enabled but baseBranch is missing, so Melos cannot create a feature branch or request a commit.'
-        );
-      }
-      if (this.state.gitStrategy.config.pullRequestEnabled) {
-        const missionBranch = await this.ensureMissionBranch();
-        currentBranch = missionBranch;
-        if (this.requiresDedicatedFeatureBranch(feature)) {
-          branchName = createFeatureBranchName(
-            this.state.gitStrategy.config.missionId,
-            feature.id,
-            feature.description
-          );
-          mergeTargetBranch = missionBranch;
-          const baseCommitHash = getHeadCommitHash(this.config.cwd);
-          createBranch(this.config.cwd, branchName, missionBranch);
-          this.setGitStrategyState(registerFeatureBranch(this.state.gitStrategy, {
-            name: branchName,
-            taskId: feature.id,
-            baseCommitHash,
-          }));
-          currentBranch = branchName;
-          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-          this.emitEvent('branch_created', 'system', {
-            branchName,
-            baseBranch: missionBranch,
-            baseCommitHash,
-            branchType: 'feature',
-          });
-        }
-      } else {
-        if (this.requiresDedicatedFeatureBranch(feature)) {
-          branchName = createFeatureBranchName(
-            this.state.gitStrategy.config.missionId,
-            feature.id,
-            feature.description
-          );
-          mergeTargetBranch = baseBranch;
-          const baseCommitHash = getHeadCommitHash(this.config.cwd);
-          createBranch(this.config.cwd, branchName, baseBranch);
-          this.setGitStrategyState(registerFeatureBranch(this.state.gitStrategy, {
-            name: branchName,
-            taskId: feature.id,
-            baseCommitHash,
-          }));
-          currentBranch = branchName;
-          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-          this.emitEvent('branch_created', 'system', {
-            branchName,
-            baseBranch,
-            baseCommitHash,
-            branchType: 'feature',
-          });
-        }
-      }
-    }
-
-    if (this.state.gitStrategy && this.requiresDedicatedFeatureBranch(feature) && (!baseBranch || !currentBranch)) {
-      return this.buildGitStrategyFailureResult(
-        milestone,
-        feature,
-        'Git strategy is enabled but Melos could not resolve currentBranch/baseBranch for this implementation task, so the worker commit workflow cannot run.'
-      );
+      currentBranch = getCurrentBranch(this.config.cwd).trim() || null;
+      await this.syncCurrentGitBranchState(true);
     }
 
     const runId = ++this.workerRunCounter;
@@ -1434,7 +1358,7 @@ export class Orchestrator {
       type: workerRunType,
       milestoneId: milestone.id,
       featureId: feature.id,
-      branch: currentBranch ?? branchName,
+      branch: currentBranch,
       engine: resolvedExecutionModel.engine,
       model: resolvedExecutionModel.displayModel,
       modelSource: modelState.source,
@@ -1533,13 +1457,12 @@ export class Orchestrator {
       }
     }
 
-    if (branchName && this.state.gitStrategy) {
-      const postProcess = await this.runGitPostProcess(
-        branchName,
-        mergeTargetBranch ?? baseBranch ?? this.state.gitStrategy.config.baseBranch,
-        result.report
-      );
+    if (this.state.gitStrategy) {
+      const postProcess = await this.runGitPostProcess(result.report);
       result.report.summary = postProcess.summary;
+      if (postProcess.failureContext) {
+        result.report.failureContext = postProcess.failureContext;
+      }
       if (!postProcess.ok && (result.type === 'success' || result.type === 'partial')) {
         result = {
           type: 'failed',
@@ -1565,10 +1488,6 @@ export class Orchestrator {
     );
 
     return result;
-  }
-
-  private requiresDedicatedFeatureBranch(feature: Feature): boolean {
-    return feature.kind === 'implementation' || feature.kind === 'review_remediation';
   }
 
   private async ensureGitExecutionPreconditions(milestoneId: string, featureId: string): Promise<boolean> {
@@ -1597,32 +1516,6 @@ export class Orchestrator {
 
     return false;
   }
-
-  private async ensureMissionBranch(): Promise<string> {
-    if (!this.state.gitStrategy) {
-      throw new Error('git strategy is not enabled');
-    }
-
-    const existingMissionBranch = this.state.gitStrategy.missionBranch
-      ?? createMissionBranchName(this.state.gitStrategy.config.missionId);
-
-    try {
-      checkoutBranch(this.config.cwd, existingMissionBranch);
-    } catch {
-      createBranch(this.config.cwd, existingMissionBranch, this.state.gitStrategy.config.baseBranch);
-      this.emitEvent('branch_created', 'system', {
-        branchName: existingMissionBranch,
-        baseBranch: this.state.gitStrategy.config.baseBranch,
-        baseCommitHash: getHeadCommitHash(this.config.cwd),
-        branchType: 'mission',
-      });
-    }
-
-    this.setGitStrategyState(setMissionBranch(this.state.gitStrategy, existingMissionBranch));
-    await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-    return existingMissionBranch;
-  }
-
   private shouldApplyWorkerWarningPolicy(feature: Feature): boolean {
     return feature.kind === 'implementation' || feature.kind === 'review_remediation';
   }
@@ -1663,42 +1556,6 @@ export class Orchestrator {
     });
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
-  }
-
-  private buildGitStrategyFailureResult(
-    milestone: Milestone,
-    feature: Feature,
-    summary: string
-  ): WorkerResult {
-    this.emitEvent('error', 'system', {
-      milestoneId: milestone.id,
-      featureId: feature.id,
-      message: summary,
-    });
-
-    return {
-      type: 'failed',
-      report: {
-        iteration: this.requireMissionPlan().totalIterations + 1,
-        milestoneId: milestone.id,
-        featureId: feature.id,
-        status: 'FAILED',
-        summary,
-        warnings: ['Git strategy branch context was missing, so Melos blocked worker execution before any commit could happen.'],
-        filesChanged: [],
-        validation: {
-          testsRun: false,
-          testsPassed: 0,
-          testsFailed: 0,
-          lintPassed: false,
-          typecheckPassed: false,
-        },
-        checks: [],
-        learnings: [],
-        requestsHelp: true,
-        createdAt: new Date().toISOString(),
-      },
-    };
   }
 
   private getBlockingGitWorkingTreePaths(limit: number = 5): string[] {
@@ -2183,16 +2040,25 @@ export class Orchestrator {
         });
       },
     });
+    const canonicalTrackingKey = this.deriveImplementationFailureTrackingKey(feature, result.report);
+    const normalizedFollowUps = (followUps.length > 0
+      ? followUps
+      : [{
+        description: `Resolve exhausted execution failure for ${feature.description}`,
+        trackingKey: canonicalTrackingKey,
+        model: CODEX_LATEST_ALIAS,
+      }])
+      .map((draft) => draft.decision === 'ignore'
+        ? draft
+        : {
+          ...draft,
+          trackingKey: canonicalTrackingKey,
+        });
     const followUpResult = this.applyValidationFollowUps(
       missionPlan,
       milestone.id,
-      followUps.length > 0
-        ? followUps
-        : [{
-          description: `Resolve exhausted execution failure for ${feature.description}`,
-          trackingKey: `feature-failure-${feature.id}`,
-          model: CODEX_LATEST_ALIAS,
-        }]
+      normalizedFollowUps,
+      { requeueFailedMatches: false }
     );
     missionPlan = updateMilestoneStatus(followUpResult.plan, milestone.id, 'in_progress');
     missionPlan = setActiveMilestone(missionPlan, milestone.id);
@@ -2200,15 +2066,23 @@ export class Orchestrator {
     this.state.missionPlan = missionPlan;
     this.kernelState.missionPlan = missionPlan;
 
-    if (followUpResult.addedFeatures.length > 0 || followUpResult.updatedFeatures.length > 0) {
+    const actionableFeatures = [
+      ...followUpResult.updatedFeatures.filter((item) => item.status !== 'failed'),
+      ...followUpResult.addedFeatures,
+    ];
+    if (actionableFeatures.length > 0) {
       this.emitEvent('task_added', 'manager', {
         milestoneId: milestone.id,
         featureId: feature.id,
-        features: [
-          ...followUpResult.updatedFeatures,
-          ...followUpResult.addedFeatures,
-        ],
+        features: actionableFeatures,
         followUpFeatures: followUpResult.addedFeatures,
+      });
+    } else if (followUpResult.updatedFeatures.some((item) => item.status === 'failed')) {
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'implementation_followup_deduplicated',
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        message: `Canonical failure ${canonicalTrackingKey} already exhausted; keeping existing remediation feature failed and continuing without adding duplicates.`,
       });
     }
 
@@ -2225,7 +2099,9 @@ export class Orchestrator {
       featureId: feature.id,
       status: 'failed',
     });
-    this.activityLabel = `Retry budget exhausted for ${feature.id}. Generated remediation features.`;
+    this.activityLabel = actionableFeatures.length > 0
+      ? `Retry budget exhausted for ${feature.id}. Generated remediation features.`
+      : `Retry budget exhausted for ${feature.id}. Canonical remediation already exists; continuing without adding duplicates.`;
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
   }
@@ -2253,9 +2129,17 @@ export class Orchestrator {
         summary: `feature execution failed: ${feature.description}`,
         affectedFiles: report.filesChanged.map((file) => file.path),
         errorMessages,
-        rootCause: errorMessages[0] ?? report.status,
+        rootCause: report.failureContext?.signature ?? errorMessages[0] ?? report.status,
       },
     }];
+  }
+
+  private deriveImplementationFailureTrackingKey(
+    feature: Feature,
+    report: WorkerFeatureReport
+  ): string {
+    return report.failureContext?.signature
+      ?? `feature-failure-${feature.id}`;
   }
 
   private scheduleFeatureRetry(
@@ -2288,11 +2172,24 @@ export class Orchestrator {
 
   private extractFeatureRetryReason(report: WorkerFeatureReport): string {
     const candidates = [
+      this.describeFailureContext(report.failureContext),
       report.warnings[0],
       report.summary.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0),
       report.status,
     ];
     return candidates.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? 'worker failure';
+  }
+
+  private describeFailureContext(
+    failureContext: WorkerFeatureReport['failureContext'] | undefined
+  ): string | null {
+    if (!failureContext) {
+      return null;
+    }
+    if (failureContext.kind === 'post_feature_validation' && failureContext.command) {
+      return `Post-feature validation failed: ${failureContext.command}`;
+    }
+    return failureContext.signature;
   }
 
   private computeFeatureRetryDelay(failedAttempt: number): number {
@@ -2390,33 +2287,34 @@ export class Orchestrator {
     await this.emitStatusUpdate();
   }
 
-  private async runGitPostProcess(
-    branchName: string,
-    targetBranch: string,
-    report: WorkerFeatureReport
-  ): Promise<{ ok: boolean; summary: string }> {
+  private async runGitPostProcess(report: WorkerFeatureReport): Promise<{
+    ok: boolean;
+    summary: string;
+    failureContext?: NonNullable<WorkerFeatureReport['failureContext']>;
+  }> {
     try {
+      await this.syncCurrentGitBranchState(true);
+      const currentBranch = getCurrentBranch(this.config.cwd).trim() || 'current branch';
       const dirtyPaths = this.getBlockingGitWorkingTreePaths();
       if (dirtyPaths.length > 0) {
         const message = [
           report.summary,
-          `Commit required before merge into ${targetBranch} from ${branchName}.`,
+          `Commit required before continuing on ${currentBranch}.`,
           dirtyPaths.length > 0 ? `Dirty paths: ${dirtyPaths.join(', ')}` : null,
           'Please commit the feature changes using the git-commit skill and retry.',
         ].filter((line): line is string => Boolean(line)).join('\n');
         this.emitEvent('error', 'system', {
-          branchName,
           featureId: report.featureId,
-          message: 'git strategy requires committed changes before merge',
+          message: 'git strategy requires committed changes before continuing',
         });
-        if (this.state.gitStrategy) {
-          this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
-          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-        }
-        checkoutBranch(this.config.cwd, targetBranch);
         return {
           ok: false,
           summary: message,
+          failureContext: {
+            stage: 'post_process',
+            kind: 'dirty_worktree',
+            signature: `dirty-worktree:${dirtyPaths.join(',')}`,
+          },
         };
       }
 
@@ -2434,76 +2332,62 @@ export class Orchestrator {
             exitCode: result.exitCode,
           });
           if (result.exitCode !== 0) {
-            if (this.state.gitStrategy) {
-              this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
-              await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-            }
-            checkoutBranch(this.config.cwd, targetBranch);
+            const normalizedCommand = command
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-')
+              .replace(/^-+|-+$/g, '');
             return {
               ok: false,
-              summary: `${report.summary}\nPre-merge validation failed: ${command}`,
+              summary: `${report.summary}\nPost-feature validation failed: ${command}`,
+              failureContext: {
+                stage: 'post_process',
+                kind: 'post_feature_validation',
+                signature: `post-feature-validation:${normalizedCommand || 'command'}:${validationCwd}`,
+                command,
+                executionCwd: validationCwd,
+              },
             };
           }
         }
       }
-
-      if (hasConflicts(this.config.cwd, branchName, targetBranch)) {
-        const missionPlan = this.requireMissionPlan();
-        const activeMilestoneId = missionPlan.activeMilestoneId;
-        if (activeMilestoneId) {
-          const milestone = missionPlan.milestones.find((item) => item.id === activeMilestoneId);
-          const nextId = `${activeMilestoneId}-f${(milestone?.features.length ?? 0) + 1}`;
-          this.state.missionPlan = appendFeaturesToMilestone(missionPlan, activeMilestoneId, [{
-            id: nextId,
-            description: `Resolve merge conflict for ${branchName}`,
-            kind: 'implementation',
-            status: 'pending',
-            attempts: 0,
-            model: CODEX_LATEST_ALIAS,
-          }]);
-        }
-        if (this.state.gitStrategy) {
-          this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'abandoned'));
-          await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-        }
-        checkoutBranch(this.config.cwd, targetBranch);
-        return {
-          ok: false,
-          summary: `${report.summary}\nMerge conflict detected for ${branchName}`,
-        };
-      }
-
-      mergeBranch(this.config.cwd, branchName, targetBranch);
-      this.emitEvent('branch_merged', 'system', {
-        branchName,
-        baseBranch: targetBranch,
-        mergeTargetBranch: targetBranch,
-      });
-      if (this.state.gitStrategy) {
-        this.setGitStrategyState(updateFeatureBranchStatus(this.state.gitStrategy, branchName, 'merged', {
-          mergedAt: new Date().toISOString(),
-        }));
-        await saveGitStrategyState(this.config.melosDir, this.state.gitStrategy);
-      }
-      checkoutBranch(this.config.cwd, targetBranch);
 
       return {
         ok: true,
         summary: report.summary,
       };
     } catch (error) {
-      try {
-        checkoutBranch(this.config.cwd, targetBranch);
-      } catch {
-        // ignore cleanup failure
-      }
       this.emitEvent('error', 'system', {
         message: `git post process failed: ${error instanceof Error ? error.message : String(error)}`,
       });
       return {
         ok: false,
         summary: `${report.summary}\nGit post process failed`,
+        failureContext: {
+          stage: 'post_process',
+          kind: 'git_post_process',
+          signature: 'git-post-process-failed',
+        },
       };
+    }
+  }
+
+  private async syncCurrentGitBranchState(persist: boolean = false): Promise<void> {
+    if (!this.state.gitStrategy) {
+      return;
+    }
+
+    const currentBranch = getCurrentBranch(this.config.cwd).trim() || null;
+    if (this.state.gitStrategy.activeBranch === currentBranch) {
+      return;
+    }
+
+    const next = currentBranch
+      ? setActiveBranch(this.state.gitStrategy, currentBranch)
+      : { ...this.state.gitStrategy, activeBranch: null };
+    this.setGitStrategyState(next);
+    if (persist) {
+      await saveGitStrategyState(this.config.melosDir, next);
     }
   }
 
@@ -2988,7 +2872,10 @@ export class Orchestrator {
       model?: string;
       affectedChecks?: string[];
       waivedReason?: string;
-    }>
+    }>,
+    options: {
+      requeueFailedMatches?: boolean;
+    } = {}
   ): {
     plan: MissionPlan;
     addedFeatures: Feature[];
@@ -3030,12 +2917,17 @@ export class Orchestrator {
 
       if (matchIndex >= 0) {
         const existing = features[matchIndex];
+        const shouldRequeueFailedMatch = options.requeueFailedMatches !== false || existing.status !== 'failed';
         const merged: Feature = {
           ...existing,
           description: this.pickMoreSpecificFeatureDescription(existing.description, draft.description),
           trackingKey: existing.trackingKey ?? trackingKey,
           model: existing.model ?? normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
-          status: existing.status === 'in_progress' ? 'in_progress' : 'pending',
+          status: existing.status === 'in_progress'
+            ? 'in_progress'
+            : shouldRequeueFailedMatch
+              ? 'pending'
+              : 'failed',
         };
         features[matchIndex] = merged;
         updatedFeatures.push(merged);
@@ -3601,7 +3493,6 @@ export class Orchestrator {
     const gitLines = gitStrategy
       ? [
         `Base branch: ${gitStrategy.config.baseBranch}`,
-        `Mission branch: ${gitStrategy.missionBranch ?? '-'}`,
         `Active branch: ${gitStrategy.activeBranch ?? '-'}`,
         `Pull request: ${gitStrategy.pullRequest ? `${gitStrategy.pullRequest.url} (${gitStrategy.pullRequest.action})` : '-'}`,
         `Quiet until: ${gitStrategy.quietUntil ?? '-'}`,

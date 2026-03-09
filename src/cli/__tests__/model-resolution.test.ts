@@ -79,7 +79,7 @@ describe('CLI v0.8 options', () => {
     expect(gitStrategy?.pullRequestEnabled).toBe(true);
   });
 
-  it('auto-enables git strategy in git repositories and infers the current branch as baseBranch', () => {
+  it('auto-enables git strategy in git repositories and defaults baseBranch to main', () => {
     const cwd = createGitRepository();
     const previousCwd = process.cwd();
 
@@ -88,7 +88,7 @@ describe('CLI v0.8 options', () => {
       const gitStrategy = resolveGitStrategy({}, {});
       expect(gitStrategy).toMatchObject({
         enabled: true,
-        baseBranch: execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim(),
+        baseBranch: 'main',
       });
       expect(gitStrategy?.pullRequestEnabled).toBe(false);
     } finally {

@@ -66,16 +66,13 @@ export {
 
 export {
   type GitStrategyConfig,
-  type FeatureBranch,
   type GitStrategyState,
   getGitStrategyPath,
   gitStrategyExists,
   loadGitStrategyState,
   saveGitStrategyState,
   createGitStrategyState,
-  createFeatureBranchName,
-  registerFeatureBranch,
-  updateFeatureBranchStatus,
+  setActiveBranch,
 } from './git-strategy.js';
 
 export {

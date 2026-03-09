@@ -616,7 +616,6 @@ export interface MissionStatusPayload {
   } | null;
   git: {
     activeBranch: string | null;
-    missionBranch: string | null;
     pullRequest: PullRequestState | null;
     quietUntil: string | null;
     lastExternalActivityAt: string | null;
@@ -728,7 +727,7 @@ export async function readMissionStatus(cwd: string): Promise<MissionStatusPaylo
   }
 
   const gitStrategy = snapshot?.state?.kernel?.gitStrategy ?? await loadGitStrategyState(melosDir);
-  git = buildMissionStatusGit(gitStrategy);
+  git = buildMissionStatusGit(cwd, gitStrategy);
   qa = qa ?? buildMissionStatusQa(missionPlanForReview);
 
   const events = readEventFile(join(melosDir, 'events.jsonl'));
@@ -813,7 +812,7 @@ function formatStatusPlain(status: MissionStatusPayload): string {
   }
   if (status.git) {
     lines.push(
-      `git=active=${status.git.activeBranch ?? '-'} mission=${status.git.missionBranch ?? '-'} quietUntil=${status.git.quietUntil ?? '-'}`
+      `git=active=${status.git.activeBranch ?? '-'} quietUntil=${status.git.quietUntil ?? '-'}`
     );
     if (status.git.pullRequest) {
       lines.push(
@@ -1302,11 +1301,10 @@ export function resolveGitStrategy(
     return undefined;
   }
 
-  const inferredBaseBranch = getCurrentBranch(cwd).trim();
   const missionId = options.missionId ?? inferMissionIdFromCwd(process.cwd());
   return {
     enabled: true,
-    baseBranch: options.baseBranch ?? config.git?.baseBranch ?? (inferredBaseBranch || 'main'),
+    baseBranch: options.baseBranch ?? config.git?.baseBranch ?? 'main',
     missionId,
     autoPush: config.git?.autoPush ?? false,
     preMergeValidation: config.git?.preMergeValidation ?? true,
@@ -1445,6 +1443,7 @@ function buildMissionStatusRetry(
 }
 
 function buildMissionStatusGit(
+  cwd: string,
   gitStrategy: MissionKernelState['gitStrategy'] | null | undefined
 ): MissionStatusPayload['git'] {
   if (!gitStrategy) {
@@ -1452,8 +1451,7 @@ function buildMissionStatusGit(
   }
 
   return {
-    activeBranch: gitStrategy.activeBranch,
-    missionBranch: gitStrategy.missionBranch,
+    activeBranch: gitStrategy.activeBranch ?? (getCurrentBranch(cwd).trim() || null),
     pullRequest: gitStrategy.pullRequest,
     quietUntil: gitStrategy.quietUntil,
     lastExternalActivityAt: gitStrategy.lastExternalActivityAt,

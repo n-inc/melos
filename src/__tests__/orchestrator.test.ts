@@ -3699,83 +3699,6 @@ describe('Orchestrator v0.8', () => {
     expect(events).toContain('uncommitted.txt');
   });
 
-  it('fails implementation dispatch when git strategy cannot resolve branch context', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-missing-branch-'));
-    const melosDir = join(cwd, '.melos');
-    mkdirSync(melosDir, { recursive: true });
-
-    const prdPath = join(cwd, 'PRD.md');
-    const missionPath = join(cwd, 'TASK.json');
-    writeFileSync(prdPath, '# Missing branch context mission\n', 'utf-8');
-
-    const plan = createMissionPlan({
-      missionId: 'missing-branch-context',
-      goal: 'Fail fast when git branch context is missing',
-      constraints: ['No backward compatibility'],
-      successCriteria: ['worker is blocked before execution'],
-      milestones: [
-        {
-          id: 'm1',
-          title: 'M1',
-          description: 'desc',
-          order: 1,
-          status: 'pending',
-          validationContract: { staticChecks: [], testSuites: [] },
-          features: [
-            {
-              id: 'm1-f1',
-              description: 'Implement',
-              kind: 'implementation',
-              status: 'pending',
-              attempts: 0,
-              model: 'codex',
-            },
-          ],
-        },
-      ],
-      state: 'running',
-    });
-
-    const workerSpy = jest.spyOn(WorkerAgent.prototype, 'run');
-    const orchestrator = new Orchestrator({
-      cwd,
-      maxIterations: 10,
-      prdFile: prdPath,
-      missionFile: missionPath,
-      melosDir,
-      autoApprove: true,
-      interactivePlanning: false,
-      dryRun: false,
-      resume: false,
-      gitStrategy: {
-        enabled: true,
-        missionId: 'missing-branch-context',
-        baseBranch: '',
-        autoPush: false,
-        preMergeValidation: false,
-        validationCommands: [],
-        pullRequestEnabled: false,
-      },
-    });
-    const orchestratorAny = orchestrator as unknown as {
-      state: { missionPlan: MissionPlan | null };
-      kernelState: { missionPlan: MissionPlan | null };
-      executeFeature: (milestone: MissionPlan['milestones'][number], feature: MissionPlan['milestones'][number]['features'][number], briefing?: string) => Promise<{ type: string; report: WorkerFeatureReport }>;
-    };
-    orchestratorAny.state.missionPlan = plan;
-    orchestratorAny.kernelState.missionPlan = plan;
-
-    const milestone = plan.milestones[0]!;
-    const feature = milestone.features[0]!;
-    const result = await orchestratorAny.executeFeature(milestone, feature, 'briefing');
-
-    expect(result.type).toBe('failed');
-    expect(result.report.status).toBe('FAILED');
-    expect(result.report.summary).toContain('baseBranch is missing');
-    expect(result.report.requestsHelp).toBe(true);
-    expect(workerSpy).not.toHaveBeenCalled();
-  });
-
   it('continues git-strategy flow when worker commits feature changes', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-committed-'));
     const melosDir = join(cwd, '.melos');
@@ -3883,7 +3806,7 @@ describe('Orchestrator v0.8', () => {
     writeFileSync(join(featureCwd, 'committed-change.txt'), 'ok', 'utf-8');
     execSync('git add -A', { cwd, stdio: 'ignore' });
     execSync('git commit -m "feat(checkpoint): complete m1-f1"', { cwd, stdio: 'ignore' });
-    const validationCommand = `node -e 'require(\"node:fs\").writeFileSync(${JSON.stringify(tracePath)}, process.cwd())'`;
+    const validationCommand = `node -e 'require("node:fs").writeFileSync(${JSON.stringify(tracePath)}, process.cwd())'`;
 
     const planned = createMissionPlan({
       missionId: 'feature-cwd-validation',
@@ -3938,7 +3861,11 @@ describe('Orchestrator v0.8', () => {
       state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
       kernelState: { missionPlan: MissionPlan | null };
       getBlockingGitWorkingTreePaths: () => string[];
-      runGitPostProcess: (branchName: string, targetBranch: string, report: WorkerFeatureReport) => Promise<{ ok: boolean; summary: string }>;
+      runGitPostProcess: (report: WorkerFeatureReport) => Promise<{
+        ok: boolean;
+        summary: string;
+        failureContext?: WorkerFeatureReport['failureContext'];
+      }>;
     };
     orchestratorAny.state.missionPlan = planned;
     orchestratorAny.kernelState.missionPlan = planned;
@@ -3952,7 +3879,7 @@ describe('Orchestrator v0.8', () => {
     });
     orchestratorAny.getBlockingGitWorkingTreePaths = () => [];
 
-    const result = await orchestratorAny.runGitPostProcess('feature-branch', baseBranch, {
+    const result = await orchestratorAny.runGitPostProcess({
       iteration: 1,
       milestoneId: 'm1',
       featureId: 'm1-f1',
@@ -3993,7 +3920,7 @@ describe('Orchestrator v0.8', () => {
     writeFileSync(join(cwd, 'committed-change.txt'), 'ok', 'utf-8');
     execSync('git add -A', { cwd, stdio: 'ignore' });
     execSync('git commit -m "feat(checkpoint): complete m1-f1"', { cwd, stdio: 'ignore' });
-    const validationCommand = `node -e 'require(\"node:fs\").writeFileSync(${JSON.stringify(tracePath)}, process.cwd())'`;
+    const validationCommand = `node -e 'require("node:fs").writeFileSync(${JSON.stringify(tracePath)}, process.cwd())'`;
 
     const planned = createMissionPlan({
       missionId: 'root-validation',
@@ -4040,7 +3967,11 @@ describe('Orchestrator v0.8', () => {
       state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
       kernelState: { missionPlan: MissionPlan | null };
       getBlockingGitWorkingTreePaths: () => string[];
-      runGitPostProcess: (branchName: string, targetBranch: string, report: WorkerFeatureReport) => Promise<{ ok: boolean; summary: string }>;
+      runGitPostProcess: (report: WorkerFeatureReport) => Promise<{
+        ok: boolean;
+        summary: string;
+        failureContext?: WorkerFeatureReport['failureContext'];
+      }>;
     };
     orchestratorAny.state.missionPlan = planned;
     orchestratorAny.kernelState.missionPlan = planned;
@@ -4054,7 +3985,7 @@ describe('Orchestrator v0.8', () => {
     });
     orchestratorAny.getBlockingGitWorkingTreePaths = () => [];
 
-    const result = await orchestratorAny.runGitPostProcess('feature-branch', baseBranch, {
+    const result = await orchestratorAny.runGitPostProcess({
       iteration: 1,
       milestoneId: 'm1',
       featureId: 'm1-f1',
@@ -4077,6 +4008,112 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.ok).toBe(true);
     expect(readFileSync(tracePath, 'utf-8')).toBe(realpathSync(cwd));
+  });
+
+  it('returns canonical failure context for post-feature validation failures', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-failure-context-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Failure context mission\n', 'utf-8');
+    initGitRepository(cwd);
+    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
+
+    const planned = createMissionPlan({
+      missionId: 'failure-context',
+      goal: 'Classify post-feature validation failures',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['Canonical failure context is attached'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'Implement', status: 'in_progress', attempts: 0, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'failure-context',
+        baseBranch,
+        autoPush: false,
+        preMergeValidation: true,
+        validationCommands: ['exit 1'],
+        pullRequestEnabled: false,
+      },
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      getBlockingGitWorkingTreePaths: () => string[];
+      runGitPostProcess: (report: WorkerFeatureReport) => Promise<{
+        ok: boolean;
+        summary: string;
+        failureContext?: WorkerFeatureReport['failureContext'];
+      }>;
+    };
+    orchestratorAny.state.missionPlan = planned;
+    orchestratorAny.kernelState.missionPlan = planned;
+    orchestratorAny.state.gitStrategy = createGitStrategyState({
+      missionId: 'failure-context',
+      baseBranch,
+      autoPush: false,
+      preMergeValidation: true,
+      validationCommands: ['exit 1'],
+      pullRequestEnabled: false,
+    });
+    orchestratorAny.getBlockingGitWorkingTreePaths = () => [];
+
+    const result = await orchestratorAny.runGitPostProcess({
+      iteration: 1,
+      milestoneId: 'm1',
+      featureId: 'm1-f1',
+      status: 'SUCCESS',
+      summary: 'implemented with commit',
+      warnings: [],
+      filesChanged: [],
+      validation: {
+        testsRun: true,
+        testsPassed: 1,
+        testsFailed: 0,
+        lintPassed: true,
+        typecheckPassed: true,
+      },
+      checks: [],
+      learnings: [],
+      requestsHelp: false,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain('Post-feature validation failed: exit 1');
+    expect(result.failureContext).toEqual(expect.objectContaining({
+      stage: 'post_process',
+      kind: 'post_feature_validation',
+      command: 'exit 1',
+      executionCwd: cwd,
+      signature: expect.stringContaining('post-feature-validation:exit-1:'),
+    }));
   });
 
   it('uses a dedicated mission branch and post-pr follow-up phase when pull request automation is enabled', async () => {
@@ -4239,7 +4276,7 @@ describe('Orchestrator v0.8', () => {
               url: 'https://github.com/example/repo/pull/99',
               title: 'feat: pr flow',
               baseBranch,
-              headBranch: 'melos/pr-flow/mission',
+              headBranch: baseBranch,
               draft: false,
               action: 'created',
               updatedAt: new Date().toISOString(),
@@ -4274,7 +4311,7 @@ describe('Orchestrator v0.8', () => {
             url: 'https://github.com/example/repo/pull/99',
             title: 'feat: pr flow',
             baseBranch,
-            headBranch: 'melos/pr-flow/mission',
+            headBranch: baseBranch,
             draft: false,
             action: 'updated',
             updatedAt: new Date().toISOString(),
@@ -4315,17 +4352,15 @@ describe('Orchestrator v0.8', () => {
     const result = await orchestrator.run();
     expect(result.success).toBe(true);
     expect(workerInputs.map((item) => item.featureId)).toEqual(['m1-f1', 'm2-f1', 'm2-f2', 'm3-f1', 'm3-f2']);
-    expect(workerInputs[0]?.currentBranch).toContain('melos/pr-flow/m1-f1-implement');
-    expect(workerInputs[1]?.currentBranch).toBe('melos/pr-flow/mission');
-    expect(workerInputs[3]?.currentBranch).toBe('melos/pr-flow/mission');
-    expect(execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim()).toBe('melos/pr-flow/mission');
+    expect(workerInputs.every((item) => item.currentBranch === baseBranch)).toBe(true);
+    expect(execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim()).toBe(baseBranch);
 
     const gitStrategy = JSON.parse(readFileSync(join(melosDir, 'git-strategy.json'), 'utf-8')) as {
-      missionBranch: string | null;
+      activeBranch: string | null;
       pullRequest: { url: string; action: string } | null;
       quietUntil: string | null;
     };
-    expect(gitStrategy.missionBranch).toBe('melos/pr-flow/mission');
+    expect(gitStrategy.activeBranch).toBe(baseBranch);
     expect(gitStrategy.pullRequest).toMatchObject({
       url: 'https://github.com/example/repo/pull/99',
       action: 'updated',
@@ -4458,6 +4493,87 @@ describe('Orchestrator v0.8', () => {
     expect(followUpResult.updatedFeatures[0]?.id).toBe('m1-f1');
     expect(followUpResult.updatedFeatures[0]?.status).toBe('pending');
     expect(followUpResult.plan.milestones[0]?.features).toHaveLength(1);
+  });
+
+  it('keeps exhausted failed follow-up features failed when requeueFailedMatches is false', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-reuse-exhausted-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# reuse exhausted', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const plan = createMissionPlan({
+      missionId: 'reuse-exhausted',
+      goal: 'Do not requeue exhausted follow-ups',
+      constraints: [],
+      successCriteria: ['No duplicate remediation features'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Resolve shared validation root cause',
+              trackingKey: 'post-feature-validation:exit-1:/repo',
+              status: 'failed',
+              attempts: 3,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      applyValidationFollowUps: (
+        missionPlan: MissionPlan,
+        milestoneId: string,
+        followUps: Array<{ description: string; trackingKey?: string; model?: string }>,
+        options?: { requeueFailedMatches?: boolean }
+      ) => {
+        plan: MissionPlan;
+        addedFeatures: Array<{ id: string }>;
+        updatedFeatures: Array<{ id: string; status: string; description: string }>;
+      };
+    };
+
+    const followUpResult = orchestratorAny.applyValidationFollowUps(
+      plan,
+      'm1',
+      [{
+        description: 'Resolve shared validation root cause with more context',
+        trackingKey: 'post-feature-validation:exit-1:/repo',
+        model: 'codex-latest',
+      }],
+      { requeueFailedMatches: false }
+    );
+
+    expect(followUpResult.addedFeatures).toHaveLength(0);
+    expect(followUpResult.updatedFeatures).toHaveLength(1);
+    expect(followUpResult.updatedFeatures[0]?.id).toBe('m1-f1');
+    expect(followUpResult.updatedFeatures[0]?.status).toBe('failed');
+    expect(followUpResult.plan.milestones[0]?.features).toHaveLength(1);
+    expect(followUpResult.plan.milestones[0]?.features[0]?.attempts).toBe(3);
   });
 
   it('fails worker results that mutate protected runtime files', async () => {

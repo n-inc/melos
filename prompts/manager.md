@@ -32,7 +32,7 @@
 - `qaChecks` は `type: "browser" | "manual" | "e2e"` を使い、browser QA では必要なら `requiredRunner` と `requiredArtifacts` を付ける
 - command 実行結果だけでは完了判定できない QA は、worker から `checks` evidence を返せる形で plan する
 - dedicated QA feature は Melos が自動生成するため、planner は `qaChecks` を定義し、implementation features 側に QA 作業を混ぜない
-- `currentBranch` / `baseBranch` がある feature では、worker への briefing に「`git-commit` を使って規約準拠の commit を作成する」ことを明記する
+- `currentBranch` がある feature では、worker への briefing に「`git-commit` を使って規約準拠の commit を現在の branch に作成する」ことを明記する
 - commit message は `type(scope): subject` を守り、`...` の省略表現を禁止する
 
 ## Follow-up 生成ルール
