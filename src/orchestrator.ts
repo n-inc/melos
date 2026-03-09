@@ -1129,15 +1129,26 @@ export class Orchestrator {
           },
         }));
         missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
-      } else {
-        missionPlan = transitionMissionState(missionPlan, 'paused');
+        this.state.missionPlan = missionPlan;
+        this.kernelState.missionPlan = missionPlan;
+        await this.persistMissionPlan();
+        await this.emitStatusUpdate();
+        return;
       }
 
-      this.state.missionPlan = missionPlan;
-      this.kernelState.missionPlan = missionPlan;
-      await this.persistMissionPlan();
-      await this.emitStatusUpdate();
-      return;
+      if (choice === 'modify') {
+        this.emitEvent('manager_decision', 'orchestrator', {
+          action: 'validation_loop_modify_followups',
+          milestoneId,
+          message: 'Validation loop requested modify; generating follow-up features instead of pausing.',
+        });
+      } else {
+        this.state.missionPlan = missionPlan;
+        this.kernelState.missionPlan = missionPlan;
+        await this.persistMissionPlan();
+        await this.emitStatusUpdate();
+        return;
+      }
     }
 
     const followUps = await this.manager.generateFollowUpFeatures({

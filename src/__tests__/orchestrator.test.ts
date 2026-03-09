@@ -3834,6 +3834,125 @@ describe('Orchestrator v0.8', () => {
     expect(events).not.toContain('watchdog timeout');
   });
 
+  it('defaults validation loop escalation to pause in non-interactive mode', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-validation-loop-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# validation loop', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      resolveValidationEscalation: (milestone: { id: string }) => Promise<string>;
+    };
+
+    await expect(orchestratorAny.resolveValidationEscalation({ id: 'm1' })).resolves.toBe('modify');
+  });
+
+  it('continues with validation follow-up planning when non-interactive escalation defaults to modify', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-validation-loop-followup-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'validations'), { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# validation loop follow-up', 'utf-8');
+
+    const plan = createMissionPlan({
+      missionId: 'validation-loop-followup',
+      goal: 'Keep running after validation loop modify escalation',
+      constraints: [],
+      successCriteria: ['validation loop modify creates follow-up work instead of pausing'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Repair failed validation',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [
+              {
+                id: 'm1-build',
+                description: 'Build must pass',
+                type: 'command',
+                command: 'false',
+                expectedOutcome: 'exit_code_zero',
+                passed: false,
+                failureCount: 2,
+              },
+            ],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Initial implementation',
+              status: 'done',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    writeFileSync(missionPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf-8');
+
+    const spy = jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Repair build regression detected by validation',
+        trackingKey: 'build-regression',
+        priority: 'high',
+        affectedChecks: ['m1-build'],
+        model: 'codex-latest',
+      },
+    ]);
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      runMilestoneValidation: (milestoneId: string) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = plan;
+    orchestratorAny.kernelState.missionPlan = plan;
+
+    await orchestratorAny.runMilestoneValidation('m1');
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('running');
+    expect(missionPlan.milestones[0]?.status).toBe('in_progress');
+    expect(missionPlan.milestones[0]?.features.map((feature) => feature.id)).toEqual(['m1-f1', 'm1-f2']);
+    expect(missionPlan.milestones[0]?.features[1]?.trackingKey).toBe('build-regression');
+    expect(missionPlan.milestones[0]?.features[1]?.status).toBe('pending');
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"answer":"modify"');
+    expect(events).toContain('"action":"validation_loop_modify_followups"');
+    expect(events).toContain('"type":"task_added"');
+    expect(events).not.toContain('"type":"mission_interrupted"');
+
+    spy.mockRestore();
+  });
 });
 
 function initGitRepository(cwd: string): void {
