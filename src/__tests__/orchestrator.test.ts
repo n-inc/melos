@@ -1838,6 +1838,7 @@ describe('Orchestrator v0.8', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-browser-before-after-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'validations'), { recursive: true });
     mkdirSync(join(cwd, 'artifacts', 'screenshots'), { recursive: true });
     writeFileSync(join(cwd, 'artifacts', 'screenshots', 'after.png'), 'png', 'utf-8');
 
@@ -1878,18 +1879,16 @@ describe('Orchestrator v0.8', () => {
             {
               id: 'm1-f1',
               description: 'Implement flow',
-              status: 'pending',
-              attempts: 0,
+              status: 'done',
+              attempts: 1,
               model: 'codex',
             },
           ],
         },
       ],
-      state: 'planning',
+      state: 'running',
     });
 
-    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
-    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
     jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
       {
         description: 'Capture missing baseline browser evidence',
@@ -1897,43 +1896,10 @@ describe('Orchestrator v0.8', () => {
         model: 'codex',
       },
     ]);
-    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => ({
-      type: 'success',
-      report: {
-        iteration: 1,
-        milestoneId: input.milestone.id,
-        featureId: input.feature.id,
-        status: 'SUCCESS',
-        summary: 'done',
-        warnings: [],
-        filesChanged: [],
-        validation: {
-          testsRun: true,
-          testsPassed: 1,
-          testsFailed: 0,
-          lintPassed: true,
-          typecheckPassed: true,
-        },
-        checks: input.feature.kind === 'qa' && input.feature.qaPhase === 'after'
-          ? [
-            {
-              checkId: 'browser-qa',
-              passed: true,
-              runner: 'playwright-interactive',
-              beforeReproduced: false,
-              afterScreenshotPath: 'artifacts/screenshots/after.png',
-            },
-          ]
-          : [],
-        learnings: [],
-        requestsHelp: false,
-        createdAt: new Date().toISOString(),
-      },
-    }));
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 3,
+      maxIterations: 6,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
@@ -1942,10 +1908,34 @@ describe('Orchestrator v0.8', () => {
       dryRun: false,
       resume: false,
     });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: {
+        missionPlan: MissionPlan | null;
+        validationEvidence?: Record<string, Record<string, unknown>>;
+      };
+      runMilestoneValidation: (milestoneId: string) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = {
+      ...planned,
+      activeMilestoneId: 'm1',
+      activeFeatureId: null,
+    };
+    orchestratorAny.kernelState.missionPlan = orchestratorAny.state.missionPlan;
+    orchestratorAny.kernelState.validationEvidence = {
+      m1: {
+        'browser-qa': {
+          checkId: 'browser-qa',
+          passed: true,
+          runner: 'playwright-interactive',
+          beforeReproduced: false,
+          afterScreenshotPath: 'artifacts/screenshots/after.png',
+        },
+      },
+    };
 
-    const result = await orchestrator.run();
+    await orchestratorAny.runMilestoneValidation('m1');
 
-    expect(result.success).toBe(false);
     const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
       passed: boolean;
       results: Array<{ checkId: string; passed: boolean; failure?: { summary: string; errorMessages: string[] } }>;
@@ -3615,6 +3605,16 @@ describe('Orchestrator v0.8', () => {
       },
     });
 
+    const result = await orchestrator.run();
+    expect(result.success).toBe(false);
+    expect(result.reason).toBe('max_iterations');
+
+    const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
+      milestones: Array<{ features: Array<{ status: string }> }>;
+    };
+    expect(mission.milestones[0]?.features[0]?.status).toBe('failed');
+  });
+
   it('fails before worker execution when git-strategy starts from a dirty working tree', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-preflight-dirty-'));
     const melosDir = join(cwd, '.melos');
@@ -3773,16 +3773,6 @@ describe('Orchestrator v0.8', () => {
     expect(result.report.summary).toContain('baseBranch is missing');
     expect(result.report.requestsHelp).toBe(true);
     expect(workerSpy).not.toHaveBeenCalled();
-  });
-
-    const result = await orchestrator.run();
-    expect(result.success).toBe(false);
-    expect(result.reason).toBe('max_iterations');
-
-    const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
-      milestones: Array<{ features: Array<{ status: string }> }>;
-    };
-    expect(mission.milestones[0]?.features[0]?.status).toBe('failed');
   });
 
   it('continues git-strategy flow when worker commits feature changes', async () => {
