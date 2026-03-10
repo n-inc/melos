@@ -646,6 +646,183 @@ describe('WorkerAgent', () => {
     expect(options?.model).toBe('opus');
   });
 
+  it('builds the product review prompt with checkpoint result requirements and js_repl enabled', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: '```json\n{"status":"SUCCESS","summary":"product review passed","warnings":[],"findings":[],"artifacts":[],"checkpointResults":[],"requestsHelp":false}\n```',
+        exitCode: 0,
+      });
+
+    const plan = createMissionPlan({
+      missionId: 'product-review-test',
+      goal: 'Run final product review',
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          {
+            id: 'root-dispatcher',
+            description: 'Verify root dispatcher',
+            visual: true,
+            evidenceMode: 'single',
+          },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm3',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm3-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+    });
+
+    const milestone = plan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await agent.run({
+      iteration: 1,
+      missionPlan: plan,
+      milestone,
+      feature,
+      prd: '# PRD',
+      briefing: 'product review briefing',
+      currentBranch: 'main',
+      baseBranch: 'main',
+    });
+
+    const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
+    const options = codexExecute.mock.calls[0]?.[1] as { enabledFeatures?: string[] } | undefined;
+    expect(prompt).toContain('Always return one `checkpointResults` entry per contract checkpoint when the browser review actually ran.');
+    expect(prompt).toContain('For every visual checkpoint, capture at least one `after` screenshot');
+    expect(prompt).toContain('every screenshot/video should include the matching `checkpointId` and `phase`');
+    expect(prompt).toContain('Only omit `checkpointResults` when you return `BLOCKED` before the review could start.');
+    expect(options?.enabledFeatures).toEqual(['js_repl']);
+  });
+
+  it('synthesizes review artifacts from checkpoint result paths when the model omits artifacts', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: `\`\`\`json\n${JSON.stringify({
+          status: 'SUCCESS',
+          summary: 'product review passed',
+          warnings: [],
+          findings: [],
+          artifacts: [],
+          checkpointResults: [
+            {
+              checkpointId: 'root-dispatcher',
+              passed: true,
+              afterObserved: 'redirect landed on /en',
+              afterScreenshotPath: 'artifacts/screenshots/root-dispatcher-after.png',
+            },
+          ],
+          requestsHelp: false,
+        })}\n\`\`\``,
+        exitCode: 0,
+      });
+
+    const plan = createMissionPlan({
+      missionId: 'product-review-artifact-synthesis',
+      goal: 'Run final product review',
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          {
+            id: 'root-dispatcher',
+            description: 'Verify root dispatcher',
+            visual: true,
+            evidenceMode: 'single',
+          },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm3',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm3-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await agent.run({
+      iteration: 1,
+      missionPlan: plan,
+      milestone: plan.milestones[0],
+      feature: plan.milestones[0].features[0],
+      prd: '# PRD',
+      briefing: 'product review briefing',
+      currentBranch: 'main',
+      baseBranch: 'main',
+    });
+
+    expect(result.type).toBe('success');
+    expect(result.report.review?.checkpointResults).toEqual([
+      expect.objectContaining({
+        checkpointId: 'root-dispatcher',
+        afterScreenshotPath: 'artifacts/screenshots/root-dispatcher-after.png',
+      }),
+    ]);
+    expect(result.report.review?.artifacts).toEqual([
+      expect.objectContaining({
+        kind: 'screenshot',
+        checkpointId: 'root-dispatcher',
+        phase: 'after',
+        path: 'artifacts/screenshots/root-dispatcher-after.png',
+      }),
+    ]);
+  });
+
   it('normalizes warnings and structured validation checks from worker output', async () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
@@ -740,5 +917,88 @@ describe('WorkerAgent', () => {
     expect(result.report.status).toBe('FAILED');
     expect(result.report.requestsHelp).toBe(true);
     expect(result.report.summary).toContain('structured JSON report');
+  });
+
+  it('returns a structured BLOCKED report when a product review does not return JSON', async () => {
+    const agent = new WorkerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+      .mockResolvedValue({
+        success: false,
+        output: '',
+        error: 'Timed out while waiting for turn completion',
+        exitCode: 1,
+      });
+
+    const plan = createMissionPlan({
+      missionId: 'product-review-timeout',
+      goal: 'Run final product review',
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          {
+            id: 'root-dispatcher',
+            description: 'Verify root dispatcher',
+            visual: true,
+          },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm3',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm3-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+    });
+
+    const milestone = plan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    const result = await agent.run({
+      iteration: 1,
+      missionPlan: plan,
+      milestone,
+      feature,
+      prd: '# PRD',
+      briefing: 'product review briefing',
+      currentBranch: 'main',
+      baseBranch: 'main',
+    });
+
+    expect(result.type).toBe('blocked');
+    expect(result.report.status).toBe('BLOCKED');
+    expect(result.report.requestsHelp).toBe(true);
+    expect(result.report.summary).toContain('Timed out while waiting for turn completion');
+    expect(result.report.review?.findings).toEqual([
+      expect.objectContaining({
+        id: 'product-review-blocked',
+        trackingKey: 'product-review-blocked',
+        summary: 'Product review is blocked',
+      }),
+    ]);
+    expect(result.report.warnings).toContain('review engine error: Timed out while waiting for turn completion');
   });
 });

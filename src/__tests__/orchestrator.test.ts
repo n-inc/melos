@@ -1172,6 +1172,318 @@ describe('Orchestrator v0.8', () => {
     expect(enforced.findings.find((finding) => finding.id === 'product-review-evidence-incomplete')).toBeUndefined();
   });
 
+  it('does not generate review remediation tasks for evidence-only findings', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-review-evidence-only-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Final review evidence only\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'final-review-evidence-only',
+      goal: 'Do not convert review infrastructure findings into product remediation tasks',
+      constraints: [],
+      successCriteria: ['infra-only review failures pause instead of adding remediation features'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          {
+            id: 'seo-head-signals',
+            description: 'Verify head signals',
+            visual: true,
+            evidenceMode: 'single',
+            requiredArtifacts: ['screenshot'],
+          },
+        ],
+      },
+      state: 'running',
+    });
+
+    const reviewFollowUps = jest.spyOn(ManagerAgent.prototype, 'generateReviewFollowUpFeatures');
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 8,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleReviewFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: {
+          type: 'success';
+          report: WorkerFeatureReport;
+        }
+      ) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = {
+      ...runningPlan,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    orchestratorAny.kernelState.missionPlan = orchestratorAny.state.missionPlan;
+
+    const milestone = orchestratorAny.state.missionPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleReviewFeatureResult(milestone, feature, {
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'review ran but evidence is incomplete',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        review: {
+          reviewType: 'product',
+          generation: 1,
+          passed: true,
+          summary: 'review ran but evidence is incomplete',
+          findings: [],
+          artifacts: [],
+          checkpointResults: [
+            {
+              checkpointId: 'seo-head-signals',
+              passed: true,
+              afterObserved: 'canonical and hreflang matched the dispatcher policy',
+            },
+          ],
+        },
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('paused');
+    expect(missionPlan.activeMilestoneId).toBe('m1');
+    expect(missionPlan.activeFeatureId).toBe('m1-f1');
+    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status, kind: item.kind }))).toEqual([
+      { id: 'm1-f1', status: 'pending', kind: 'review' },
+    ]);
+    expect(reviewFollowUps).not.toHaveBeenCalled();
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('review infrastructure findings require manual intervention');
+    expect(events).toContain('"type":"mission_interrupted"');
+    expect(events).not.toContain('"type":"task_added"');
+  });
+
+  it('filters review infrastructure findings out of remediation planning when product issues also exist', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-review-followup-filter-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Final review follow-up filter\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'final-review-followup-filter',
+      goal: 'Only product findings should become remediation tasks',
+      constraints: [],
+      successCriteria: ['evidence completeness findings are excluded from follow-up planning'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+            {
+              id: 'm1-f2',
+              description: 'Run final code review',
+              kind: 'review',
+              reviewType: 'code',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const reviewFollowUps = jest.spyOn(ManagerAgent.prototype, 'generateReviewFollowUpFeatures')
+      .mockResolvedValue([
+        {
+          description: 'Move whitelist redirects behind a GET/HEAD middleware gate',
+          trackingKey: 'locale-redirects-post-method-leak',
+          priority: 'high',
+          model: 'codex-latest',
+        },
+      ]);
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 8,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleReviewFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: {
+          type: 'success';
+          report: WorkerFeatureReport;
+        }
+      ) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = {
+      ...runningPlan,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    orchestratorAny.kernelState.missionPlan = orchestratorAny.state.missionPlan;
+
+    const milestone = orchestratorAny.state.missionPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleReviewFeatureResult(milestone, feature, {
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'review found one product issue and one evidence issue',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        review: {
+          reviewType: 'product',
+          generation: 1,
+          passed: false,
+          summary: 'review found one product issue and one evidence issue',
+          findings: [
+            {
+              id: 'product-finding-1',
+              reviewType: 'product',
+              priority: 'P2',
+              summary: 'Whitelist locale redirects still apply to POST requests',
+              rationale: 'POST /for/authors redirected even though the PRD limits locale redirects to GET/HEAD.',
+              suggestedFix: 'Move whitelist redirects behind a GET/HEAD middleware gate.',
+              trackingKey: 'locale-redirects-post-method-leak',
+              surface: 'whitelist-subpages',
+            },
+            {
+              id: 'product-review-evidence-incomplete',
+              reviewType: 'product',
+              priority: 'P1',
+              summary: 'Final product review evidence is incomplete',
+              rationale: 'seo-head-signals: missing after screenshot',
+              suggestedFix: 'Capture the required baseline and after evidence for each product review checkpoint before sign-off.',
+              trackingKey: 'product-review-evidence-incomplete',
+              surface: 'final-review-evidence',
+              affectedFiles: [],
+            },
+          ],
+          artifacts: [],
+        },
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    expect(reviewFollowUps).toHaveBeenCalledWith(expect.objectContaining({
+      findings: [
+        expect.objectContaining({
+          trackingKey: 'locale-redirects-post-method-leak',
+        }),
+      ],
+    }));
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('running');
+    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status, kind: item.kind }))).toEqual([
+      { id: 'm1-f1', status: 'done', kind: 'review' },
+      { id: 'm1-f2', status: 'skipped', kind: 'review' },
+      { id: 'm1-f3', status: 'pending', kind: 'review_remediation' },
+      { id: 'm1-f4', status: 'pending', kind: 'review' },
+      { id: 'm1-f5', status: 'pending', kind: 'review' },
+    ]);
+    expect(missionPlan.milestones[0]?.features[2]?.trackingKey).toBe('locale-redirects-post-method-leak');
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"type":"task_added"');
+  });
+
   it('fails manual validation when manual evidence is missing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-warning-handoff-'));
     const melosDir = join(cwd, '.melos');

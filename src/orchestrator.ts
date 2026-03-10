@@ -2620,6 +2620,7 @@ export class Orchestrator {
     await this.persistReviewReport(reviewReport);
 
     const blockingFindings = reviewReport.findings.filter((finding) => isBlockingReviewFinding(finding));
+    const actionableBlockingFindings = blockingFindings.filter((finding) => !isReviewInfrastructureFinding(finding));
     this.emitEvent('review_result', 'orchestrator', {
       milestoneId: milestone.id,
       featureId: feature.id,
@@ -2636,7 +2637,7 @@ export class Orchestrator {
     missionPlan = incrementMissionIterations(missionPlan);
 
     if (result.type === 'blocked' || result.report.status === 'BLOCKED') {
-      if (blockingFindings.length === 0) {
+      if (actionableBlockingFindings.length === 0) {
         missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
         missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
         missionPlan = setActiveMilestone(missionPlan, milestone.id);
@@ -2682,11 +2683,31 @@ export class Orchestrator {
       return;
     }
 
+    if (actionableBlockingFindings.length === 0) {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
+      missionPlan = updateMilestoneStatus(missionPlan, milestone.id, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestone.id);
+      missionPlan = setActiveFeature(missionPlan, feature.id);
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'blocked',
+      });
+      this.pause(
+        'review infrastructure findings require manual intervention',
+        `${formatReviewLabel(feature)} failed because the review evidence or contract was incomplete. No product remediation task was generated; fix Melos/review tooling or rerun after correcting the review setup.`
+      );
+      return;
+    }
+
     const followUps = await this.manager.generateReviewFollowUpFeatures({
       milestoneId: milestone.id,
       reviewType: reviewReport.reviewType,
       generation: reviewReport.generation,
-      findings: blockingFindings,
+      findings: actionableBlockingFindings,
       missionPlan,
       onAppServerEvent: (method, params) => {
         const detail = formatAgentEventDetail(method, params);
@@ -2746,7 +2767,7 @@ export class Orchestrator {
 
     const addedRemediations = followUpResult.addedFeatures.length + followUpResult.updatedFeatures.length;
     this.activityLabel = [
-      `${formatReviewLabel(feature)} failed with ${blockingFindings.length} blocking finding${blockingFindings.length === 1 ? '' : 's'}.`,
+      `${formatReviewLabel(feature)} failed with ${actionableBlockingFindings.length} actionable blocking finding${actionableBlockingFindings.length === 1 ? '' : 's'}.`,
       `Added ${addedRemediations} remediation feature${addedRemediations === 1 ? '' : 's'} and scheduled ${followUpResult.addedReviewFeatures.length} review reruns.`,
     ].join(' ');
     await this.persistMissionPlan();
@@ -4038,6 +4059,12 @@ function findReviewArtifactPath(
 
 function hasBlockedProductReviewFinding(findings: ReviewReport['findings']): boolean {
   return findings.some((finding) => finding.id === 'product-review-blocked' || finding.trackingKey === 'product-review-blocked');
+}
+
+function isReviewInfrastructureFinding(finding: ReviewFinding): boolean {
+  return finding.id === 'product-review-evidence-incomplete'
+    || finding.trackingKey === 'product-review-evidence-incomplete'
+    || finding.surface === 'final-review-evidence';
 }
 
 function evaluateProductReviewCheckpointResults(

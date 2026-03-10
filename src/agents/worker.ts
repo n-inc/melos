@@ -23,7 +23,9 @@ import {
   normalizeProductReviewCheckpointResult,
   normalizeReviewArtifact,
   normalizeReviewFinding,
+  type ProductReviewCheckpointResult,
   type ProductReviewContract,
+  type ReviewArtifact,
 } from '../state/review.js';
 import { resolveFeatureExecutionCwd } from '../state/execution-cwd.js';
 import type {
@@ -116,7 +118,7 @@ export class WorkerAgent implements Agent {
       streamTranscript.join('')
     );
 
-    const report = this.parseWorkReport(input, result.output, result.success);
+    const report = this.parseWorkReport(input, result.output, result.success, result.error);
     report.summary = `${report.summary}${logFilePath ? `\n(log: ${logFilePath})` : ''}`.trim();
 
     switch (report.status) {
@@ -284,6 +286,12 @@ export class WorkerAgent implements Agent {
         ],
         requestsHelp: false,
       }, null, 2),
+      '',
+      'Always return one `checkpointResults` entry per contract checkpoint when the browser review actually ran.',
+      'For every visual checkpoint, capture at least one `after` screenshot and return it in both `artifacts` and the matching `checkpointResults.afterScreenshotPath`.',
+      'For `evidenceMode=single`, include the checkpoint with `passed` plus the `after*` artifact paths you captured.',
+      'When you return `artifacts`, every screenshot/video should include the matching `checkpointId` and `phase`.',
+      'Only omit `checkpointResults` when you return `BLOCKED` before the review could start.',
       '',
       'Return only one fenced json block.',
     ].join('\n');
@@ -712,7 +720,8 @@ export class WorkerAgent implements Agent {
   private parseWorkReport(
     input: WorkerInput,
     output: string,
-    engineSuccess: boolean
+    engineSuccess: boolean,
+    engineError?: string
   ): WorkerFeatureReport {
     const report: WorkerFeatureReport = {
       iteration: input.iteration,
@@ -789,6 +798,7 @@ export class WorkerAgent implements Agent {
             : [])
             .map((result) => normalizeProductReviewCheckpointResult(result))
             .filter((result): result is NonNullable<typeof result> => Boolean(result));
+          const normalizedArtifacts = synthesizeReviewArtifactsFromCheckpointResults(artifacts, checkpointResults);
           report.review = {
             reviewType,
             generation: input.feature.reviewGeneration ?? 1,
@@ -797,7 +807,7 @@ export class WorkerAgent implements Agent {
               && parsed.status !== 'BLOCKED',
             summary: typeof parsed.summary === 'string' ? parsed.summary : '',
             findings,
-            artifacts,
+            artifacts: normalizedArtifacts,
             checkpointResults: checkpointResults.length > 0 ? checkpointResults : undefined,
           };
         }
@@ -821,28 +831,42 @@ export class WorkerAgent implements Agent {
     }
 
     if (input.feature.reviewType && !report.review) {
+      const reviewType = input.feature.reviewType;
       const summary = report.summary
         || output.split(/\n/).find((line) => line.trim().length > 0)?.trim()
-        || `${input.feature.reviewType} review could not be completed`;
+        || engineError?.trim()
+        || `${reviewType} review could not be completed`;
+      const blockedSummary = `${capitalizeLabel(reviewType)} review is blocked`;
+      const rationale = engineError
+        ? `The review executor did not return a structured final review report. Engine error: ${engineError}`
+        : 'The review executor did not return a structured final review report.';
+      report.status = 'BLOCKED';
+      report.requestsHelp = true;
+      report.summary = summary;
+      report.warnings = normalizeWarnings([
+        ...report.warnings,
+        engineError ? `review engine error: ${engineError}` : 'review executor returned no structured JSON report',
+      ]);
       report.review = {
-        reviewType: input.feature.reviewType,
+        reviewType,
         generation: input.feature.reviewGeneration ?? 1,
         passed: false,
         summary,
         findings: [
           {
-            id: `${input.feature.reviewType}-review-blocked`,
-            reviewType: input.feature.reviewType,
+            id: `${reviewType}-review-blocked`,
+            reviewType,
             priority: 'P1',
-            summary,
-            rationale: 'The review executor did not return a structured final review report.',
+            summary: blockedSummary,
+            rationale,
+            suggestedFix: 'Retry the final review after restoring the review runtime and ensure the executor returns the required fenced JSON report.',
+            trackingKey: `${reviewType}-review-blocked`,
+            surface: `${reviewType}-review-runtime`,
+            affectedFiles: [],
           },
         ],
         artifacts: [],
       };
-      if (report.status === 'SUCCESS' && report.review.findings.some((finding) => isBlockingReviewFinding(finding))) {
-        report.status = 'FAILED';
-      }
     }
 
     if (!input.feature.reviewType && !parsedStructuredReport) {
@@ -959,6 +983,10 @@ export class WorkerAgent implements Agent {
     }
     return (input.milestone.validationContract.qaChecks ?? []).some((check) => check.type === 'browser');
   }
+}
+
+function capitalizeLabel(value: string): string {
+  return value.length > 0 ? `${value[0]!.toUpperCase()}${value.slice(1)}` : value;
 }
 
 function extractJsonBlock(output: string): string | null {
@@ -1161,4 +1189,45 @@ function normalizeWarnings(value: unknown): string[] {
     .filter((item): item is string => typeof item === 'string')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+}
+
+function synthesizeReviewArtifactsFromCheckpointResults(
+  artifacts: ReviewArtifact[],
+  checkpointResults: ProductReviewCheckpointResult[]
+): ReviewArtifact[] {
+  const existingKeys = new Set(
+    artifacts.map((artifact) => `${artifact.kind}:${artifact.checkpointId ?? ''}:${artifact.phase ?? ''}:${artifact.path}`)
+  );
+  const synthesized = [...artifacts];
+
+  for (const result of checkpointResults) {
+    const candidates: Array<ReviewArtifact | null> = [
+      result.beforeScreenshotPath
+        ? { kind: 'screenshot', path: result.beforeScreenshotPath, checkpointId: result.checkpointId, phase: 'before' }
+        : null,
+      result.afterScreenshotPath
+        ? { kind: 'screenshot', path: result.afterScreenshotPath, checkpointId: result.checkpointId, phase: 'after' }
+        : null,
+      result.beforeVideoPath
+        ? { kind: 'video', path: result.beforeVideoPath, checkpointId: result.checkpointId, phase: 'before' }
+        : null,
+      result.afterVideoPath
+        ? { kind: 'video', path: result.afterVideoPath, checkpointId: result.checkpointId, phase: 'after' }
+        : null,
+    ];
+
+    for (const artifact of candidates) {
+      if (!artifact) {
+        continue;
+      }
+      const key = `${artifact.kind}:${artifact.checkpointId ?? ''}:${artifact.phase ?? ''}:${artifact.path}`;
+      if (existingKeys.has(key)) {
+        continue;
+      }
+      existingKeys.add(key);
+      synthesized.push(artifact);
+    }
+  }
+
+  return synthesized;
 }
