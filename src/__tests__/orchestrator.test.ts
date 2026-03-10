@@ -5854,6 +5854,106 @@ describe('Orchestrator v0.8', () => {
     expect(events).toContain('"action":"worker_blocked_auto_downgraded"');
   });
 
+  it('does not overwrite TASK.json when it was edited outside the active Melos process', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-external-task-edit-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# external task edit\n', 'utf-8');
+
+    const originalPlan = createMissionPlan({
+      missionId: 'external-task-edit',
+      goal: 'Respect manual TASK.json edits',
+      constraints: [],
+      successCriteria: ['stale process does not clobber manual task edits'],
+      milestones: [
+        {
+          id: 'm3',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm3-f7',
+              description: 'evidence task',
+              kind: 'review_remediation',
+              status: 'in_progress',
+              attempts: 2,
+              model: 'codex-latest',
+            },
+            {
+              id: 'm3-f8',
+              description: 're-run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 3,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'paused',
+    });
+    const diskEditedPlan: MissionPlan = {
+      ...originalPlan,
+      activeMilestoneId: 'm3',
+      activeFeatureId: 'm3-f8',
+      milestones: originalPlan.milestones.map((milestone) =>
+        milestone.id === 'm3'
+          ? {
+            ...milestone,
+            features: milestone.features.map((feature) =>
+              feature.id === 'm3-f7'
+                ? { ...feature, status: 'skipped' }
+                : feature
+            ),
+          }
+          : milestone
+      ),
+    };
+    writeFileSync(missionPath, `${JSON.stringify(originalPlan, null, 2)}\n`, 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: {
+        missionPlan: MissionPlan | null;
+        missionPlanFingerprint: string | null;
+      };
+      kernelState: { missionPlan: MissionPlan | null };
+      computeMissionPlanFingerprintFromDisk: () => Promise<string | null>;
+      persistMissionPlan: () => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = originalPlan;
+    orchestratorAny.kernelState.missionPlan = originalPlan;
+    orchestratorAny.state.missionPlanFingerprint = await orchestratorAny.computeMissionPlanFingerprintFromDisk();
+
+    writeFileSync(missionPath, `${JSON.stringify(diskEditedPlan, null, 2)}\n`, 'utf-8');
+
+    await orchestratorAny.persistMissionPlan();
+
+    const persisted = JSON.parse(readFileSync(missionPath, 'utf-8')) as MissionPlan;
+    expect(persisted.activeFeatureId).toBe('m3-f8');
+    expect(persisted.milestones[0]?.features[0]?.status).toBe('skipped');
+    expect(orchestratorAny.state.missionPlan?.activeFeatureId).toBe('m3-f8');
+    expect(orchestratorAny.state.missionPlan?.milestones[0]?.features[0]?.status).toBe('skipped');
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('TASK.json was modified outside the active Melos process');
+  });
+
   it('continues a full mission run when worker returns BLOCKED without requestsHelp', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-blocked-run-'));
     const melosDir = join(cwd, '.melos');

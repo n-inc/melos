@@ -137,6 +137,7 @@ export interface LoopResult {
 
 interface RuntimeState {
   missionPlan: MissionPlan | null;
+  missionPlanFingerprint: string | null;
   iteration: number;
   prd: string | null;
   latestValidationReport: ValidationReport | null;
@@ -261,6 +262,7 @@ export class Orchestrator {
 
     this.state = {
       missionPlan: null,
+      missionPlanFingerprint: null,
       iteration: 0,
       prd: null,
       latestValidationReport: null,
@@ -619,10 +621,12 @@ export class Orchestrator {
 
     if (missionFileExists(this.config.missionFile)) {
       this.state.missionPlan = await loadMissionPlan(this.config.missionFile);
+      this.state.missionPlanFingerprint = await this.computeMissionPlanFingerprintFromDisk();
       if (this.state.missionPlan && this.config.resume && isRecoverableResumeState(this.state.missionPlan.state)) {
         this.state.missionPlan = recoverMissionPlanForResume(this.state.missionPlan);
         this.activityLabel = 'Resuming interrupted mission from the next actionable feature...';
         await saveMissionPlan(this.config.missionFile, this.state.missionPlan);
+        this.state.missionPlanFingerprint = await this.computeMissionPlanFingerprintFromDisk();
       }
     }
 
@@ -643,6 +647,7 @@ export class Orchestrator {
       if (nextPlan !== this.state.missionPlan) {
         this.state.missionPlan = nextPlan;
         await saveMissionPlan(this.config.missionFile, nextPlan);
+        this.state.missionPlanFingerprint = await this.computeMissionPlanFingerprintFromDisk();
       }
     }
 
@@ -3539,10 +3544,37 @@ export class Orchestrator {
       return;
     }
 
+    const diskFingerprint = await this.computeMissionPlanFingerprintFromDisk();
+    if (
+      this.state.missionPlanFingerprint
+      && diskFingerprint
+      && diskFingerprint !== this.state.missionPlanFingerprint
+    ) {
+      const latest = await loadMissionPlan(this.config.missionFile);
+      this.state.missionPlan = latest;
+      this.state.missionPlanFingerprint = diskFingerprint;
+      this.kernelState.missionPlan = latest;
+      this.emitEvent('warning_emitted', 'orchestrator', {
+        source: 'system',
+        message: 'TASK.json was modified outside the active Melos process; skipped overwriting it and reloaded the latest on-disk mission plan.',
+      });
+      await this.emitStatusUpdate();
+      return;
+    }
+
     this.recordAllowedProtectedRuntimeWrite(this.config.missionFile);
     await saveMissionPlan(this.config.missionFile, this.state.missionPlan);
+    this.state.missionPlanFingerprint = await this.computeMissionPlanFingerprintFromDisk();
     this.kernelState.missionPlan = this.state.missionPlan;
     await this.persistRuntimeState();
+  }
+
+  private async computeMissionPlanFingerprintFromDisk(): Promise<string | null> {
+    if (!missionFileExists(this.config.missionFile)) {
+      return null;
+    }
+    const raw = await readFile(this.config.missionFile, 'utf-8');
+    return createHash('sha256').update(raw).digest('hex');
   }
 
   private isTuiInputMode(): boolean {
