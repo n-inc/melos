@@ -7,7 +7,7 @@ export type MissionEventType =
   | 'plan_created' | 'plan_updated' | 'task_added' | 'task_status_changed'
   | 'iteration_started' | 'iteration_completed'
   | 'manager_started' | 'manager_decision' | 'manager_error'
-  | 'worker_started' | 'worker_checkpoint' | 'worker_finished' | 'worker_error'
+  | 'worker_started' | 'worker_checkpoint' | 'worker_finished' | 'worker_partial' | 'worker_error'
   | 'review_started' | 'review_result'
   | 'command_executed' | 'file_changed'
   | 'validation_started' | 'validation_result' | 'warning_emitted'

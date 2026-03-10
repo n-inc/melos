@@ -32,6 +32,13 @@ export interface WorkerFeatureReport {
   featureId: string;
   status: 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'BLOCKED';
   summary: string;
+  failureContext?: {
+    stage: 'worker' | 'post_process';
+    kind: string;
+    signature: string;
+    command?: string;
+    executionCwd?: string;
+  };
   warnings: string[];
   filesChanged: WorkerFileChange[];
   validation: {

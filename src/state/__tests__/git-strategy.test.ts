@@ -6,6 +6,19 @@ import {
 } from '../git-strategy.js';
 
 describe('state/git-strategy', () => {
+  it('defaults validation commands to opt-in empty list', () => {
+    const state = createGitStrategyState({
+      missionId: 'auth',
+      baseBranch: 'main',
+      autoPush: false,
+      preMergeValidation: true,
+      validationCommands: [],
+      pullRequestEnabled: false,
+    });
+
+    expect(state.config.validationCommands).toEqual([]);
+  });
+
   it('tracks the active branch without feature branch lifecycle state', () => {
     let state = createGitStrategyState({
       missionId: 'auth',

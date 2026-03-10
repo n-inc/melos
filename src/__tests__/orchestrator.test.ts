@@ -4116,6 +4116,557 @@ describe('Orchestrator v0.8', () => {
     }));
   });
 
+  it('prefers canonical failure context for retry reasons', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-retry-reason-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# retry reason', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      extractFeatureRetryReason: (report: WorkerFeatureReport) => string;
+    };
+
+    const reason = orchestratorAny.extractFeatureRetryReason({
+      iteration: 1,
+      milestoneId: 'm1',
+      featureId: 'm1-f1',
+      status: 'FAILED',
+      summary: 'implemented with commit\nPost-feature validation failed: npm run typecheck',
+      failureContext: {
+        stage: 'post_process',
+        kind: 'post_feature_validation',
+        signature: 'post-feature-validation:npm-run-typecheck:/repo',
+        command: 'npm run typecheck',
+        executionCwd: '/repo',
+      },
+      warnings: ['some unrelated warning'],
+      filesChanged: [],
+      validation: {
+        testsRun: true,
+        testsPassed: 1,
+        testsFailed: 0,
+        lintPassed: true,
+        typecheckPassed: true,
+      },
+      checks: [],
+      learnings: [],
+      requestsHelp: true,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(reason).toBe('Post-feature validation failed: npm run typecheck');
+  });
+
+  it('ignores non-actionable worker warnings before applying blocking warning policy', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-warning-filter-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# warning filter', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      verification: {
+        failOnWorkerWarnings: true,
+      },
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      normalizeWorkerWarnings: (
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: { type: 'success'; report: WorkerFeatureReport }
+      ) => { type: 'success'; report: WorkerFeatureReport };
+      applyWorkerWarningPolicy: (
+        milestoneId: string,
+        featureId: string,
+        result: { type: 'success'; report: WorkerFeatureReport }
+      ) => { type: string; report: WorkerFeatureReport };
+    };
+
+    const feature = {
+      id: 'm1-f1',
+      description: 'Implement',
+      kind: 'implementation' as const,
+      status: 'in_progress' as const,
+      attempts: 1,
+      model: 'codex',
+    };
+    const report: WorkerFeatureReport = {
+      iteration: 1,
+      milestoneId: 'm1',
+      featureId: 'm1-f1',
+      status: 'SUCCESS',
+      summary: 'implemented',
+      warnings: [
+        'Dedicated QA was not run from this implementation feature.',
+        'expected=no_match may return exit code 1 on success.',
+        'No new commit was created because this was a no-op result.',
+        'Need follow-up for unresolved API schema mismatch.',
+      ],
+      filesChanged: [],
+      validation: {
+        testsRun: true,
+        testsPassed: 1,
+        testsFailed: 0,
+        lintPassed: true,
+        typecheckPassed: true,
+      },
+      checks: [],
+      learnings: [],
+      requestsHelp: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    const normalized = orchestratorAny.normalizeWorkerWarnings(feature, { type: 'success', report });
+    expect(normalized.report.warnings).toEqual(['Need follow-up for unresolved API schema mismatch.']);
+
+    const blocked = orchestratorAny.applyWorkerWarningPolicy('m1', 'm1-f1', normalized);
+    expect(blocked.type).toBe('failed');
+    expect(blocked.report.summary).toContain('Need follow-up for unresolved API schema mismatch.');
+    expect(blocked.report.summary).not.toContain('Dedicated QA was not run');
+  });
+
+  it('treats partial implementation results as immediate follow-up planning without same-feature retry', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-partial-followup-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# partial follow-up', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'partial-followup',
+      goal: 'Convert partials into follow-up work',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['partial result does not schedule same-feature retry'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement flow',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    const runningPlan: MissionPlan = {
+      ...planned,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    writeFileSync(missionPath, `${JSON.stringify(runningPlan, null, 2)}\n`, 'utf-8');
+
+    jest.spyOn(ManagerAgent.prototype, 'generateImplementationFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Complete the remaining downstream work in a separate feature',
+        trackingKey: 'separate-follow-up',
+        priority: 'high',
+        model: 'codex',
+      },
+    ]);
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      execution: {
+        maxFeatureAttempts: 3,
+      },
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleImplementationFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: { type: 'partial'; report: WorkerFeatureReport }
+      ) => Promise<void>;
+      findFeatureRetry: (milestoneId: string, featureId: string) => unknown;
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+
+    const milestone = runningPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleImplementationFeatureResult(milestone, feature, {
+      type: 'partial',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'PARTIAL',
+        summary: 'feature-local work is complete; downstream validation remains',
+        warnings: ['Remaining browser QA belongs to a dedicated QA feature.'],
+        filesChanged: [{ path: 'src/app.ts', additions: 2, deletions: 0 }],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(orchestratorAny.findFeatureRetry('m1', 'm1-f1')).toBeNull();
+    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status }))).toEqual([
+      { id: 'm1-f1', status: 'failed' },
+      { id: 'm1-f2', status: 'pending' },
+    ]);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"action":"feature_partial_followup"');
+    expect(events).not.toContain('"action":"feature_retry_scheduled"');
+  });
+
+  it('treats partial results that explicitly belong to a sibling feature as done', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-cross-feature-partial-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# cross feature partial', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'cross-feature-partial',
+      goal: 'Mark scope-complete partials as done',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['cross-feature residual work stays with the sibling feature'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Implement flow',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement AppHead changes',
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex',
+            },
+            {
+              id: 'm1-f2',
+              description: 'Add SEO regression tests',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    const runningPlan: MissionPlan = {
+      ...planned,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    writeFileSync(missionPath, `${JSON.stringify(runningPlan, null, 2)}\n`, 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleImplementationFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: { type: 'partial'; report: WorkerFeatureReport }
+      ) => Promise<void>;
+      findFeatureRetry: (milestoneId: string, featureId: string) => unknown;
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+
+    const milestone = runningPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleImplementationFeatureResult(milestone, feature, {
+      type: 'partial',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'PARTIAL',
+        summary: 'AppHead updates are complete.',
+        warnings: ['`AppHead.test.tsx` is owned by m1-f2 and remains downstream work.'],
+        filesChanged: [{ path: 'src/app-head.tsx', additions: 4, deletions: 1 }],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(orchestratorAny.findFeatureRetry('m1', 'm1-f1')).toBeNull();
+    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status }))).toEqual([
+      { id: 'm1-f1', status: 'done' },
+      { id: 'm1-f2', status: 'pending' },
+    ]);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"action":"partial_deferred_to_related_feature"');
+    expect(events).not.toContain('"action":"feature_partial_followup"');
+  });
+
+  it('classifies partial worker runs without logging them as worker_error', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-worker-partial-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# worker partial', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'worker-partial',
+      goal: 'Partial runs are visible without error semantics',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['partial events are not emitted as worker_error'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'pending',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'Implement feature', status: 'pending', attempts: 0, model: 'codex' },
+            { id: 'm1-f2', description: 'Add tests', status: 'pending', attempts: 0, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    let runCount = 0;
+    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async (input) => {
+      runCount += 1;
+      if (runCount === 1) {
+        return {
+          type: 'partial',
+          report: {
+            iteration: 1,
+            milestoneId: input.milestone.id,
+            featureId: input.feature.id,
+            status: 'PARTIAL',
+            summary: 'Implementation is complete.',
+            warnings: ['Remaining regression tests belong to m1-f2.'],
+            filesChanged: [{ path: 'src/app.ts', additions: 1, deletions: 0 }],
+            validation: {
+              testsRun: false,
+              testsPassed: 0,
+              testsFailed: 0,
+              lintPassed: true,
+              typecheckPassed: true,
+            },
+            checks: [],
+            learnings: [],
+            requestsHelp: false,
+            createdAt: new Date().toISOString(),
+          },
+        };
+      }
+
+      return {
+        type: 'success',
+        report: {
+          iteration: 2,
+          milestoneId: input.milestone.id,
+          featureId: input.feature.id,
+          status: 'SUCCESS',
+          summary: 'tests added',
+          warnings: [],
+          filesChanged: [],
+          validation: {
+            testsRun: true,
+            testsPassed: 1,
+            testsFailed: 0,
+            lintPassed: true,
+            typecheckPassed: true,
+          },
+          checks: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"type":"worker_partial"');
+    expect(events).not.toContain('"type":"worker_error"');
+  });
+
+  it('drops low-signal worker checkpoints', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-checkpoint-filter-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# checkpoint filter', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      shouldEmitWorkerCheckpoint: (message: string) => boolean;
+    };
+
+    expect(orchestratorAny.shouldEmitWorkerCheckpoint('[TOOL] TodoWrite')).toBe(false);
+    expect(orchestratorAny.shouldEmitWorkerCheckpoint('[READ] src/app.ts')).toBe(false);
+    expect(orchestratorAny.shouldEmitWorkerCheckpoint('[INFO] verbose tool output omitted (123 chars)')).toBe(false);
+    expect(orchestratorAny.shouldEmitWorkerCheckpoint('[REPLY] focused update')).toBe(true);
+  });
+
+  it('ignores goreman guard runtime artifacts in git preconditions', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-goreman-guard-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# guard ignore', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      isIgnoredGitWorkingTreePath: (path: string) => boolean;
+    };
+
+    expect(orchestratorAny.isIgnoredGitWorkingTreePath('.goreman-guard.pid')).toBe(true);
+    expect(orchestratorAny.isIgnoredGitWorkingTreePath('src/app.ts')).toBe(false);
+  });
+
+  it('skips git post-process for qa features', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-qa-post-process-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# qa post process', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      shouldRunGitPostProcess: (feature: MissionPlan['milestones'][number]['features'][number]) => boolean;
+    };
+
+    expect(orchestratorAny.shouldRunGitPostProcess({
+      id: 'm1-f-qa',
+      description: 'Run QA',
+      kind: 'qa',
+      status: 'pending',
+      attempts: 0,
+      model: 'codex',
+    })).toBe(false);
+    expect(orchestratorAny.shouldRunGitPostProcess({
+      id: 'm1-f1',
+      description: 'Implement',
+      kind: 'implementation',
+      status: 'pending',
+      attempts: 0,
+      model: 'codex',
+    })).toBe(true);
+  });
+
   it('uses a dedicated mission branch and post-pr follow-up phase when pull request automation is enabled', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-pr-flow-'));
     const melosDir = join(cwd, '.melos');

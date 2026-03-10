@@ -145,8 +145,13 @@ describe('WorkerAgent', () => {
     expect(prompt).toContain('git diff --staged');
     expect(prompt).toContain('## Runtime Context');
     expect(prompt).toContain('## Protected Runtime Files');
+    expect(prompt).toContain('## Validation Boundaries');
     expect(prompt).toContain('Never edit TASK.json.');
     expect(prompt).toContain('Never edit `.melos/state.json`, `.melos/validations/*`, or `.melos/reviews/*`.');
+    expect(prompt).toContain('Milestone-level validation and dedicated QA are orchestrator-owned downstream steps');
+    expect(prompt).not.toContain('## Milestone Validation Checks');
+    expect(prompt).not.toContain('## Milestone Validation Commands');
+    expect(prompt).not.toContain('## Dedicated QA Handoff');
     expect(prompt).toContain('`BLOCKED` は人手の介入が必要で、Melos が自動では前進できない場合にだけ使う');
     expect(prompt).toContain('`requestsHelp` は、人手の介入が必要で自動実行を止めるべきときだけ `true` にする');
     expect(prompt).toContain('Mission goal: Sample goal');

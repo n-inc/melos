@@ -206,16 +206,24 @@ export function reduceMissionEvent(
     }
 
     case 'worker_finished':
+    case 'worker_partial':
     case 'worker_error': {
       const success = event.type === 'worker_finished';
+      const partial = event.type === 'worker_partial';
       const activeRunId = Number(event.payload.runId ?? state.activeWorkerRunId);
-      const completionMessage = success ? `worker #${activeRunId} finished` : `worker #${activeRunId} failed`;
+      const completionMessage = success
+        ? `worker #${activeRunId} finished`
+        : partial
+          ? `worker #${activeRunId} finished partially`
+          : `worker #${activeRunId} failed`;
       const summary = asString(event.payload.message);
       const completionEntry = createLogEntry(
         event.timestamp,
         'worker',
-        summary ? `[${success ? 'DONE' : 'ERR'}] ${summary}` : `[${success ? 'DONE' : 'ERR'}] ${completionMessage}`,
-        success ? 'DONE' : 'ERR',
+        summary
+          ? `[${success ? 'DONE' : partial ? 'WARN' : 'ERR'}] ${summary}`
+          : `[${success ? 'DONE' : partial ? 'WARN' : 'ERR'}] ${completionMessage}`,
+        success ? 'DONE' : partial ? 'WARN' : 'ERR',
         event.seq
       );
       return {
@@ -233,10 +241,16 @@ export function reduceMissionEvent(
           }
           return {
             ...run,
-            status: success ? 'done' : 'failed',
+            status: success ? 'done' : partial ? 'done' : 'failed',
             endedAt: event.timestamp,
             log: summary
-              ? [...run.log, createLogEntry(event.timestamp, 'worker', `[${success ? 'DONE' : 'ERR'}] ${summary}`, success ? 'DONE' : 'ERR', event.seq)]
+              ? [...run.log, createLogEntry(
+                event.timestamp,
+                'worker',
+                `[${success ? 'DONE' : partial ? 'WARN' : 'ERR'}] ${summary}`,
+                success ? 'DONE' : partial ? 'WARN' : 'ERR',
+                event.seq
+              )]
               : run.log,
           };
         }),

@@ -118,7 +118,7 @@ function normalizeGitStrategyState(value: Partial<GitStrategyState>): GitStrateg
     baseBranch: 'main',
     autoPush: false,
     preMergeValidation: true,
-    validationCommands: ['npm run typecheck', 'npm test'],
+    validationCommands: [],
     pullRequestEnabled: false,
   };
 

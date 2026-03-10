@@ -990,7 +990,7 @@ function buildFeatureBriefing(input: ManagerInput): string {
   const featureCheckLines = (feature.checks ?? []).map((check) =>
     check.type ? `${check.text} [${check.type}]` : check.text
   );
-  const validationLines = getValidationFocusLines(milestone.validationContract);
+  const validationLines = getValidationFocusLinesForFeature(feature, milestone);
   const validationFocusLines = [
     ...toBulletItems(featureCheckLines, null),
     ...toBulletItems(validationLines, '明示的な validation check は未定義。'),
@@ -1023,7 +1023,59 @@ function buildFeatureBriefing(input: ManagerInput): string {
   ].join('\n');
 }
 
-function getValidationFocusLines(contract: MissionPlan['milestones'][number]['validationContract']): string[] {
+function getValidationFocusLinesForFeature(
+  feature: Feature,
+  milestone: MissionPlan['milestones'][number]
+): string[] {
+  if (feature.kind === 'implementation' || feature.kind === 'review_remediation') {
+    const includeTestSuites = shouldFeatureOwnMilestoneTests(feature, milestone);
+    const contract = milestone.validationContract;
+    return [
+      ...contract.staticChecks.map((check) => formatValidationCheckLine('static', check)),
+      ...(includeTestSuites
+        ? contract.testSuites.map((check) => formatValidationCheckLine('test', check))
+        : []),
+      ...(!includeTestSuites && contract.testSuites.length > 0
+        ? ['Milestone test suites are owned by a dedicated testing feature in this milestone and remain a downstream gate.']
+        : []),
+      'Milestone-level validation and dedicated QA are executed downstream by Melos after feature-local work is complete.',
+    ].filter((line) => line.trim().length > 0);
+  }
+  return getValidationFocusLinesForKind(milestone.validationContract);
+}
+
+function shouldFeatureOwnMilestoneTests(
+  feature: Feature,
+  milestone: MissionPlan['milestones'][number]
+): boolean {
+  if (looksLikeTestFocusedFeature(feature)) {
+    return true;
+  }
+  return !milestone.features.some((candidate) =>
+    candidate.id !== feature.id
+      && (candidate.kind === 'implementation' || candidate.kind === 'review_remediation')
+      && candidate.status !== 'done'
+      && looksLikeTestFocusedFeature(candidate)
+  );
+}
+
+function looksLikeTestFocusedFeature(feature: Feature): boolean {
+  const text = `${feature.description} ${(feature.checks ?? []).map((check) => check.text).join(' ')}`.toLowerCase();
+  return [
+    'test',
+    'tests',
+    'vitest',
+    'jest',
+    'spec',
+    'テスト',
+    '検証',
+    '回帰',
+  ].some((keyword) => text.includes(keyword));
+}
+
+function getValidationFocusLinesForKind(
+  contract: MissionPlan['milestones'][number]['validationContract']
+): string[] {
   return [
     ...contract.staticChecks.map((check) => formatValidationCheckLine('static', check)),
     ...contract.testSuites.map((check) => formatValidationCheckLine('test', check)),

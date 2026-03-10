@@ -8,6 +8,7 @@ import {
   applyApprovalDecision,
   readMissionLogs,
   readMissionStatus,
+  resolveGitStrategy,
 } from '../../cli.js';
 import { createMissionPlan, loadMissionPlan, saveMissionPlan } from '../../state/mission.js';
 import { saveRuntime } from '../../state/runtime.js';
@@ -216,6 +217,84 @@ describe('cli headless operations', () => {
       lastExternalActivityAt: '2026-03-03T00:05:00.000Z',
     });
     expect(status.warnings).toContain('[worker] m1-f2: manual verification is still required');
+  });
+
+  it('defaults git validation commands to empty when config does not specify them', () => {
+    const cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(rootDir);
+
+    const strategy = resolveGitStrategy(
+      {},
+      {
+        git: {
+          enabled: true,
+        },
+      }
+    );
+
+    expect(strategy?.validationCommands).toEqual([]);
+    cwdSpy.mockRestore();
+  });
+
+  it('does not surface stale warning events when runtime warnings are already cleared', async () => {
+    const missionPath = join(rootDir, 'TASK.json');
+    const mission = createMissionPlan({
+      missionId: 'stale-warning',
+      goal: 'Ignore historical warning events in status',
+      state: 'running',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'f1', status: 'in_progress', attempts: 1 },
+          ],
+        },
+      ],
+    });
+    await saveMissionPlan(missionPath, mission);
+
+    await saveSnapshot(join(rootDir, '.melos'), {
+      state: {
+        kernel: {
+          missionPlan: mission,
+          warnings: [],
+          logEntries: [],
+          validationsByMilestone: {},
+          evidenceByCheckId: {},
+          featureRetries: [],
+          gitStrategy: null,
+          latestValidationReport: null,
+          latestReviewReport: null,
+          modelStatesByFeature: {},
+          pendingSteers: [],
+        },
+      },
+    });
+
+    writeFileSync(
+      join(rootDir, '.melos', 'events.jsonl'),
+      `${JSON.stringify({
+        seq: 1,
+        type: 'warning_emitted',
+        timestamp: '2026-03-03T00:00:01.000Z',
+        iteration: 1,
+        agent: 'worker',
+        payload: {
+          source: 'worker',
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          message: 'historical warning',
+        },
+      })}\n`,
+      'utf-8'
+    );
+
+    const status = await readMissionStatus(rootDir);
+    expect(status.warnings).not.toContain('[worker] m1-f1: historical warning');
   });
 
   it('reads logs with after-seq/actor/tail filters', async () => {

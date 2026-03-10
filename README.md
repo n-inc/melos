@@ -117,7 +117,7 @@ npx melos cancel
     "baseBranch": "main",
     "autoPush": false,
     "preMergeValidation": true,
-    "validationCommands": ["npm run typecheck", "npm test"]
+    "validationCommands": ["pnpm typecheck", "pnpm test"]
   }
 }
 ```
@@ -127,3 +127,6 @@ npx melos cancel
   - `false` を指定すると明示 opt-out
 - `git.baseBranch`:
   - 未指定なら現在の checkout branch を使い、取得できない場合のみ `main` を使います
+- `git.validationCommands`:
+  - 未指定なら実行しません
+  - repo ごとの post-feature validation を明示的に opt-in するときだけ設定します

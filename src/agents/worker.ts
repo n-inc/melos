@@ -453,32 +453,6 @@ export class WorkerAgent implements Agent {
     const promptTemplate = await loadPromptFromPath(this.resolveWorkerPromptPath());
     const featureChecks = input.feature.checks?.map((check) => `- ${check.text}`).join('\n') || '- none';
     const executionCwd = this.resolveExecutionCwd(input);
-    const validationChecks = [
-      ...input.milestone.validationContract.staticChecks,
-      ...input.milestone.validationContract.testSuites,
-    ]
-      .map((check) => {
-        const action = typeof check.command === 'string' && check.command.trim().length > 0
-          ? check.command.trim()
-          : 'no command';
-        const notes = [
-          check.expectedOutcome && check.expectedOutcome !== 'exit_code_zero'
-            ? `expected=${check.expectedOutcome}`
-            : null,
-          check.waivedReason ? `waived=${check.waivedReason}` : null,
-        ].filter((item): item is string => Boolean(item));
-        return `- ${check.id} [${check.type}] ${check.description}${notes.length > 0 ? ` [${notes.join(' ')}]` : ''} :: ${action}`;
-      })
-      .join('\n');
-    const validationCommands = [
-      ...input.milestone.validationContract.staticChecks,
-      ...input.milestone.validationContract.testSuites,
-    ]
-      .map((check) => check.command)
-      .filter((command): command is string => typeof command === 'string' && command.trim().length > 0)
-      .join('\n');
-    const qaChecks = this.formatQaChecks(input);
-
     const sections = [
       promptTemplate.trim(),
       '',
@@ -504,15 +478,10 @@ export class WorkerAgent implements Agent {
       '## PRD',
       input.prd?.trim() || '(PRD not found)',
       '',
-      '## Milestone Validation Checks',
-      validationChecks || '- none',
-      '',
-      '## Milestone Validation Commands',
-      validationCommands || '(none)',
-      '',
-      '## Dedicated QA Handoff',
-      qaChecks,
-      'QA evidence is handled by the dedicated qa feature. Do not pre-emptively report qaChecks from this implementation feature unless you actually ran the QA step.',
+      '## Validation Boundaries',
+      '- Complete the feature-local implementation and any checks directly required by this feature.',
+      '- Milestone-level validation and dedicated QA are orchestrator-owned downstream steps; do not treat unexecuted milestone QA as a feature failure here.',
+      '- Do not add warnings only to say dedicated QA was not run, `expected=no_match` may exit non-zero, unrelated existing repo warnings remain, or no commit was created for a no-op result.',
     ];
 
     if (this.shouldIncludeCommitWorkflow(input)) {
@@ -521,7 +490,7 @@ export class WorkerAgent implements Agent {
         '## Commit Workflow',
         `- Use the git-commit skill at: ${this.resolveGitCommitSkillPath()}`,
         '- Before committing, inspect: `git status --porcelain`, `git log --oneline -20`, `git diff --staged`',
-        '- Create the commit only after implementation and validation are complete for the current branch',
+        '- Create the commit only after implementation and scope-local validation are complete for the current branch',
         '- Use `type(scope): subject` for the commit subject',
         '- Do not use `...` or other abbreviated placeholders in the commit message',
         '- If you add a commit body, briefly explain why the change is needed'
@@ -684,11 +653,19 @@ export class WorkerAgent implements Agent {
   }
 
   private resolveSkillPath(skillId: string): string {
-    const skillPath = join(this.config.cwd, '.claude', 'skills', skillId, 'SKILL.md');
-    if (!existsSync(skillPath)) {
-      throw new Error(`Required skill not found: ${skillId} (${skillPath})`);
+    const candidates = skillId === 'git-commit' || skillId === 'git-committer'
+      ? ['git-commit', 'git-committer']
+      : [skillId];
+
+    for (const candidate of candidates) {
+      const skillPath = join(this.config.cwd, '.claude', 'skills', candidate, 'SKILL.md');
+      if (existsSync(skillPath)) {
+        return skillPath;
+      }
     }
-    return skillPath;
+
+    const preferredPath = join(this.config.cwd, '.claude', 'skills', candidates[0]!, 'SKILL.md');
+    throw new Error(`Required skill not found: ${skillId} (${preferredPath})`);
   }
 
   private resolveGitCommitSkillPath(): string {

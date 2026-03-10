@@ -942,9 +942,10 @@ export class Orchestrator {
     this.activityLabel = `Worker executing ${updatedFeature.id}...`;
     const rawResult = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
     await this.syncPullRequestStateFromReport(updatedFeature, rawResult.report);
+    const normalizedResult = this.normalizeWorkerWarnings(updatedFeature, rawResult);
     const result = this.shouldApplyWorkerWarningPolicy(updatedFeature)
-      ? this.applyWorkerWarningPolicy(updatedMilestone.id, updatedFeature.id, rawResult)
-      : rawResult;
+      ? this.applyWorkerWarningPolicy(updatedMilestone.id, updatedFeature.id, normalizedResult)
+      : normalizedResult;
     this.state.latestWorkerReport = result.report;
     this.recordValidationEvidence(updatedMilestone.id, result.report.checks);
     this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
@@ -1416,7 +1417,7 @@ export class Orchestrator {
       baseBranch,
       onAppServerEvent: (method, params) => {
         const detail = formatAgentEventDetail(method, params);
-        if (!detail) {
+        if (!detail || !this.shouldEmitWorkerCheckpoint(detail)) {
           return;
         }
         this.emitEvent('worker_checkpoint', 'worker', {
@@ -1427,9 +1428,13 @@ export class Orchestrator {
     };
 
     const workerReplyStream = createBufferedProgressEmitter((line) => {
+      const message = `[REPLY] ${line}`;
+      if (!this.shouldEmitWorkerCheckpoint(message)) {
+        return;
+      }
       this.emitEvent('worker_checkpoint', 'worker', {
         runId,
-        message: `[REPLY] ${line}`,
+        message,
       });
     });
 
@@ -1457,18 +1462,19 @@ export class Orchestrator {
       }
     }
 
-    if (this.state.gitStrategy) {
+    if (this.state.gitStrategy && this.shouldRunGitPostProcess(feature)) {
       const postProcess = await this.runGitPostProcess(result.report);
       result.report.summary = postProcess.summary;
       if (postProcess.failureContext) {
         result.report.failureContext = postProcess.failureContext;
       }
       if (!postProcess.ok && (result.type === 'success' || result.type === 'partial')) {
+        const dirtyWorktree = postProcess.failureContext?.kind === 'dirty_worktree';
         result = {
-          type: 'failed',
+          type: dirtyWorktree ? 'blocked' : 'failed',
           report: {
             ...result.report,
-            status: 'FAILED',
+            status: dirtyWorktree ? 'BLOCKED' : 'FAILED',
             summary: postProcess.summary,
             requestsHelp: true,
           },
@@ -1477,7 +1483,11 @@ export class Orchestrator {
     }
 
     this.emitEvent(
-      result.type === 'success' ? 'worker_finished' : 'worker_error',
+      result.type === 'success'
+        ? 'worker_finished'
+        : result.type === 'partial'
+          ? 'worker_partial'
+          : 'worker_error',
       'worker',
       {
         runId,
@@ -1506,7 +1516,7 @@ export class Orchestrator {
       dirtyPaths.length > 0 ? `Dirty paths: ${dirtyPaths.join(', ')}` : null,
     ].filter((line): line is string => Boolean(line)).join(' ');
 
-    await this.failMissionForGitPrecondition(
+    await this.pauseMissionForGitPrecondition(
       'git strategy requires a clean working tree before feature execution',
       detail,
       milestoneId,
@@ -1520,7 +1530,7 @@ export class Orchestrator {
     return feature.kind === 'implementation' || feature.kind === 'review_remediation';
   }
 
-  private async failMissionForGitPrecondition(
+  private async pauseMissionForGitPrecondition(
     reason: string,
     detail: string,
     milestoneId?: string,
@@ -1530,13 +1540,13 @@ export class Orchestrator {
     let missionPlan = this.requireMissionPlan();
     if (milestoneId) {
       missionPlan = setActiveMilestone(missionPlan, milestoneId);
-      missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'failed');
+      missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
     }
     if (milestoneId && featureId) {
       missionPlan = setActiveFeature(missionPlan, featureId);
-      missionPlan = updateFeatureStatus(missionPlan, milestoneId, featureId, 'failed');
+      missionPlan = updateFeatureStatus(missionPlan, milestoneId, featureId, 'pending');
     }
-    missionPlan = transitionMissionState(missionPlan, 'failed');
+    missionPlan = transitionMissionState(missionPlan, 'paused');
     this.state.missionPlan = missionPlan;
     this.kernelState.missionPlan = missionPlan;
     this.activityLabel = truncateMessage(detail, 180);
@@ -1547,12 +1557,13 @@ export class Orchestrator {
       dirtyPaths,
       message: detail,
     });
-    this.emitEvent('mission_failed', 'orchestrator', {
+    this.emitEvent('mission_interrupted', 'orchestrator', {
       reason,
       milestoneId,
       featureId,
       dirtyPaths,
       detail,
+      action: 'resume_after_commit_or_stash',
     });
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
@@ -1570,8 +1581,35 @@ export class Orchestrator {
   private isIgnoredGitWorkingTreePath(path: string): boolean {
     const resolved = isAbsolute(path) ? path : join(this.config.cwd, path);
     return resolved === join(this.config.cwd, 'HANDOFF.md')
+      || resolved === join(this.config.cwd, '.goreman-guard.pid')
       || resolved.startsWith(`${this.config.melosDir}/`)
       || this.isProtectedRuntimePath(resolved);
+  }
+
+  private shouldRunGitPostProcess(feature: Feature): boolean {
+    return feature.kind !== 'qa';
+  }
+
+  private shouldEmitWorkerCheckpoint(message: string): boolean {
+    const normalized = message.trim();
+    if (normalized.length === 0) {
+      return false;
+    }
+    if (
+      normalized.startsWith('[TOOL] ')
+      || normalized.startsWith('[READ] ')
+      || normalized.startsWith('[WRITE] ')
+      || normalized.startsWith('[EXPLORED] ')
+      || normalized.startsWith('[INFO] verbose tool output omitted')
+      || normalized.includes('Todos have been modified successfully')
+      || normalized === '[INFO] verbose tool output omitted'
+    ) {
+      return false;
+    }
+    if (normalized.startsWith('[DONE] exit=0')) {
+      return false;
+    }
+    return true;
   }
 
   private async syncPullRequestStateFromReport(
@@ -1645,7 +1683,9 @@ export class Orchestrator {
         featureId: feature.id,
         status: 'blocked',
       });
-      this.activityLabel = `${feature.id} blocked. Resolve the PR automation issue and resume.`;
+      this.activityLabel = result.report.failureContext?.kind === 'dirty_worktree'
+        ? `${feature.id} blocked by local uncommitted changes. Commit or stash them and resume.`
+        : `${feature.id} blocked. Resolve the PR automation issue and resume.`;
       await this.persistMissionPlan();
       await this.emitStatusUpdate();
       return;
@@ -1803,6 +1843,110 @@ export class Orchestrator {
     };
   }
 
+  private normalizeWorkerWarnings(feature: Feature, result: WorkerResult): WorkerResult {
+    if (result.report.warnings.length === 0) {
+      return result;
+    }
+
+    const filteredWarnings = result.report.warnings.filter((warning) =>
+      !this.isNonActionableWorkerWarning(feature, warning)
+    );
+    if (filteredWarnings.length === result.report.warnings.length) {
+      return result;
+    }
+
+    return {
+      ...result,
+      report: {
+        ...result.report,
+        warnings: filteredWarnings,
+      },
+    };
+  }
+
+  private normalizeCrossFeaturePartial(
+    milestone: Milestone,
+    feature: Feature,
+    result: WorkerResult
+  ): WorkerResult {
+    if (result.type !== 'partial' || result.report.failureContext) {
+      return result;
+    }
+
+    const relatedFeatureIds = this.extractReferencedSiblingFeatureIds(milestone, feature, result.report);
+    if (relatedFeatureIds.length === 0) {
+      return result;
+    }
+
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'partial_deferred_to_related_feature',
+      milestoneId: milestone.id,
+      featureId: feature.id,
+      relatedFeatureIds,
+      message: `${feature.id} completed its scope; remaining work belongs to ${relatedFeatureIds.join(', ')}.`,
+    });
+
+    return {
+      type: 'success',
+      report: {
+        ...result.report,
+        status: 'SUCCESS',
+        warnings: result.report.warnings.filter((warning) =>
+          !relatedFeatureIds.some((relatedId) => warning.includes(relatedId))
+        ),
+      },
+    };
+  }
+
+  private extractReferencedSiblingFeatureIds(
+    milestone: Milestone,
+    feature: Feature,
+    report: WorkerFeatureReport
+  ): string[] {
+    const haystack = [report.summary, ...report.warnings].join('\n');
+    const matches = Array.from(haystack.matchAll(/\bm\d+-f\d+\b/g))
+      .map((match) => match[0])
+      .filter((value): value is string => typeof value === 'string' && value !== feature.id);
+    const milestoneFeatureIds = new Set(milestone.features.map((item) => item.id));
+    return Array.from(new Set(matches.filter((value) => milestoneFeatureIds.has(value))));
+  }
+
+  private isNonActionableWorkerWarning(feature: Feature, warning: string): boolean {
+    const normalized = warning.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return true;
+    }
+
+    if (feature.kind === 'implementation' || feature.kind === 'review_remediation') {
+      if (
+        normalized.includes('dedicated qa') && (normalized.includes('not run') || normalized.includes('not executed'))
+        || normalized.includes('qa is handled by the dedicated qa feature')
+      ) {
+        return true;
+      }
+      if (normalized.includes('expected=no_match') || normalized.includes('expected = no_match')) {
+        return true;
+      }
+      if (
+        normalized.includes('existing lint warning')
+        || normalized.includes('existing lint warnings')
+        || normalized.includes('unrelated existing repo warning')
+        || normalized.includes('pre-existing warning')
+      ) {
+        return true;
+      }
+      if (
+        normalized.includes('no new commit')
+        || normalized.includes('no commit was created')
+        || normalized.includes('no-op result')
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private captureProtectedRuntimeSnapshot(): Map<string, string> {
     const snapshot = new Map<string, string>();
     for (const path of this.listProtectedRuntimeFiles()) {
@@ -1947,6 +2091,7 @@ export class Orchestrator {
     result: WorkerResult
   ): Promise<void> {
     result = this.normalizeNonEscalatingImplementationBlock(milestone.id, feature.id, result);
+    result = this.normalizeCrossFeaturePartial(milestone, feature, result);
     let missionPlan = this.requireMissionPlan();
     missionPlan = incrementMissionIterations(missionPlan);
 
@@ -1993,7 +2138,7 @@ export class Orchestrator {
       ?.features.find((item) => item.id === feature.id);
     const attempts = runtimeFeature?.attempts ?? feature.attempts;
 
-    if (attempts < this.executionConfig.maxFeatureAttempts) {
+    if (result.type === 'failed' && attempts < this.executionConfig.maxFeatureAttempts) {
       missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'pending');
       const retry = this.scheduleFeatureRetry(missionPlan, milestone.id, feature.id, attempts + 1, result.report);
       this.state.missionPlan = missionPlan;
@@ -2029,7 +2174,7 @@ export class Orchestrator {
       missionPlan,
       onAppServerEvent: (method, params) => {
         const detail = formatAgentEventDetail(method, params);
-        if (!detail) {
+        if (!detail || detail.startsWith('[')) {
           return;
         }
         this.emitEvent('manager_decision', 'manager', {
@@ -2041,9 +2186,17 @@ export class Orchestrator {
       },
     });
     const canonicalTrackingKey = this.deriveImplementationFailureTrackingKey(feature, result.report);
-    const normalizedFollowUps = (followUps.length > 0
+    const normalizedFollowUps: Array<{
+      decision?: 'feature' | 'ignore';
+      description: string;
+      trackingKey?: string;
+      model?: string;
+      affectedChecks?: string[];
+      waivedReason?: string;
+    }> = (followUps.length > 0
       ? followUps
       : [{
+        decision: 'feature' as const,
         description: `Resolve exhausted execution failure for ${feature.description}`,
         trackingKey: canonicalTrackingKey,
         model: CODEX_LATEST_ALIAS,
@@ -2087,11 +2240,13 @@ export class Orchestrator {
     }
 
     this.emitEvent('manager_decision', 'orchestrator', {
-      action: 'feature_retry_exhausted',
+      action: result.type === 'partial' ? 'feature_partial_followup' : 'feature_retry_exhausted',
       milestoneId: milestone.id,
       featureId: feature.id,
       attempts,
-      message: `Retry budget exhausted for ${feature.id} after ${attempts} attempt${attempts === 1 ? '' : 's'}`,
+      message: result.type === 'partial'
+        ? `Partial result for ${feature.id}; generating follow-up work without same-feature retry.`
+        : `Retry budget exhausted for ${feature.id} after ${attempts} attempt${attempts === 1 ? '' : 's'}`,
     });
     this.emitEvent('iteration_completed', 'orchestrator', {
       iteration: missionPlan.totalIterations,

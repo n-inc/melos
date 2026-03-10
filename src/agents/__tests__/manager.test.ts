@@ -145,10 +145,79 @@ describe('ManagerAgent', () => {
     expect(briefing).toContain('## Validation focus');
     expect(briefing).toContain('## Risks');
     expect(briefing).toContain('source of truth は TASK.json');
-    expect(briefing).toContain('npm run typecheck');
+    expect(briefing).toContain('studentPageContent を source of truth に保つ');
+    expect(briefing).toContain('Milestone-level validation and dedicated QA are executed downstream by Melos');
     expect(briefing).toContain('PRD が読み込めていない');
+    expect(briefing).not.toContain('qa:');
     expect(codexExecute).not.toHaveBeenCalled();
     expect(claudeExecute).not.toHaveBeenCalled();
+  });
+
+  it('omits milestone test suites from non-test features when a dedicated testing feature exists', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+
+    const missionPlan = createMissionPlan({
+      missionId: 'seo-tests',
+      goal: 'Separate implementation from regression tests',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['tests are assigned to the testing feature'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'SEO',
+          description: 'desc',
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [
+              {
+                id: 'seo-tests',
+                description: 'SEO tests pass',
+                type: 'auto:test',
+                command: 'pnpm --filter @flow/web exec vitest run src/components/AppHead.test.tsx',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'AppHead と sitemap を更新する',
+              status: 'in_progress',
+              attempts: 0,
+            },
+            {
+              id: 'm1-f2',
+              description: 'SEO 回帰テストを追加する',
+              status: 'pending',
+              attempts: 0,
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const milestone = missionPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    const briefing = await agent.generateFeatureBriefing({
+      iteration: 1,
+      maxIterations: 3,
+      missionPlan,
+      activeMilestone: milestone,
+      activeFeature: feature,
+      prd: '# PRD',
+      latestValidationReport: null,
+      latestWorkerReport: null,
+    });
+
+    expect(briefing).toContain('Milestone test suites are owned by a dedicated testing feature');
+    expect(briefing).not.toContain('AppHead.test.tsx');
   });
 
   it('generates mission plan from model output', async () => {
