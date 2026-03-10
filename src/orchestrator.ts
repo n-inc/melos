@@ -55,8 +55,6 @@ import {
 } from './state/git-strategy.js';
 import {
   getCurrentBranch,
-  getDirtyWorkingTreePaths,
-  isWorkingTreeClean,
   runGitCommand,
 } from './state/git.js';
 import { EventLog } from './state/events.js';
@@ -1517,12 +1515,11 @@ export class Orchestrator {
         result.report.failureContext = postProcess.failureContext;
       }
       if (!postProcess.ok && (result.type === 'success' || result.type === 'partial')) {
-        const dirtyWorktree = postProcess.failureContext?.kind === 'dirty_worktree';
         result = {
-          type: dirtyWorktree ? 'blocked' : 'failed',
+          type: 'failed',
           report: {
             ...result.report,
-            status: dirtyWorktree ? 'BLOCKED' : 'FAILED',
+            status: 'FAILED',
             summary: postProcess.summary,
             requestsHelp: true,
           },
@@ -1548,90 +1545,11 @@ export class Orchestrator {
     return result;
   }
 
-  private async ensureGitExecutionPreconditions(milestoneId: string, featureId: string): Promise<boolean> {
-    if (!this.state.gitStrategy) {
-      return true;
-    }
-
-    const dirtyPaths = this.getBlockingGitWorkingTreePaths();
-    if (dirtyPaths.length === 0) {
-      return true;
-    }
-
-    const detail = [
-      'Git strategy requires a clean working tree before feature execution.',
-      `Clean or stash the local changes before retrying ${featureId}.`,
-      dirtyPaths.length > 0 ? `Dirty paths: ${dirtyPaths.join(', ')}` : null,
-    ].filter((line): line is string => Boolean(line)).join(' ');
-
-    await this.pauseMissionForGitPrecondition(
-      'git strategy requires a clean working tree before feature execution',
-      detail,
-      milestoneId,
-      featureId,
-      dirtyPaths
-    );
-
-    return false;
+  private async ensureGitExecutionPreconditions(_milestoneId: string, _featureId: string): Promise<boolean> {
+    return true;
   }
   private shouldApplyWorkerWarningPolicy(feature: Feature): boolean {
     return feature.kind === 'implementation' || feature.kind === 'review_remediation';
-  }
-
-  private async pauseMissionForGitPrecondition(
-    reason: string,
-    detail: string,
-    milestoneId?: string,
-    featureId?: string,
-    dirtyPaths: string[] = []
-  ): Promise<void> {
-    let missionPlan = this.requireMissionPlan();
-    if (milestoneId) {
-      missionPlan = setActiveMilestone(missionPlan, milestoneId);
-      missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
-    }
-    if (milestoneId && featureId) {
-      missionPlan = setActiveFeature(missionPlan, featureId);
-      missionPlan = updateFeatureStatus(missionPlan, milestoneId, featureId, 'pending');
-    }
-    missionPlan = transitionMissionState(missionPlan, 'paused');
-    this.state.missionPlan = missionPlan;
-    this.kernelState.missionPlan = missionPlan;
-    this.activityLabel = truncateMessage(detail, 180);
-    this.emitEvent('error', 'system', {
-      reason,
-      milestoneId,
-      featureId,
-      dirtyPaths,
-      message: detail,
-    });
-    this.emitEvent('mission_interrupted', 'orchestrator', {
-      reason,
-      milestoneId,
-      featureId,
-      dirtyPaths,
-      detail,
-      action: 'resume_after_commit_or_stash',
-    });
-    await this.persistMissionPlan();
-    await this.emitStatusUpdate();
-  }
-
-  private getBlockingGitWorkingTreePaths(limit: number = 5): string[] {
-    if (!isWorkingTreeClean(this.config.cwd)) {
-      return getDirtyWorkingTreePaths(this.config.cwd)
-        .filter((path) => !this.isIgnoredGitWorkingTreePath(path))
-        .slice(0, limit);
-    }
-    return [];
-  }
-
-  private isIgnoredGitWorkingTreePath(path: string): boolean {
-    const resolved = isAbsolute(path) ? path : join(this.config.cwd, path);
-    return resolved === join(this.config.cwd, 'HANDOFF.md')
-      || resolved === join(this.config.cwd, '.goreman-guard.pid')
-      || resolved.startsWith(`${this.config.melosDir}/`)
-      || this.isProtectedRuntimePath(resolved);
   }
 
   private shouldRunGitPostProcess(feature: Feature): boolean {
@@ -1731,9 +1649,7 @@ export class Orchestrator {
         featureId: feature.id,
         status: 'blocked',
       });
-      this.activityLabel = result.report.failureContext?.kind === 'dirty_worktree'
-        ? `${feature.id} blocked by local uncommitted changes. Commit or stash them and resume.`
-        : `${feature.id} blocked. Resolve the PR automation issue and resume.`;
+      this.activityLabel = `${feature.id} blocked. Resolve the PR automation issue and resume.`;
       await this.persistMissionPlan();
       await this.emitStatusUpdate();
       return;
@@ -2497,29 +2413,6 @@ export class Orchestrator {
   }> {
     try {
       await this.syncCurrentGitBranchState(true);
-      const currentBranch = getCurrentBranch(this.config.cwd).trim() || 'current branch';
-      const dirtyPaths = this.getBlockingGitWorkingTreePaths();
-      if (dirtyPaths.length > 0) {
-        const message = [
-          report.summary,
-          `Commit required before continuing on ${currentBranch}.`,
-          dirtyPaths.length > 0 ? `Dirty paths: ${dirtyPaths.join(', ')}` : null,
-          'Please commit the feature changes using the git-commit skill and retry.',
-        ].filter((line): line is string => Boolean(line)).join('\n');
-        this.emitEvent('error', 'system', {
-          featureId: report.featureId,
-          message: 'git strategy requires committed changes before continuing',
-        });
-        return {
-          ok: false,
-          summary: message,
-          failureContext: {
-            stage: 'post_process',
-            kind: 'dirty_worktree',
-            signature: `dirty-worktree:${dirtyPaths.join(',')}`,
-          },
-        };
-      }
 
       if (this.state.gitStrategy?.config.preMergeValidation) {
         const missionPlan = this.requireMissionPlan();
@@ -2899,15 +2792,29 @@ export class Orchestrator {
     }
 
     const evidenceByCheckId = this.kernelState.validationEvidence?.[milestoneId] ?? {};
+    const hydratedCheckpointResults = backfillProductReviewCheckpointResults(
+      contract,
+      reviewReport,
+      evidenceByCheckId
+    );
+    const hydratedReviewReport = hydratedCheckpointResults
+      ? {
+        ...reviewReport,
+        checkpointResults: hydratedCheckpointResults,
+      }
+      : reviewReport;
+    if (hasBlockedProductReviewFinding(hydratedReviewReport.findings)) {
+      return hydratedReviewReport;
+    }
     const completenessFailures = evaluateProductReviewCheckpointResults(
       this.config.cwd,
       contract,
-      reviewReport.checkpointResults,
-      reviewReport.artifacts,
+      hydratedReviewReport.checkpointResults,
+      hydratedReviewReport.artifacts,
       evidenceByCheckId
     );
     if (completenessFailures.length === 0) {
-      return reviewReport;
+      return hydratedReviewReport;
     }
 
     const finding = {
@@ -2921,15 +2828,15 @@ export class Orchestrator {
       surface: 'final-review-evidence',
       affectedFiles: [] as string[],
     };
-    const findings = [...reviewReport.findings, finding];
+    const findings = [...hydratedReviewReport.findings, finding];
 
     return {
-      ...reviewReport,
+      ...hydratedReviewReport,
       passed: false,
       findings,
       blockingFindingCount: findings.filter((item) => isBlockingReviewFinding(item)).length,
-      summary: reviewReport.summary.trim().length > 0
-        ? `${reviewReport.summary}\nEvidence completeness check failed.`
+      summary: hydratedReviewReport.summary.trim().length > 0
+        ? `${hydratedReviewReport.summary}\nEvidence completeness check failed.`
         : 'Evidence completeness check failed.',
     };
   }
@@ -4055,6 +3962,82 @@ function cloneValidationCheckResult(result: ValidationCheckResult): ValidationCh
       }
       : undefined,
   };
+}
+
+function backfillProductReviewCheckpointResults(
+  contract: ProductReviewContract,
+  reviewReport: ReviewReport,
+  evidenceByCheckId: Record<string, ValidationCheckResult>
+): ProductReviewCheckpointResult[] | undefined {
+  const resultsById = new Map(
+    (reviewReport.checkpointResults ?? []).map((result) => [result.checkpointId, { ...result }])
+  );
+
+  for (const checkpoint of contract.checkpoints) {
+    const existing = resultsById.get(checkpoint.id);
+    const checkpointArtifacts = reviewReport.artifacts.filter((artifact) => artifact.checkpointId === checkpoint.id);
+    const baselineEvidence = evidenceByCheckId[checkpoint.id];
+    const beforeScreenshotPath = existing?.beforeScreenshotPath
+      ?? findReviewArtifactPath(checkpointArtifacts, 'screenshot', ['before'])
+      ?? baselineEvidence?.beforeScreenshotPath;
+    const afterScreenshotPath = existing?.afterScreenshotPath
+      ?? findReviewArtifactPath(checkpointArtifacts, 'screenshot', ['after', 'final', undefined]);
+    const beforeVideoPath = existing?.beforeVideoPath
+      ?? findReviewArtifactPath(checkpointArtifacts, 'video', ['before'])
+      ?? baselineEvidence?.beforeVideoPath;
+    const afterVideoPath = existing?.afterVideoPath
+      ?? findReviewArtifactPath(checkpointArtifacts, 'video', ['after', 'final', undefined]);
+    const beforeReproduced = existing?.beforeReproduced ?? baselineEvidence?.beforeReproduced;
+    const beforeObserved = existing?.beforeObserved ?? baselineEvidence?.beforeObserved;
+    const hasAfterArtifact = Boolean(afterScreenshotPath || afterVideoPath);
+
+    if (existing) {
+      resultsById.set(checkpoint.id, {
+        ...existing,
+        beforeReproduced,
+        beforeObserved,
+        beforeScreenshotPath,
+        afterScreenshotPath,
+        beforeVideoPath,
+        afterVideoPath,
+      });
+      continue;
+    }
+
+    if (!reviewReport.passed || !hasAfterArtifact) {
+      continue;
+    }
+
+    resultsById.set(checkpoint.id, {
+      checkpointId: checkpoint.id,
+      passed: true,
+      beforeReproduced,
+      beforeObserved,
+      beforeScreenshotPath,
+      afterScreenshotPath,
+      beforeVideoPath,
+      afterVideoPath,
+    });
+  }
+
+  const hydrated = contract.checkpoints
+    .map((checkpoint) => resultsById.get(checkpoint.id))
+    .filter((result): result is ProductReviewCheckpointResult => Boolean(result));
+  return hydrated.length > 0 ? hydrated : undefined;
+}
+
+function findReviewArtifactPath(
+  artifacts: ReviewReport['artifacts'],
+  kind: ReviewReport['artifacts'][number]['kind'],
+  phases: Array<ReviewReport['artifacts'][number]['phase'] | undefined>
+): string | undefined {
+  return artifacts.find((artifact) =>
+    artifact.kind === kind && phases.includes(artifact.phase)
+  )?.path;
+}
+
+function hasBlockedProductReviewFinding(findings: ReviewReport['findings']): boolean {
+  return findings.some((finding) => finding.id === 'product-review-blocked' || finding.trackingKey === 'product-review-blocked');
 }
 
 function evaluateProductReviewCheckpointResults(

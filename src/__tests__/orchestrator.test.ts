@@ -7,10 +7,12 @@ import { jest } from '@jest/globals';
 import { Orchestrator } from '../orchestrator.js';
 import { ManagerAgent, MissionPlanningError } from '../agents/manager.js';
 import { WorkerAgent } from '../agents/worker.js';
-import type { WorkerFeatureReport } from '../agents/types.js';
+import type { WorkerFeatureReport, WorkerResult } from '../agents/types.js';
 import { getDefaultPromptsDir } from '../prompts/index.js';
 import { createMissionPlan, type MissionPlan } from '../state/mission.js';
 import { createGitStrategyState } from '../state/git-strategy.js';
+import type { ReviewReport } from '../state/review.js';
+import type { ValidationCheckResult } from '../state/validation.js';
 import type { MissionControlState } from '../ui/tui-views.js';
 
 describe('Orchestrator v0.8', () => {
@@ -945,6 +947,229 @@ describe('Orchestrator v0.8', () => {
     const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
     expect(events).toContain('"type":"mission_interrupted"');
     expect(events).toContain('review blocked and requested help');
+  });
+
+  it('backfills product review checkpointResults from captured artifacts before enforcing evidence completeness', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-product-review-backfill-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+    mkdirSync(join(cwd, 'artifacts', 'screenshots'), { recursive: true });
+    writeFileSync(join(cwd, 'artifacts', 'screenshots', 'root-after.png'), 'png', 'utf-8');
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Product review backfill\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'product-review-backfill',
+      goal: 'Backfill checkpoint results from review artifacts',
+      constraints: [],
+      successCriteria: ['single-evidence checkpoint results are inferred from artifacts when missing'],
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          {
+            id: 'root-dispatcher',
+            description: 'Verify root dispatcher',
+            visual: true,
+            evidenceMode: 'single',
+            requiredArtifacts: ['screenshot'],
+          },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm3',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm3-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 4,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null; validationEvidence?: Record<string, Record<string, ValidationCheckResult>> };
+      enforceProductReviewEvidenceContract: (
+        milestoneId: string,
+        feature: MissionPlan['milestones'][number]['features'][number],
+        reviewReport: ReviewReport
+      ) => ReviewReport;
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+    orchestratorAny.kernelState.validationEvidence = {};
+
+    const milestone = runningPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    const enforced = orchestratorAny.enforceProductReviewEvidenceContract('m3', feature, {
+      milestoneId: 'm3',
+      featureId: 'm3-f1',
+      reviewType: 'product',
+      generation: 1,
+      timestamp: new Date().toISOString(),
+      passed: true,
+      summary: 'product review passed',
+      findings: [],
+      artifacts: [
+        {
+          kind: 'screenshot',
+          path: 'artifacts/screenshots/root-after.png',
+          checkpointId: 'root-dispatcher',
+          phase: 'after',
+        },
+      ],
+      blockingFindingCount: 0,
+    });
+
+    expect(enforced.findings).toEqual([]);
+    expect(enforced.checkpointResults).toEqual([
+      expect.objectContaining({
+        checkpointId: 'root-dispatcher',
+        passed: true,
+        afterScreenshotPath: 'artifacts/screenshots/root-after.png',
+      }),
+    ]);
+  });
+
+  it('does not add evidence completeness findings when a product review is already blocked', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-product-review-blocked-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Product review blocked\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'product-review-blocked',
+      goal: 'Keep the original blocked finding without synthetic evidence noise',
+      constraints: [],
+      successCriteria: ['blocked reviews are not rewritten into evidence failures'],
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          {
+            id: 'root-dispatcher',
+            description: 'Verify root dispatcher',
+            visual: true,
+          },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm3',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm3-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 4,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null; validationEvidence?: Record<string, Record<string, ValidationCheckResult>> };
+      enforceProductReviewEvidenceContract: (
+        milestoneId: string,
+        feature: MissionPlan['milestones'][number]['features'][number],
+        reviewReport: ReviewReport
+      ) => ReviewReport;
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+    orchestratorAny.kernelState.validationEvidence = {};
+
+    const milestone = runningPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    const enforced = orchestratorAny.enforceProductReviewEvidenceContract('m3', feature, {
+      milestoneId: 'm3',
+      featureId: 'm3-f1',
+      reviewType: 'product',
+      generation: 1,
+      timestamp: new Date().toISOString(),
+      passed: false,
+      summary: 'Product review is blocked',
+      findings: [
+        {
+          id: 'product-review-blocked',
+          reviewType: 'product',
+          priority: 'P1',
+          summary: 'Product review is blocked',
+          rationale: 'The review executor did not return a structured final review report.',
+          trackingKey: 'product-review-blocked',
+        },
+      ],
+      artifacts: [],
+      blockingFindingCount: 1,
+    });
+
+    expect(enforced.findings).toEqual([
+      expect.objectContaining({
+        id: 'product-review-blocked',
+        trackingKey: 'product-review-blocked',
+      }),
+    ]);
+    expect(enforced.findings.find((finding) => finding.id === 'product-review-evidence-incomplete')).toBeUndefined();
   });
 
   it('fails manual validation when manual evidence is missing', async () => {
@@ -3514,197 +3739,6 @@ describe('Orchestrator v0.8', () => {
     expect(commitCount).toBe(1);
   });
 
-  it('pauses feature with clear guidance when git-strategy post-process detects a dirty branch', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-dirty-'));
-    const melosDir = join(cwd, '.melos');
-    mkdirSync(melosDir, { recursive: true });
-
-    const prdPath = join(cwd, 'PRD.md');
-    const missionPath = join(cwd, 'TASK.json');
-    writeFileSync(prdPath, '# Dirty branch mission\n', 'utf-8');
-    const runningPlan = createMissionPlan({
-      missionId: 'dirty-branch',
-      goal: 'Dirty branch guard',
-      constraints: ['No backward compatibility'],
-      successCriteria: ['must pause if uncommitted changes remain'],
-      milestones: [
-        {
-          id: 'm1',
-          title: 'M1',
-          description: 'desc',
-          order: 1,
-          status: 'in_progress',
-          validationContract: { staticChecks: [], testSuites: [] },
-          features: [
-            { id: 'm1-f1', description: 'Implement', status: 'in_progress', attempts: 1, model: 'codex' },
-          ],
-        },
-      ],
-      state: 'running',
-    });
-    const activePlan: MissionPlan = {
-      ...runningPlan,
-      activeMilestoneId: 'm1',
-      activeFeatureId: 'm1-f1',
-    };
-    writeFileSync(missionPath, `${JSON.stringify(activePlan, null, 2)}\n`, 'utf-8');
-
-    const orchestrator = new Orchestrator({
-      cwd,
-      maxIterations: 5,
-      prdFile: prdPath,
-      missionFile: missionPath,
-      melosDir,
-      autoApprove: true,
-      interactivePlanning: false,
-    });
-    const orchestratorAny = orchestrator as unknown as {
-      state: { missionPlan: MissionPlan | null };
-      kernelState: { missionPlan: MissionPlan | null };
-      handleOperationalFeatureResult: (
-        milestone: MissionPlan['milestones'][number],
-        feature: MissionPlan['milestones'][number]['features'][number],
-        result: WorkerResult
-      ) => Promise<void>;
-      activityLabel: string;
-    };
-    orchestratorAny.state.missionPlan = activePlan;
-    orchestratorAny.kernelState.missionPlan = activePlan;
-
-    const milestone = activePlan.milestones[0]!;
-    const feature = milestone.features[0]!;
-    await orchestratorAny.handleOperationalFeatureResult(milestone, feature, {
-      type: 'blocked',
-      report: {
-        iteration: 1,
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
-        status: 'BLOCKED',
-        summary: 'implemented without commit',
-        failureContext: {
-          stage: 'post_process',
-          kind: 'dirty_worktree',
-          signature: 'dirty-worktree:dirty-change.txt',
-        },
-        warnings: [],
-        filesChanged: [{ path: 'dirty-change.txt', additions: 1, deletions: 0 }],
-        validation: {
-          testsRun: true,
-          testsPassed: 1,
-          testsFailed: 0,
-          lintPassed: true,
-          typecheckPassed: true,
-        },
-        checks: [],
-        learnings: [],
-        requestsHelp: true,
-        createdAt: new Date().toISOString(),
-      },
-    });
-
-    const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
-      state: string;
-      milestones: Array<{ features: Array<{ status: string }> }>;
-    };
-    expect(mission.state).toBe('paused');
-    expect(mission.milestones[0]?.features[0]?.status).toBe('pending');
-    expect(orchestratorAny.activityLabel).toContain('local uncommitted changes');
-  });
-
-  it('fails before worker execution when git-strategy starts from a dirty working tree', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-preflight-dirty-'));
-    const melosDir = join(cwd, '.melos');
-    mkdirSync(melosDir, { recursive: true });
-
-    const prdPath = join(cwd, 'PRD.md');
-    const missionPath = join(cwd, 'TASK.json');
-    writeFileSync(prdPath, '# Dirty working tree mission\n', 'utf-8');
-    initGitRepository(cwd);
-    writeFileSync(join(cwd, 'uncommitted.txt'), 'dirty\n', 'utf-8');
-    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
-
-    const runningPlan = createMissionPlan({
-      missionId: 'dirty-preflight',
-      goal: 'Pause before dispatch when the repo is dirty',
-      constraints: ['No backward compatibility'],
-      successCriteria: ['mission pauses and preserves the active feature'],
-      milestones: [
-        {
-          id: 'm1',
-          title: 'M1',
-          description: 'desc',
-          order: 1,
-          status: 'in_progress',
-          validationContract: { staticChecks: [], testSuites: [] },
-          features: [
-            {
-              id: 'm1-f1',
-              description: 'Implement',
-              kind: 'implementation',
-              status: 'in_progress',
-              attempts: 1,
-              model: 'codex',
-            },
-          ],
-        },
-      ],
-      state: 'running',
-    });
-    const activePlan: MissionPlan = {
-      ...runningPlan,
-      activeMilestoneId: 'm1',
-      activeFeatureId: 'm1-f1',
-    };
-    writeFileSync(missionPath, `${JSON.stringify(activePlan, null, 2)}\n`, 'utf-8');
-
-    const orchestrator = new Orchestrator({
-      cwd,
-      maxIterations: 10,
-      prdFile: prdPath,
-      missionFile: missionPath,
-      melosDir,
-      autoApprove: true,
-      interactivePlanning: false,
-      dryRun: false,
-      resume: false,
-      gitStrategy: {
-        enabled: true,
-        missionId: 'dirty-preflight',
-        baseBranch,
-        autoPush: false,
-        preMergeValidation: false,
-        validationCommands: [],
-        pullRequestEnabled: false,
-      },
-    });
-    const orchestratorAny = orchestrator as unknown as {
-      state: { missionPlan: MissionPlan | null };
-      kernelState: { missionPlan: MissionPlan | null };
-      ensureGitExecutionPreconditions: (milestoneId: string, featureId: string) => Promise<boolean>;
-    };
-    orchestratorAny.state.missionPlan = activePlan;
-    orchestratorAny.kernelState.missionPlan = activePlan;
-
-    await expect(orchestratorAny.ensureGitExecutionPreconditions('m1', 'm1-f1')).resolves.toBe(false);
-
-    const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
-      state: string;
-      milestones: Array<{ status: string; features: Array<{ status: string }> }>;
-      activeMilestoneId?: string | null;
-      activeFeatureId?: string | null;
-    };
-    expect(mission.state).toBe('paused');
-    expect(mission.milestones[0]?.status).toBe('in_progress');
-    expect(mission.milestones[0]?.features[0]?.status).toBe('pending');
-    expect(mission.activeMilestoneId).toBe('m1');
-    expect(mission.activeFeatureId).toBe('m1-f1');
-
-    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
-    expect(events).toContain('Git strategy requires a clean working tree before feature execution.');
-    expect(events).toContain('"type":"mission_interrupted"');
-    expect(events).toContain('uncommitted.txt');
-  });
-
   it('continues git-strategy flow when worker commits feature changes', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-committed-'));
     const melosDir = join(cwd, '.melos');
@@ -3866,7 +3900,6 @@ describe('Orchestrator v0.8', () => {
     const orchestratorAny = orchestrator as unknown as {
       state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
       kernelState: { missionPlan: MissionPlan | null };
-      getBlockingGitWorkingTreePaths: () => string[];
       runGitPostProcess: (report: WorkerFeatureReport) => Promise<{
         ok: boolean;
         summary: string;
@@ -3883,8 +3916,6 @@ describe('Orchestrator v0.8', () => {
       validationCommands: [validationCommand],
       pullRequestEnabled: false,
     });
-    orchestratorAny.getBlockingGitWorkingTreePaths = () => [];
-
     const result = await orchestratorAny.runGitPostProcess({
       iteration: 1,
       milestoneId: 'm1',
@@ -3972,7 +4003,6 @@ describe('Orchestrator v0.8', () => {
     const orchestratorAny = orchestrator as unknown as {
       state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
       kernelState: { missionPlan: MissionPlan | null };
-      getBlockingGitWorkingTreePaths: () => string[];
       runGitPostProcess: (report: WorkerFeatureReport) => Promise<{
         ok: boolean;
         summary: string;
@@ -3989,8 +4019,6 @@ describe('Orchestrator v0.8', () => {
       validationCommands: [validationCommand],
       pullRequestEnabled: false,
     });
-    orchestratorAny.getBlockingGitWorkingTreePaths = () => [];
-
     const result = await orchestratorAny.runGitPostProcess({
       iteration: 1,
       milestoneId: 'm1',
@@ -4071,7 +4099,6 @@ describe('Orchestrator v0.8', () => {
     const orchestratorAny = orchestrator as unknown as {
       state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
       kernelState: { missionPlan: MissionPlan | null };
-      getBlockingGitWorkingTreePaths: () => string[];
       runGitPostProcess: (report: WorkerFeatureReport) => Promise<{
         ok: boolean;
         summary: string;
@@ -4088,8 +4115,6 @@ describe('Orchestrator v0.8', () => {
       validationCommands: ['exit 1'],
       pullRequestEnabled: false,
     });
-    orchestratorAny.getBlockingGitWorkingTreePaths = () => [];
-
     const result = await orchestratorAny.runGitPostProcess({
       iteration: 1,
       milestoneId: 'm1',
@@ -4119,109 +4144,6 @@ describe('Orchestrator v0.8', () => {
       command: 'exit 1',
       executionCwd: cwd,
       signature: expect.stringContaining('post-feature-validation:exit-1:'),
-    }));
-  });
-
-  it('returns dirty_worktree failure context from git post-process when local changes remain', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-post-dirty-'));
-    const melosDir = join(cwd, '.melos');
-    mkdirSync(melosDir, { recursive: true });
-
-    const prdPath = join(cwd, 'PRD.md');
-    const missionPath = join(cwd, 'TASK.json');
-    writeFileSync(prdPath, '# Dirty post process\n', 'utf-8');
-    initGitRepository(cwd);
-    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
-
-    const planned = createMissionPlan({
-      missionId: 'dirty-post-process',
-      goal: 'Surface dirty worktree as resumable blockage',
-      constraints: ['No backward compatibility'],
-      successCriteria: ['return dirty_worktree failure context'],
-      milestones: [
-        {
-          id: 'm1',
-          title: 'M1',
-          description: 'desc',
-          order: 1,
-          status: 'in_progress',
-          validationContract: { staticChecks: [], testSuites: [] },
-          features: [
-            { id: 'm1-f1', description: 'Implement', status: 'in_progress', attempts: 1, model: 'codex' },
-          ],
-        },
-      ],
-      state: 'running',
-    });
-    writeFileSync(missionPath, `${JSON.stringify(planned, null, 2)}\n`, 'utf-8');
-    writeFileSync(join(cwd, 'local-note.txt'), 'dirty\n', 'utf-8');
-
-    const orchestrator = new Orchestrator({
-      cwd,
-      maxIterations: 5,
-      prdFile: prdPath,
-      missionFile: missionPath,
-      melosDir,
-      autoApprove: true,
-      interactivePlanning: false,
-      gitStrategy: {
-        enabled: true,
-        missionId: 'dirty-post-process',
-        baseBranch,
-        autoPush: false,
-        preMergeValidation: false,
-        validationCommands: [],
-        pullRequestEnabled: false,
-      },
-    });
-    const orchestratorAny = orchestrator as unknown as {
-      state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
-      kernelState: { missionPlan: MissionPlan | null };
-      runGitPostProcess: (report: WorkerFeatureReport) => Promise<{
-        ok: boolean;
-        summary: string;
-        failureContext?: WorkerFeatureReport['failureContext'];
-      }>;
-    };
-    orchestratorAny.state.missionPlan = planned;
-    orchestratorAny.kernelState.missionPlan = planned;
-    orchestratorAny.state.gitStrategy = createGitStrategyState({
-      missionId: 'dirty-post-process',
-      baseBranch,
-      autoPush: false,
-      preMergeValidation: false,
-      validationCommands: [],
-      pullRequestEnabled: false,
-    });
-
-    const result = await orchestratorAny.runGitPostProcess({
-      iteration: 1,
-      milestoneId: 'm1',
-      featureId: 'm1-f1',
-      status: 'SUCCESS',
-      summary: 'implemented with local dirty file',
-      warnings: [],
-      filesChanged: [],
-      validation: {
-        testsRun: true,
-        testsPassed: 1,
-        testsFailed: 0,
-        lintPassed: true,
-        typecheckPassed: true,
-      },
-      checks: [],
-      learnings: [],
-      requestsHelp: false,
-      createdAt: new Date().toISOString(),
-    });
-
-    expect(result.ok).toBe(false);
-    expect(result.summary).toContain('Commit required before continuing');
-    expect(result.summary).toContain('Dirty paths: local-note.txt');
-    expect(result.failureContext).toEqual(expect.objectContaining({
-      stage: 'post_process',
-      kind: 'dirty_worktree',
-      signature: 'dirty-worktree:local-note.txt',
     }));
   });
 
@@ -4708,32 +4630,6 @@ describe('Orchestrator v0.8', () => {
     expect(orchestratorAny.shouldEmitWorkerCheckpoint('[READ] src/app.ts')).toBe(false);
     expect(orchestratorAny.shouldEmitWorkerCheckpoint('[INFO] verbose tool output omitted (123 chars)')).toBe(false);
     expect(orchestratorAny.shouldEmitWorkerCheckpoint('[REPLY] focused update')).toBe(true);
-  });
-
-  it('ignores goreman guard runtime artifacts in git preconditions', () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-goreman-guard-'));
-    const melosDir = join(cwd, '.melos');
-    mkdirSync(melosDir, { recursive: true });
-    const prdPath = join(cwd, 'PRD.md');
-    const missionPath = join(cwd, 'TASK.json');
-    writeFileSync(prdPath, '# guard ignore', 'utf-8');
-    writeFileSync(missionPath, '{}\n', 'utf-8');
-
-    const orchestrator = new Orchestrator({
-      cwd,
-      maxIterations: 5,
-      prdFile: prdPath,
-      missionFile: missionPath,
-      melosDir,
-      autoApprove: true,
-      interactivePlanning: false,
-    });
-    const orchestratorAny = orchestrator as unknown as {
-      isIgnoredGitWorkingTreePath: (path: string) => boolean;
-    };
-
-    expect(orchestratorAny.isIgnoredGitWorkingTreePath('.goreman-guard.pid')).toBe(true);
-    expect(orchestratorAny.isIgnoredGitWorkingTreePath('src/app.ts')).toBe(false);
   });
 
   it('skips git post-process for qa features', () => {

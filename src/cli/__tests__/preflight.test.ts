@@ -15,6 +15,7 @@ describe('cli preflight', () => {
       prdFilePath: join(cwd, 'PRD.md'),
       hasRunSpecInput: false,
       resume: false,
+      gitStrategyEnabled: false,
     })).rejects.toThrow(/PRD.md が見つからないためミッションを開始できません/);
     expect(existsSync(join(cwd, 'PRD.md'))).toBe(false);
   });
@@ -47,6 +48,7 @@ describe('cli preflight', () => {
       prdFilePath: join(cwd, 'PRD.md'),
       hasRunSpecInput: false,
       resume: false,
+      gitStrategyEnabled: false,
     })).rejects.toThrow(/終了状態 \(completed\).*melos status --plain.*melos logs --plain/s);
     expect(existsSync(missionFilePath)).toBe(true);
   });
@@ -66,6 +68,7 @@ describe('cli preflight', () => {
       prdFilePath: join(cwd, 'PRD.md'),
       hasRunSpecInput: false,
       resume: false,
+      gitStrategyEnabled: false,
     })).rejects.toThrow(/TASK.json の読み込みに失敗したため、実行を停止しました/);
     expect(existsSync(missionFilePath)).toBe(true);
   });
@@ -80,6 +83,7 @@ describe('cli preflight', () => {
       prdFilePath: join(cwd, 'PRD.md'),
       hasRunSpecInput: true,
       resume: false,
+      gitStrategyEnabled: false,
     })).resolves.toEqual([]);
   });
 

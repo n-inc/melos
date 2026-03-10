@@ -1,7 +1,7 @@
 import { Command, Option } from 'commander';
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
-import { isAbsolute, join, dirname } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Orchestrator, type OrchestratorConfig } from './orchestrator.js';
@@ -22,7 +22,7 @@ import {
 } from './state/runtime.js';
 import { loadSnapshot } from './state/snapshot.js';
 import { loadGitStrategyState, type PullRequestState } from './state/git-strategy.js';
-import { getCurrentBranch, getDirtyWorkingTreePaths, isGitRepository } from './state/git.js';
+import { getCurrentBranch, isGitRepository } from './state/git.js';
 import type { MissionEvent } from './state/events.js';
 import {
   formatRuntimeWarningRecord,
@@ -1213,17 +1213,6 @@ interface RunPreflightInput {
 
 export async function prepareRunPreflight(input: RunPreflightInput): Promise<string[]> {
   const messages: string[] = [];
-  const dirtyPaths = input.gitStrategyEnabled
-    ? getPreflightBlockingGitWorkingTreePaths(input.cwd, input.melosDir, input.missionFilePath)
-    : [];
-
-  if (dirtyPaths.length > 0) {
-    throw new Error([
-      'GitStrategy では feature の開始前に worktree が clean である必要があります。',
-      '同じ branch 上で追加コミットを積む運用は問題ありませんが、未コミット変更は開始前に commit または stash してください。',
-      `Dirty paths: ${dirtyPaths.join(', ')}`,
-    ].join('\n'));
-  }
 
   if (input.resume) {
     return messages;
@@ -1272,29 +1261,6 @@ export async function detectResumableMissionState(missionFilePath: string): Prom
   } catch {
     return null;
   }
-}
-
-function getPreflightBlockingGitWorkingTreePaths(
-  cwd: string,
-  melosDir: string,
-  missionFilePath: string,
-  limit: number = 5
-): string[] {
-  const validationsDir = join(melosDir, 'validations');
-  const reviewsDir = join(melosDir, 'reviews');
-
-  return getDirtyWorkingTreePaths(cwd)
-    .filter((path) => {
-      const resolved = isAbsolute(path) ? path : join(cwd, path);
-      return resolved !== join(cwd, 'HANDOFF.md')
-        && resolved !== join(cwd, '.goreman-guard.pid')
-        && resolved !== missionFilePath
-        && resolved !== join(melosDir, 'state.json')
-        && !resolved.startsWith(`${melosDir}/`)
-        && !resolved.startsWith(`${validationsDir}/`)
-        && !resolved.startsWith(`${reviewsDir}/`);
-    })
-    .slice(0, limit);
 }
 
 function buildTerminalStateGuidance(state: MissionState): string {
