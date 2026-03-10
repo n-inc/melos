@@ -14,9 +14,11 @@ interface PreparedWorkersLogView {
   wrapped: string[];
   availableLogLines: number;
   maxOffset: number;
+  omittedEntries: number;
 }
 
 let preparedWorkersLogCache: PreparedWorkersLogView | null = null;
+const MAX_TUI_WORKER_LOG_ENTRIES = 400;
 
 export const workersView: TUIView = {
   id: 'workers',
@@ -29,7 +31,7 @@ export const workersView: TUIView = {
     const nowRunning = buildNowRunningLine(state, activeActor);
     const separator = '─'.repeat(width);
     const prepared = prepareWorkersLogView(viewport, state, context);
-    const { wrapped, availableLogLines, maxOffset } = prepared;
+    const { wrapped, availableLogLines, maxOffset, omittedEntries } = prepared;
     const safeOffset = scrollOffset >= Number.MAX_SAFE_INTEGER
       ? maxOffset
       : Math.min(scrollOffset, maxOffset);
@@ -47,9 +49,10 @@ export const workersView: TUIView = {
     const lineSummary = wrapped.length === 0
       ? 'Lines 0/0'
       : `Lines ${safeOffset + 1}-${Math.min(wrapped.length, safeOffset + availableLogLines)}/${wrapped.length}`;
+    const omissionSummary = omittedEntries > 0 ? `  Omitted ${omittedEntries} older` : '';
 
     return [
-      truncateDisplay(`${nowRunning}  ${modeLabel}  ${lineSummary}`, width),
+      truncateDisplay(`${nowRunning}  ${modeLabel}  ${lineSummary}${omissionSummary}`, width),
       separator,
       ...visibleLogLines.map((line) => truncateDisplay(line, width)),
     ];
@@ -63,6 +66,7 @@ export function computeWorkersScrollMetrics(
     logSourceLock?: 'auto' | 'worker' | 'manager';
     sourceSwitchNotice?: string | null;
     useColor?: boolean;
+    workersFollowMode?: 'live' | 'scrollback';
   }
 ): WorkersViewMetrics {
   const prepared = prepareWorkersLogView(viewport, state, context);
@@ -80,6 +84,7 @@ function prepareWorkersLogView(
     logSourceLock?: 'auto' | 'worker' | 'manager';
     sourceSwitchNotice?: string | null;
     useColor?: boolean;
+    workersFollowMode?: 'live' | 'scrollback';
   }
 ): PreparedWorkersLogView {
   const width = Math.max(40, viewport.width);
@@ -89,6 +94,7 @@ function prepareWorkersLogView(
     logSourceLock: lock,
     sourceSwitchNotice: context?.sourceSwitchNotice ?? null,
     useColor: context?.useColor === true,
+    workersFollowMode: context?.workersFollowMode ?? 'live',
   });
 
   if (preparedWorkersLogCache?.signature === signature) {
@@ -96,7 +102,11 @@ function prepareWorkersLogView(
   }
 
   const entries = filterLogEntriesByLock(state.logEntries, lock);
-  const streamLines = formatLogStreamLines(entries, {
+  const truncatedCount = Math.max(0, entries.length - MAX_TUI_WORKER_LOG_ENTRIES);
+  const displayEntries = truncatedCount > 0
+    ? entries.slice(entries.length - MAX_TUI_WORKER_LOG_ENTRIES)
+    : entries;
+  const streamLines = formatLogStreamLines(displayEntries, {
     lock,
     switchNotice: context?.sourceSwitchNotice ?? null,
     pendingPrompt: state.pendingPrompt,
@@ -104,7 +114,13 @@ function prepareWorkersLogView(
     previousActor: null,
     summarizeExploration: true,
   });
-  const wrapped = streamLines.flatMap((line) => wrapPlainDisplay(line, width));
+  const prefixedLines = truncatedCount > 0
+    ? [
+      `... ${truncatedCount} earlier log entries omitted in TUI. Use \`melos logs --plain\` for full history.`,
+      ...streamLines,
+    ]
+    : streamLines;
+  const wrapped = prefixedLines.flatMap((line) => wrapPlainDisplay(line, width));
   const reserved = 2;
   const availableLogLines = Math.max(1, height - reserved);
   const prepared = {
@@ -112,6 +128,7 @@ function prepareWorkersLogView(
     wrapped,
     availableLogLines,
     maxOffset: Math.max(0, wrapped.length - availableLogLines),
+    omittedEntries: truncatedCount,
   };
   preparedWorkersLogCache = prepared;
   return prepared;
@@ -125,18 +142,24 @@ function buildWorkersLogSignature(
     logSourceLock: 'auto' | 'worker' | 'manager';
     sourceSwitchNotice: string | null;
     useColor: boolean;
+    workersFollowMode: 'live' | 'scrollback';
   }
 ): string {
-  const first = state.logEntries[0];
-  const last = state.logEntries[state.logEntries.length - 1];
+  const filteredEntries = filterLogEntriesByLock(state.logEntries, context.logSourceLock);
+  const displayEntries = filteredEntries.length > MAX_TUI_WORKER_LOG_ENTRIES
+    ? filteredEntries.slice(filteredEntries.length - MAX_TUI_WORKER_LOG_ENTRIES)
+    : filteredEntries;
+  const first = displayEntries[0];
+  const last = displayEntries[displayEntries.length - 1];
   return [
     width,
     height,
     context.logSourceLock,
     context.useColor ? '1' : '0',
     context.sourceSwitchNotice ?? '',
+    context.workersFollowMode,
     state.pendingPrompt ?? '',
-    state.logEntries.length,
+    filteredEntries.length,
     serializeWorkersLogEdge(first),
     serializeWorkersLogEdge(last),
   ].join('\u0001');

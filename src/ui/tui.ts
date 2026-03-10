@@ -142,6 +142,7 @@ export function createRuntimeUI(
     return computeWorkersScrollMetrics(getWorkersViewport(), state, {
       logSourceLock,
       useColor,
+      workersFollowMode,
     });
   };
   const setWorkersLiveMode = () => {

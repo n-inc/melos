@@ -226,6 +226,59 @@ describe('ui/tui v0.8', () => {
     pauseSpy.mockRestore();
   });
 
+  it('truncates older worker log entries in TUI workers view', () => {
+    const output = new PassThrough();
+    (output as unknown as { columns?: number }).columns = 100;
+    (output as unknown as { rows?: number }).rows = 30;
+
+    let rendered = '';
+    output.on('data', (chunk: Buffer | string) => {
+      rendered += chunk.toString();
+    });
+
+    const input = new PassThrough();
+    (input as unknown as { isTTY?: boolean; setRawMode?: (enabled: boolean) => void }).isTTY = true;
+    (input as unknown as { setRawMode?: (enabled: boolean) => void }).setRawMode = () => {
+      // no-op
+    };
+
+    const logEntries = Array.from({ length: 450 }, (_, index) => ({
+      seq: index + 1,
+      timestamp: new Date(Date.UTC(2026, 2, 3, 0, 0, Math.min(index, 59))).toISOString(),
+      actor: 'worker' as const,
+      kind: 'INFO',
+      message: `worker-log-${index + 1}`,
+    }));
+
+    const ui = createRuntimeUI('tui', output as unknown as NodeJS.WriteStream, input as unknown as NodeJS.ReadStream);
+    ui.start(createSessionInfo());
+    ui.updateState({
+      ...createState(),
+      currentActor: 'worker',
+      logEntries,
+      workerRuns: [
+        {
+          id: 1,
+          type: 'implement',
+          featureId: 'm1-f1',
+          milestoneId: 'm1',
+          status: 'running',
+          durationLabel: '0m 10s',
+          engine: 'codex',
+          model: 'gpt-5.4',
+          log: logEntries,
+        },
+      ],
+    });
+
+    input.write('W');
+    ui.stop();
+
+    expect(rendered).toContain('Omitted 50 o');
+    expect(rendered).toContain('worker-log-450');
+    expect(rendered).not.toContain('worker-log-1');
+  });
+
   it('renders explicit initializing frame before first state update', () => {
     const output = new PassThrough();
     (output as unknown as { columns?: number }).columns = 100;
