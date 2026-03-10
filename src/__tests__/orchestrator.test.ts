@@ -5949,6 +5949,130 @@ describe('Orchestrator v0.8', () => {
     expect(events).not.toContain('watchdog timeout');
   });
 
+  it('aborts active agents when paused by watchdog timeout', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-watchdog-abort-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# watchdog abort\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'watchdog-abort',
+      goal: 'Abort active agents on watchdog pause',
+      constraints: [],
+      successCriteria: ['manager and worker are aborted'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement flow',
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const managerAbortSpy = jest.spyOn(ManagerAgent.prototype, 'abort').mockImplementation(() => {});
+    const workerAbortSpy = jest.spyOn(WorkerAgent.prototype, 'abort').mockImplementation(() => {});
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+
+    orchestrator.pause('watchdog worker timeout');
+
+    expect(managerAbortSpy).toHaveBeenCalled();
+    expect(workerAbortSpy).toHaveBeenCalled();
+  });
+
+  it('ignores late feature results after watchdog pause', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-stale-review-result-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# stale review result\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const activePlan = createMissionPlan({
+      missionId: 'stale-review-result',
+      goal: 'Ignore late review results after pause',
+      constraints: [],
+      successCriteria: ['paused mission ignores late worker outputs'],
+      milestones: [
+        {
+          id: 'm3',
+          title: 'Final Review',
+          description: 'Run final review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [], qaChecks: [] },
+          features: [
+            {
+              id: 'm3-f1',
+              description: 'Run final product review against the PRD and interactive browser checks',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'paused',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      ignoreLateFeatureResultIfPaused: (milestoneId: string, featureId: string) => boolean;
+    };
+    orchestratorAny.state.missionPlan = activePlan;
+    orchestratorAny.kernelState.missionPlan = activePlan;
+
+    expect(orchestratorAny.ignoreLateFeatureResultIfPaused('m3', 'm3-f1')).toBe(true);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"action":"stale_feature_result_ignored"');
+    expect(events).not.toContain('"type":"task_added"');
+  });
+
   it('defaults validation loop escalation to pause in non-interactive mode', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-validation-loop-'));
     const melosDir = join(cwd, '.melos');

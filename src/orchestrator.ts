@@ -420,6 +420,10 @@ export class Orchestrator {
 
     this.activityLabel = activityLabel;
     this.state.missionPlan = transitionMissionState(this.state.missionPlan, 'paused');
+    if (reason === 'watchdog worker timeout' || reason === 'watchdog mission stall') {
+      this.manager.abort();
+      this.worker.abort();
+    }
     void this.persistMissionPlan();
     this.emitEvent('mission_interrupted', 'orchestrator', { reason });
     void this.emitStatusUpdate();
@@ -941,6 +945,9 @@ export class Orchestrator {
 
     this.activityLabel = `Worker executing ${updatedFeature.id}...`;
     const rawResult = await this.executeFeature(updatedMilestone, updatedFeature, briefing);
+    if (this.ignoreLateFeatureResultIfPaused(updatedMilestone.id, updatedFeature.id)) {
+      return;
+    }
     await this.syncPullRequestStateFromReport(updatedFeature, rawResult.report);
     const normalizedResult = this.normalizeWorkerWarnings(updatedFeature, rawResult);
     const result = this.shouldApplyWorkerWarningPolicy(updatedFeature)
@@ -963,6 +970,19 @@ export class Orchestrator {
       return;
     }
     await this.handleImplementationFeatureResult(updatedMilestone, updatedFeature, result);
+  }
+
+  private ignoreLateFeatureResultIfPaused(milestoneId: string, featureId: string): boolean {
+    if (this.state.missionPlan?.state !== 'paused') {
+      return false;
+    }
+    this.emitEvent('manager_decision', 'orchestrator', {
+      action: 'stale_feature_result_ignored',
+      milestoneId,
+      featureId,
+      message: `Ignored late result from ${featureId} because the mission was already paused.`,
+    });
+    return true;
   }
 
   private async runMilestoneValidation(milestoneId: string): Promise<void> {
