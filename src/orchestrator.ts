@@ -1049,13 +1049,15 @@ export class Orchestrator {
         continue;
       }
 
-      const commandResult = runGitCommand(this.config.cwd, check.command);
+      const validationCwd = this.resolveMilestoneValidationCwd(milestone);
+      const commandResult = runGitCommand(validationCwd, check.command);
       results.push(this.evaluateCommandValidationCheck(check, commandResult));
 
       this.emitEvent('command_executed', 'system', {
         checkId: check.id,
         command: check.command,
         exitCode: commandResult.exitCode,
+        cwd: validationCwd,
       });
     }
 
@@ -1249,13 +1251,14 @@ export class Orchestrator {
   ): ValidationCheckResult {
     const combinedOutput = `${commandResult.stdout}\n${commandResult.stderr}`.trim();
     const expectedOutcome = check.expectedOutcome ?? 'exit_code_zero';
+    const noProjectsMatched = /No projects matched the filters/i.test(combinedOutput);
     const noMatchSuccess = expectedOutcome === 'no_match'
       && commandResult.exitCode === 1
       && commandResult.stdout.trim().length === 0
       && commandResult.stderr.trim().length === 0;
     const passed = expectedOutcome === 'no_match'
       ? noMatchSuccess
-      : commandResult.exitCode === 0;
+      : commandResult.exitCode === 0 && !noProjectsMatched;
     const defaultOutput = expectedOutcome === 'no_match' && passed
       ? 'expected no matches; command returned exitCode=1 with no output'
       : combinedOutput;
@@ -1271,6 +1274,8 @@ export class Orchestrator {
         : {
           summary: expectedOutcome === 'no_match'
             ? `${check.id} failed (expected no matches)`
+            : noProjectsMatched
+              ? `${check.id} failed (validation command matched no workspace projects)`
             : `${check.id} failed (${commandResult.exitCode})`,
           affectedFiles: [],
           errorMessages: truncateLines(
@@ -1281,9 +1286,32 @@ export class Orchestrator {
           ),
           rootCause: expectedOutcome === 'no_match'
             ? 'absence-check-mismatch'
+            : noProjectsMatched
+              ? 'validation-command-no-projects-matched'
             : undefined,
         },
     };
+  }
+
+  private resolveMilestoneValidationCwd(milestone: Milestone): string {
+    const featureCwds = Array.from(new Set(
+      milestone.features
+        .map((feature) => typeof feature.cwd === 'string' ? feature.cwd.trim() : '')
+        .filter((cwd): cwd is string => cwd.length > 0)
+    ));
+
+    if (featureCwds.length !== 1) {
+      return this.config.cwd;
+    }
+
+    const matchedFeature = milestone.features.find((feature) => feature.cwd?.trim() === featureCwds[0]);
+    return resolveFeatureExecutionCwd(this.config.cwd, {
+      feature: {
+        cwd: featureCwds[0],
+        kind: matchedFeature?.kind ?? 'implementation',
+      },
+      missionPlan: this.state.missionPlan ?? undefined,
+    });
   }
 
   private async executeFeature(

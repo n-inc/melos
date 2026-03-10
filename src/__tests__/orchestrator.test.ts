@@ -3180,6 +3180,7 @@ describe('Orchestrator v0.8', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-model-cycle-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'validations'), { recursive: true });
     const prdPath = join(cwd, 'PRD.md');
     const missionPath = join(cwd, 'TASK.json');
     writeFileSync(prdPath, '# Model cycle mission\n', 'utf-8');
@@ -3513,7 +3514,7 @@ describe('Orchestrator v0.8', () => {
     expect(commitCount).toBe(1);
   });
 
-  it('fails feature with clear guidance when git-strategy branch is dirty', async () => {
+  it('pauses feature with clear guidance when git-strategy post-process detects a dirty branch', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-strategy-dirty-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
@@ -3521,99 +3522,93 @@ describe('Orchestrator v0.8', () => {
     const prdPath = join(cwd, 'PRD.md');
     const missionPath = join(cwd, 'TASK.json');
     writeFileSync(prdPath, '# Dirty branch mission\n', 'utf-8');
-    initGitRepository(cwd);
-    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
-
-    const planned = createMissionPlan({
+    const runningPlan = createMissionPlan({
       missionId: 'dirty-branch',
       goal: 'Dirty branch guard',
       constraints: ['No backward compatibility'],
-      successCriteria: ['must fail if uncommitted'],
+      successCriteria: ['must pause if uncommitted changes remain'],
       milestones: [
         {
           id: 'm1',
           title: 'M1',
           description: 'desc',
           order: 1,
-          status: 'pending',
+          status: 'in_progress',
           validationContract: { staticChecks: [], testSuites: [] },
           features: [
-            { id: 'm1-f1', description: 'Implement', status: 'pending', attempts: 0, model: 'codex' },
+            { id: 'm1-f1', description: 'Implement', status: 'in_progress', attempts: 1, model: 'codex' },
           ],
         },
       ],
-      state: 'planning',
+      state: 'running',
     });
-
-    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
-    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
-    jest.spyOn(ManagerAgent.prototype, 'generateImplementationFollowUpFeatures').mockResolvedValue([
-      {
-        description: 'Commit dirty branch before merge',
-        trackingKey: 'git-dirty-branch',
-        priority: 'high',
-        model: 'codex',
-      },
-    ]);
-    jest.spyOn(WorkerAgent.prototype, 'run').mockImplementation(async () => {
-      writeFileSync(join(cwd, 'dirty-change.txt'), 'dirty', 'utf-8');
-      return {
-        type: 'success',
-        report: {
-          iteration: 1,
-          milestoneId: 'm1',
-          featureId: 'm1-f1',
-          status: 'SUCCESS',
-          summary: 'implemented without commit',
-          warnings: [],
-          filesChanged: [{ path: 'dirty-change.txt', additions: 1, deletions: 0 }],
-          validation: {
-            testsRun: true,
-            testsPassed: 1,
-            testsFailed: 0,
-            lintPassed: true,
-            typecheckPassed: true,
-          },
-          checks: [],
-          learnings: [],
-          requestsHelp: false,
-          createdAt: new Date().toISOString(),
-        },
-      };
-    });
+    const activePlan: MissionPlan = {
+      ...runningPlan,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    writeFileSync(missionPath, `${JSON.stringify(activePlan, null, 2)}\n`, 'utf-8');
 
     const orchestrator = new Orchestrator({
       cwd,
-      maxIterations: 1,
+      maxIterations: 5,
       prdFile: prdPath,
       missionFile: missionPath,
       melosDir,
       autoApprove: true,
       interactivePlanning: false,
-      dryRun: false,
-      resume: false,
-      gitStrategy: {
-        enabled: true,
-        missionId: 'dirty-branch',
-        baseBranch,
-        autoPush: false,
-        preMergeValidation: false,
-        validationCommands: [],
-        pullRequestEnabled: false,
-      },
-      execution: {
-        maxFeatureAttempts: 1,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleOperationalFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: WorkerResult
+      ) => Promise<void>;
+      activityLabel: string;
+    };
+    orchestratorAny.state.missionPlan = activePlan;
+    orchestratorAny.kernelState.missionPlan = activePlan;
+
+    const milestone = activePlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleOperationalFeatureResult(milestone, feature, {
+      type: 'blocked',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'BLOCKED',
+        summary: 'implemented without commit',
+        failureContext: {
+          stage: 'post_process',
+          kind: 'dirty_worktree',
+          signature: 'dirty-worktree:dirty-change.txt',
+        },
+        warnings: [],
+        filesChanged: [{ path: 'dirty-change.txt', additions: 1, deletions: 0 }],
+        validation: {
+          testsRun: true,
+          testsPassed: 1,
+          testsFailed: 0,
+          lintPassed: true,
+          typecheckPassed: true,
+        },
+        checks: [],
+        learnings: [],
+        requestsHelp: true,
+        createdAt: new Date().toISOString(),
       },
     });
 
-    const result = await orchestrator.run();
-    expect(result.success).toBe(false);
-    expect(result.reason).toBe('max_iterations');
-
     const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
+      state: string;
       milestones: Array<{ features: Array<{ status: string }> }>;
     };
-    expect(mission.milestones[0]?.features[0]?.status).toBe('failed');
+    expect(mission.state).toBe('paused');
+    expect(mission.milestones[0]?.features[0]?.status).toBe('pending');
+    expect(orchestratorAny.activityLabel).toContain('local uncommitted changes');
   });
 
   it('fails before worker execution when git-strategy starts from a dirty working tree', async () => {
@@ -3628,37 +3623,39 @@ describe('Orchestrator v0.8', () => {
     writeFileSync(join(cwd, 'uncommitted.txt'), 'dirty\n', 'utf-8');
     const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
 
-    const planned = createMissionPlan({
+    const runningPlan = createMissionPlan({
       missionId: 'dirty-preflight',
-      goal: 'Fail before dispatch when the repo is dirty',
+      goal: 'Pause before dispatch when the repo is dirty',
       constraints: ['No backward compatibility'],
-      successCriteria: ['worker is never dispatched on a dirty tree'],
+      successCriteria: ['mission pauses and preserves the active feature'],
       milestones: [
         {
           id: 'm1',
           title: 'M1',
           description: 'desc',
           order: 1,
-          status: 'pending',
+          status: 'in_progress',
           validationContract: { staticChecks: [], testSuites: [] },
           features: [
             {
               id: 'm1-f1',
               description: 'Implement',
               kind: 'implementation',
-              status: 'pending',
-              attempts: 0,
+              status: 'in_progress',
+              attempts: 1,
               model: 'codex',
             },
           ],
         },
       ],
-      state: 'planning',
+      state: 'running',
     });
-
-    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
-    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
-    const workerSpy = jest.spyOn(WorkerAgent.prototype, 'run');
+    const activePlan: MissionPlan = {
+      ...runningPlan,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    writeFileSync(missionPath, `${JSON.stringify(activePlan, null, 2)}\n`, 'utf-8');
 
     const orchestrator = new Orchestrator({
       cwd,
@@ -3680,22 +3677,31 @@ describe('Orchestrator v0.8', () => {
         pullRequestEnabled: false,
       },
     });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      ensureGitExecutionPreconditions: (milestoneId: string, featureId: string) => Promise<boolean>;
+    };
+    orchestratorAny.state.missionPlan = activePlan;
+    orchestratorAny.kernelState.missionPlan = activePlan;
 
-    const result = await orchestrator.run();
-    expect(result.success).toBe(false);
-    expect(result.reason).toBe('failed');
-    expect(workerSpy).not.toHaveBeenCalled();
+    await expect(orchestratorAny.ensureGitExecutionPreconditions('m1', 'm1-f1')).resolves.toBe(false);
 
     const mission = JSON.parse(readFileSync(join(cwd, 'TASK.json'), 'utf-8')) as {
       state: string;
       milestones: Array<{ status: string; features: Array<{ status: string }> }>;
+      activeMilestoneId?: string | null;
+      activeFeatureId?: string | null;
     };
-    expect(mission.state).toBe('failed');
-    expect(mission.milestones[0]?.status).toBe('failed');
-    expect(mission.milestones[0]?.features[0]?.status).toBe('failed');
+    expect(mission.state).toBe('paused');
+    expect(mission.milestones[0]?.status).toBe('in_progress');
+    expect(mission.milestones[0]?.features[0]?.status).toBe('pending');
+    expect(mission.activeMilestoneId).toBe('m1');
+    expect(mission.activeFeatureId).toBe('m1-f1');
 
     const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
     expect(events).toContain('Git strategy requires a clean working tree before feature execution.');
+    expect(events).toContain('"type":"mission_interrupted"');
     expect(events).toContain('uncommitted.txt');
   });
 
@@ -4113,6 +4119,109 @@ describe('Orchestrator v0.8', () => {
       command: 'exit 1',
       executionCwd: cwd,
       signature: expect.stringContaining('post-feature-validation:exit-1:'),
+    }));
+  });
+
+  it('returns dirty_worktree failure context from git post-process when local changes remain', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-git-post-dirty-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Dirty post process\n', 'utf-8');
+    initGitRepository(cwd);
+    const baseBranch = execSync('git branch --show-current', { cwd, encoding: 'utf-8' }).trim();
+
+    const planned = createMissionPlan({
+      missionId: 'dirty-post-process',
+      goal: 'Surface dirty worktree as resumable blockage',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['return dirty_worktree failure context'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [
+            { id: 'm1-f1', description: 'Implement', status: 'in_progress', attempts: 1, model: 'codex' },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    writeFileSync(missionPath, `${JSON.stringify(planned, null, 2)}\n`, 'utf-8');
+    writeFileSync(join(cwd, 'local-note.txt'), 'dirty\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      gitStrategy: {
+        enabled: true,
+        missionId: 'dirty-post-process',
+        baseBranch,
+        autoPush: false,
+        preMergeValidation: false,
+        validationCommands: [],
+        pullRequestEnabled: false,
+      },
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null; gitStrategy: ReturnType<typeof createGitStrategyState> | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      runGitPostProcess: (report: WorkerFeatureReport) => Promise<{
+        ok: boolean;
+        summary: string;
+        failureContext?: WorkerFeatureReport['failureContext'];
+      }>;
+    };
+    orchestratorAny.state.missionPlan = planned;
+    orchestratorAny.kernelState.missionPlan = planned;
+    orchestratorAny.state.gitStrategy = createGitStrategyState({
+      missionId: 'dirty-post-process',
+      baseBranch,
+      autoPush: false,
+      preMergeValidation: false,
+      validationCommands: [],
+      pullRequestEnabled: false,
+    });
+
+    const result = await orchestratorAny.runGitPostProcess({
+      iteration: 1,
+      milestoneId: 'm1',
+      featureId: 'm1-f1',
+      status: 'SUCCESS',
+      summary: 'implemented with local dirty file',
+      warnings: [],
+      filesChanged: [],
+      validation: {
+        testsRun: true,
+        testsPassed: 1,
+        testsFailed: 0,
+        lintPassed: true,
+        typecheckPassed: true,
+      },
+      checks: [],
+      learnings: [],
+      requestsHelp: false,
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain('Commit required before continuing');
+    expect(result.summary).toContain('Dirty paths: local-note.txt');
+    expect(result.failureContext).toEqual(expect.objectContaining({
+      stage: 'post_process',
+      kind: 'dirty_worktree',
+      signature: 'dirty-worktree:local-note.txt',
     }));
   });
 
@@ -4970,6 +5079,137 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.passed).toBe(true);
     expect(result.output).toContain('expected no matches');
+  });
+
+  it('fails validation when pnpm filter matched no workspace projects', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-no-projects-matched-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# no-projects-matched', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      evaluateCommandValidationCheck: (
+        check: {
+          id: string;
+          description: string;
+          type: 'command';
+          expectedOutcome: 'exit_code_zero';
+          passed: boolean;
+          failureCount: number;
+        },
+        result: { exitCode: number; stdout: string; stderr: string; durationMs: number }
+      ) => { passed: boolean; failure?: { rootCause?: string; summary: string } };
+    };
+
+    const result = orchestratorAny.evaluateCommandValidationCheck(
+      {
+        id: 'workspace-check',
+        description: 'Run filtered pnpm command',
+        type: 'command',
+        expectedOutcome: 'exit_code_zero',
+        passed: false,
+        failureCount: 0,
+      },
+      {
+        exitCode: 0,
+        stdout: 'No projects matched the filters in "/repo"',
+        stderr: '',
+        durationMs: 5,
+      }
+    );
+
+    expect(result.passed).toBe(false);
+    expect(result.failure?.rootCause).toBe('validation-command-no-projects-matched');
+    expect(result.failure?.summary).toContain('matched no workspace projects');
+  });
+
+  it('runs milestone validation commands from the milestone feature cwd when it is unique', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-validation-cwd-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'validations'), { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    const packageCwd = join(cwd, 'frontend', 'apps', 'web');
+    mkdirSync(packageCwd, { recursive: true });
+    writeFileSync(prdPath, '# validation cwd', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const plan = createMissionPlan({
+      missionId: 'validation-cwd',
+      goal: 'Run validation from feature cwd',
+      constraints: [],
+      successCriteria: [],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [
+              {
+                id: 'cwd-check',
+                description: 'validate cwd',
+                type: 'command',
+                command: 'node -e "process.stdout.write(process.cwd())"',
+                passed: false,
+                failureCount: 0,
+              },
+            ],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'work',
+              kind: 'implementation',
+              cwd: 'frontend/apps/web',
+              status: 'done',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null; latestValidationReport: { results: Array<{ output?: string }> } | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      runMilestoneValidation: (milestoneId: string) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = plan;
+    orchestratorAny.kernelState.missionPlan = plan;
+
+    await orchestratorAny.runMilestoneValidation('m1');
+
+    expect(orchestratorAny.state.latestValidationReport?.results[0]?.output).toBe(realpathSync(packageCwd));
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain(`"cwd":"${packageCwd.replace(/\\/g, '\\\\')}"`);
   });
 
   it('reuses completed validation follow-up features by trackingKey instead of appending duplicates', async () => {
