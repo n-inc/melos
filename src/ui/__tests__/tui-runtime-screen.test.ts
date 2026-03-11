@@ -72,6 +72,20 @@ function createState(overrides: Partial<MissionControlState> = {}): MissionContr
   };
 }
 
+function createTallMilestones() {
+  return Array.from({ length: 8 }, (_, milestoneIndex) => ({
+    id: `m${milestoneIndex + 1}`,
+    title: `Milestone ${milestoneIndex + 1}`,
+    status: milestoneIndex === 3 ? 'in_progress' as const : 'pending' as const,
+    features: Array.from({ length: 4 }, (_, featureIndex) => ({
+      id: `m${milestoneIndex + 1}-f${featureIndex + 1}`,
+      description: `feature-${milestoneIndex + 1}-${featureIndex + 1}`,
+      status: milestoneIndex === 3 && featureIndex === 1 ? 'in_progress' as const : 'pending' as const,
+      attempts: 0,
+    })),
+  }));
+}
+
 class AnsiScreen {
   private readonly lines: string[] = [];
   private row = 1;
@@ -478,6 +492,30 @@ describe('ui/tui runtime screen contract', () => {
     h.input.write('\u001b[1;2B');
     expect(h.screen()).toContain('LIVE');
     expect(h.screen()).toContain('worker-log-41');
+
+    h.ui.stop();
+  });
+
+  it('supports scrolling in features view', () => {
+    const h = createHarness();
+    h.ui.start(createSession());
+    h.ui.updateState(createState({
+      activeMilestoneId: 'm4',
+      activeFeatureId: 'm4-f2',
+      milestones: createTallMilestones(),
+    }));
+
+    h.input.write('F');
+    expect(h.screen()).toContain('m1 Milestone 1');
+    expect(h.screen()).not.toContain('m8 Milestone 8');
+
+    h.input.write('\u001b[6~');
+    h.input.write('\u001b[6~');
+    expect(h.screen()).not.toContain('m1 Milestone 1');
+    expect(h.screen()).toContain('m8 Milestone 8');
+
+    h.input.write('\u001b[H');
+    expect(h.screen()).toContain('m1 Milestone 1');
 
     h.ui.stop();
   });

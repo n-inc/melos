@@ -50,6 +50,8 @@ export interface RuntimeUI {
 const DEFAULT_TERMINAL_COLUMNS = 100;
 const DEFAULT_TERMINAL_ROWS = 32;
 const VIEW_ORDER: ViewId[] = ['overview', 'features', 'workers', 'models', 'prd', 'task'];
+const SELF_MANAGED_SCROLL_VIEWS = new Set<ViewId>(['workers', 'prd', 'task']);
+const SCROLLABLE_VIEWS = new Set<ViewId>(['overview', 'features', 'workers', 'models', 'prd', 'task']);
 const VIEW_MAP: Record<ViewId, TUIView> = {
   overview: overviewView,
   features: featuresView,
@@ -288,7 +290,7 @@ export function createRuntimeUI(
   };
 
   const applyViewScrollAction = (actionType: string): boolean => {
-    if (currentView !== 'prd' && currentView !== 'task' && currentView !== 'workers') {
+    if (!SCROLLABLE_VIEWS.has(currentView)) {
       return false;
     }
     if (currentView === 'workers') {
@@ -842,7 +844,15 @@ function buildFrame(
       workersUnreadCount: options.workersUnreadCount,
     }
   );
-  const clipped = contentLines.slice(0, contentHeight).map((line) => truncateDisplay(line, width));
+  const safeOffset = SELF_MANAGED_SCROLL_VIEWS.has(options.view)
+    ? 0
+    : options.scrollOffset >= Number.MAX_SAFE_INTEGER
+      ? Math.max(0, contentLines.length - contentHeight)
+      : Math.min(Math.max(0, options.scrollOffset), Math.max(0, contentLines.length - contentHeight));
+  const visibleLines = SELF_MANAGED_SCROLL_VIEWS.has(options.view)
+    ? contentLines
+    : contentLines.slice(safeOffset, safeOffset + contentHeight);
+  const clipped = visibleLines.slice(0, contentHeight).map((line) => truncateDisplay(line, width));
   while (clipped.length < contentHeight) {
     clipped.push('');
   }
@@ -851,16 +861,18 @@ function buildFrame(
     state.pendingPrompt
       ? `入力待ち  ${state.pendingPrompt}`
       : options.view === 'models'
-        ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker`
+        ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  1 Planner 2 Worker  ↑↓/PgUp/PgDn/Home/End Scroll`
         : options.view === 'task'
           ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=gpt-5.4[Latest] A=claude-opus-4.6[Latest] U=Auto  ↑↓/PgUp/PgDn/Home/End Scroll`
-          : options.view === 'prd'
+        : options.view === 'prd'
             ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn/Home/End Scroll  Enter=More`
             : options.view === 'features'
-              ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=gpt-5.4[Latest] A=claude-opus-4.6[Latest] U=Auto  P Pause  R Resume  Ctrl+G Steer`
-              : options.view === 'workers'
-                ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn Scroll  Shift+↑ Oldest  Shift+↓ Latest  L Focus`
-                : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
+              ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  C=gpt-5.4[Latest] A=claude-opus-4.6[Latest] U=Auto  ↑↓/PgUp/PgDn/Home/End Scroll`
+              : options.view === 'overview'
+                ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  ↑↓/PgUp/PgDn Scroll`
+                : options.view === 'workers'
+                  ? `Tab Next  Shift+Tab Prev  F/W/M/D/T View  ↑↓/PgUp/PgDn Scroll  Shift+↑ Oldest  Shift+↓ Latest  L Focus`
+                  : `Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview`,
     width
   );
 

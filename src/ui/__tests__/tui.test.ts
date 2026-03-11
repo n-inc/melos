@@ -122,7 +122,7 @@ describe('ui/tui v0.8', () => {
     expect(rendered).toContain('\x1b[?1049h');
     expect(rendered).toContain('\x1b[?1049l');
     expect(rendered).toContain('Mission Control');
-    expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  Esc Overview');
+    expect(rendered).toContain('Tab Next  Shift+Tab Prev  F/W/M/D/T View  P Pause  R Resume  Ctrl+G Steer  ↑↓/PgUp/PgDn Scroll');
     expect(rendered).toContain('Overview');
     expect(rendered).not.toContain('SWITCH:');
     expect(rendered).toContain('melos> Running m1-f1...  (Ctrl+G steer)');
