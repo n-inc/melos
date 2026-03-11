@@ -463,6 +463,8 @@ describe('Orchestrator v0.8', () => {
           description: 'Fix the checkout flow to satisfy the PRD',
           trackingKey: 'checkout-flow',
           priority: 'high',
+          rerunReviewTypes: ['product', 'code'],
+          affectedProductCheckpoints: ['checkout'],
           model: 'codex-latest',
         },
       ]);
@@ -665,9 +667,231 @@ describe('Orchestrator v0.8', () => {
       { id: 'm2-f4', status: 'done' },
       { id: 'm2-f5', status: 'done' },
     ]);
+    expect(finalReviewMilestone?.features.find((reviewFeature) => reviewFeature.id === 'm2-f4')?.scopedReviewCheckpointIds).toEqual(['checkout']);
     expect(existsSync(join(melosDir, 'reviews', 'm2-f1.json'))).toBe(true);
     expect(existsSync(join(melosDir, 'reviews', 'm2-f4.json'))).toBe(true);
     expect(existsSync(join(melosDir, 'reviews', 'm2-f5.json'))).toBe(true);
+  });
+
+  it('reruns only code review when review follow-up does not request product rerun', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-code-only-rerun-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Code-only rerun mission\n', 'utf-8');
+
+    const planned = createMissionPlan({
+      missionId: 'code-only-rerun',
+      goal: 'Prefer code rerun unless manager asks for product rerun',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['product rerun is added only when needed'],
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          { id: 'checkout', description: 'Checkout flow satisfies the PRD', visual: true },
+          { id: 'seo-head-signals', description: 'SEO head signals match the PRD', visual: false },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Implementation',
+          description: 'Build the feature',
+          order: 1,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Implement the feature',
+              kind: 'implementation',
+              status: 'pending',
+              attempts: 0,
+              model: 'codex',
+            },
+          ],
+        },
+        {
+          id: 'm2',
+          title: 'Final Review',
+          description: 'Run final product review and code review',
+          order: 2,
+          status: 'pending',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm2-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+            {
+              id: 'm2-f2',
+              description: 'Run final code review',
+              kind: 'review',
+              reviewType: 'code',
+              reviewGeneration: 1,
+              status: 'pending',
+              attempts: 0,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'planning',
+    });
+    writeFileSync(missionPath, `${JSON.stringify(planned, null, 2)}\n`, 'utf-8');
+
+    jest.spyOn(ManagerAgent.prototype, 'generateMissionPlan').mockResolvedValue(planned);
+    jest.spyOn(ManagerAgent.prototype, 'generateFeatureBriefing').mockResolvedValue('briefing');
+    jest.spyOn(ManagerAgent.prototype, 'generateReviewFollowUpFeatures')
+      .mockResolvedValue([
+        {
+          description: 'Fix the checkout tests and implementation',
+          trackingKey: 'checkout-flow',
+          priority: 'high',
+          model: 'codex-latest',
+        },
+      ]);
+    const workerRun = jest.spyOn(WorkerAgent.prototype, 'run');
+    workerRun
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 1,
+          milestoneId: 'm1',
+          featureId: 'm1-f1',
+          status: 'SUCCESS',
+          summary: 'implementation complete',
+          warnings: [],
+          filesChanged: [],
+          validation: { testsRun: true, testsPassed: 1, testsFailed: 0, lintPassed: true, typecheckPassed: true },
+          checks: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 2,
+          milestoneId: 'm2',
+          featureId: 'm2-f1',
+          status: 'SUCCESS',
+          summary: 'product review found blockers',
+          warnings: [],
+          filesChanged: [],
+          validation: { testsRun: false, testsPassed: 0, testsFailed: 0, lintPassed: false, typecheckPassed: false },
+          checks: [],
+          review: {
+            reviewType: 'product',
+            generation: 1,
+            passed: false,
+            summary: 'product review found blockers',
+            findings: [
+              {
+                id: 'product-finding-1',
+                reviewType: 'product',
+                priority: 'P2',
+                summary: 'Checkout contract is broken',
+                rationale: 'Fix is needed before sign-off.',
+                trackingKey: 'checkout-flow',
+                surface: 'checkout',
+              },
+            ],
+            artifacts: [],
+          },
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 3,
+          milestoneId: 'm2',
+          featureId: 'm2-f3',
+          status: 'SUCCESS',
+          summary: 'remediation complete',
+          warnings: [],
+          filesChanged: [],
+          validation: { testsRun: true, testsPassed: 1, testsFailed: 0, lintPassed: true, typecheckPassed: true },
+          checks: [],
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      })
+      .mockResolvedValueOnce({
+        type: 'success',
+        report: {
+          iteration: 4,
+          milestoneId: 'm2',
+          featureId: 'm2-f4',
+          status: 'SUCCESS',
+          summary: 'code review passed after remediation',
+          warnings: [],
+          filesChanged: [],
+          validation: { testsRun: false, testsPassed: 0, testsFailed: 0, lintPassed: false, typecheckPassed: false },
+          checks: [],
+          review: {
+            reviewType: 'code',
+            generation: 2,
+            passed: true,
+            summary: 'code review passed after remediation',
+            findings: [],
+            artifacts: [],
+          },
+          learnings: [],
+          requestsHelp: false,
+          createdAt: new Date().toISOString(),
+        },
+      });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 10,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+
+    const result = await orchestrator.run();
+
+    expect(result.success).toBe(true);
+    expect(workerRun.mock.calls.map(([input]) => input.feature.id)).toEqual(['m1-f1', 'm2-f1', 'm2-f3', 'm2-f4']);
+
+    const persisted = JSON.parse(readFileSync(missionPath, 'utf-8')) as MissionPlan;
+    const finalReviewMilestone = persisted.milestones.find((milestone) => milestone.id === 'm2');
+    expect(finalReviewMilestone?.features.map((feature) => ({
+      id: feature.id,
+      reviewType: feature.reviewType,
+      status: feature.status,
+      scopedReviewCheckpointIds: feature.scopedReviewCheckpointIds,
+    }))).toEqual([
+      { id: 'm2-f1', reviewType: 'product', status: 'done', scopedReviewCheckpointIds: undefined },
+      { id: 'm2-f2', reviewType: 'code', status: 'skipped', scopedReviewCheckpointIds: undefined },
+      { id: 'm2-f3', reviewType: undefined, status: 'done', scopedReviewCheckpointIds: undefined },
+      { id: 'm2-f4', reviewType: 'code', status: 'done', scopedReviewCheckpointIds: undefined },
+    ]);
   });
 
   it('continues with remediation follow-ups when a product review returns BLOCKED with actionable findings', async () => {
@@ -815,7 +1039,6 @@ describe('Orchestrator v0.8', () => {
       { id: 'm1-f2', status: 'skipped', kind: 'review' },
       { id: 'm1-f3', status: 'pending', kind: 'review_remediation' },
       { id: 'm1-f4', status: 'pending', kind: 'review' },
-      { id: 'm1-f5', status: 'pending', kind: 'review' },
     ]);
     expect(missionPlan.milestones[0]?.features[2]?.trackingKey).toBe('product-review-runtime-missing-cable-and-ml');
     expect(reviewFollowUps).toHaveBeenCalledWith(expect.objectContaining({
@@ -1580,7 +1803,6 @@ describe('Orchestrator v0.8', () => {
       { id: 'm1-f2', status: 'skipped', kind: 'review' },
       { id: 'm1-f3', status: 'pending', kind: 'review_remediation' },
       { id: 'm1-f4', status: 'pending', kind: 'review' },
-      { id: 'm1-f5', status: 'pending', kind: 'review' },
     ]);
     expect(missionPlan.milestones[0]?.features[2]?.trackingKey).toBe('locale-redirects-post-method-leak');
 

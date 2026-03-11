@@ -495,15 +495,20 @@ export class ManagerAgent implements Agent {
       'Group related findings by root cause or surface area.',
       'Do not create review tasks. Create only implementation/remediation features.',
       'Use a small number of meaningful features instead of one feature per finding.',
+      'Assume code review rerun is always required after remediation.',
+      'Add product review rerun only when the fix changes a user-visible or core product experience.',
+      'When product review rerun is needed, limit it to the impacted productReviewContract checkpoints instead of rerunning the full product review.',
       'Return JSON array only.',
       '',
       `Milestone ID: ${input.milestoneId}`,
       `Review generation: ${input.generation}`,
+      'Available product review checkpoints:',
+      JSON.stringify(input.missionPlan.productReviewContract?.checkpoints.map((checkpoint) => checkpoint.id) ?? [], null, 2),
       'Findings:',
       JSON.stringify(input.findings, null, 2),
       '',
       'Schema:',
-      '[{"description":"...","trackingKey":"stable-root-cause-key","priority":"high|medium|low","rationale":"...","model":"codex-latest|claude-latest|explicit-model"}]',
+      '[{"description":"...","trackingKey":"stable-root-cause-key","priority":"high|medium|low","rationale":"...","rerunReviewTypes":["code","product"],"affectedProductCheckpoints":["checkpoint-id"],"model":"codex-latest|claude-latest|explicit-model"}]',
     ].join('\n');
 
     const result = await this.executeWithConfiguredEngine(prompt, 'high', {
@@ -937,7 +942,10 @@ function buildFeatureBriefing(input: ManagerInput): string {
   }
 
   if (feature.kind === 'review') {
-    const contract = input.missionPlan.productReviewContract;
+    const contract = selectScopedProductReviewContract(
+      input.missionPlan.productReviewContract,
+      feature.scopedReviewCheckpointIds
+    );
     const checkpoints = contract?.checkpoints.map((checkpoint) => checkpoint.description) ?? [];
     const objectiveLines = [
       `${feature.id} ${feature.description} を実行し、final review を判定する。`,
@@ -956,6 +964,9 @@ function buildFeatureBriefing(input: ManagerInput): string {
       feature.reviewType === 'product'
         ? 'product review では interactive browser verification が前提。js_repl / Playwright / startup 条件が満たせない場合は BLOCKED にする。'
         : 'code review では PRD を満たさない実装や regression risk を P1/P2/P3 で分類する。',
+      feature.reviewType === 'product' && (feature.scopedReviewCheckpointIds?.length ?? 0) > 0
+        ? `今回の product rerun は ${feature.scopedReviewCheckpointIds?.join(', ')} に限定する。`
+        : null,
       feature.attempts > 0
         ? '再試行 review なので、前 generation の findings が解消されているかを重点確認する。'
         : null,
@@ -1021,6 +1032,23 @@ function buildFeatureBriefing(input: ManagerInput): string {
     '## Risks',
     ...toBulletItems(riskLines, '大きな追加リスクは現時点で未検出。').map((line) => `- ${line}`),
   ].join('\n');
+}
+
+function selectScopedProductReviewContract(
+  contract: ProductReviewContract | undefined,
+  scopedCheckpointIds: string[] | undefined
+): ProductReviewContract | undefined {
+  if (!contract || !scopedCheckpointIds || scopedCheckpointIds.length === 0) {
+    return contract;
+  }
+  const checkpoints = contract.checkpoints.filter((checkpoint) => scopedCheckpointIds.includes(checkpoint.id));
+  if (checkpoints.length === 0) {
+    return contract;
+  }
+  return {
+    ...contract,
+    checkpoints,
+  };
 }
 
 function getValidationFocusLinesForFeature(
@@ -1234,6 +1262,11 @@ function mergeFollowUpDrafts(drafts: FollowUpFeatureDraft[]): FollowUpFeatureDra
       trackingKey,
       priority: pickHigherPriority(existing.priority, draft.priority),
       affectedChecks: Array.from(new Set([...(existing.affectedChecks ?? []), ...(draft.affectedChecks ?? [])])),
+      rerunReviewTypes: mergeReviewRerunTypes(existing.rerunReviewTypes, draft.rerunReviewTypes),
+      affectedProductCheckpoints: Array.from(new Set([
+        ...(existing.affectedProductCheckpoints ?? []),
+        ...(draft.affectedProductCheckpoints ?? []),
+      ])),
       rationale: pickMoreSpecificDescription(existing.rationale, draft.rationale),
       model: chooseDraftModel(existing.model, draft.model),
     });
@@ -1795,6 +1828,8 @@ function normalizeReviewFollowUpDrafts(
       description,
       trackingKey,
       priority: priority === 'high' || priority === 'low' ? priority : 'medium',
+      rerunReviewTypes: normalizeReviewRerunTypes(record.rerunReviewTypes, findings),
+      affectedProductCheckpoints: normalizeAffectedProductCheckpoints(record.affectedProductCheckpoints, findings),
       rationale: toNonEmptyString(record.rationale) ?? undefined,
       model: resolveFeatureModel(
         typeof record.model === 'string' ? record.model : undefined,
@@ -1824,6 +1859,8 @@ function fallbackReviewFollowUpFeatures(findings: ReviewFinding[]): FollowUpFeat
     description: synthesizeReviewFollowUpDescription(groupedFindings, trackingKey) ?? `Address ${trackingKey.replace(/[-_]+/g, ' ')}`,
     trackingKey,
     priority: index === 0 ? 'high' : 'medium',
+    rerunReviewTypes: ['code'],
+    affectedProductCheckpoints: normalizeAffectedProductCheckpoints(undefined, groupedFindings),
     rationale: groupedFindings[0]?.rationale,
     model: CODEX_LATEST_ALIAS,
   }));
@@ -1834,6 +1871,44 @@ function deriveTrackingKeyFromReviewFinding(finding: ReviewFinding | undefined):
     return null;
   }
   return deriveTrackingKeyFromText(finding.trackingKey ?? finding.surface ?? finding.summary);
+}
+
+function normalizeReviewRerunTypes(
+  value: unknown,
+  _findings: ReviewFinding[]
+): ReviewType[] {
+  const requested = Array.isArray(value)
+    ? value.filter((entry): entry is ReviewType => entry === 'product' || entry === 'code')
+    : [];
+  return Array.from(new Set(['code', ...requested]))
+    .filter((entry): entry is ReviewType => entry === 'code' || entry === 'product');
+}
+
+function normalizeAffectedProductCheckpoints(
+  value: unknown,
+  findings: ReviewFinding[]
+): string[] {
+  const explicit = Array.isArray(value)
+    ? value
+      .map((entry) => toNonEmptyString(entry))
+      .filter((entry): entry is string => Boolean(entry))
+    : [];
+  if (explicit.length > 0) {
+    return Array.from(new Set(explicit));
+  }
+  return Array.from(new Set(
+    findings
+      .map((finding) => finding.surface?.trim())
+      .filter((surface): surface is string => Boolean(surface) && surface !== 'final-review-evidence')
+  ));
+}
+
+function mergeReviewRerunTypes(
+  left: ReviewType[] | undefined,
+  right: ReviewType[] | undefined
+): ReviewType[] {
+  return Array.from(new Set(['code', ...(left ?? []), ...(right ?? [])]))
+    .filter((entry): entry is ReviewType => entry === 'code' || entry === 'product');
 }
 
 function synthesizeReviewFollowUpDescription(

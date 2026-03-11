@@ -106,6 +106,8 @@ export interface FollowUpFeatureDraft {
   trackingKey?: string;
   priority: 'high' | 'medium' | 'low';
   affectedChecks?: string[];
+  rerunReviewTypes?: ReviewType[];
+  affectedProductCheckpoints?: string[];
   rationale?: string;
   model?: string;
   waivedReason?: string;

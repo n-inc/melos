@@ -68,6 +68,7 @@ export interface Feature {
   qaPhase?: QaPhase;
   reviewType?: ReviewType;
   reviewGeneration?: number;
+  scopedReviewCheckpointIds?: string[];
   status: FeatureStatus;
   model?: string;
   attempts: number;
@@ -558,6 +559,7 @@ function normalizeFeature(feature: unknown, fallbackId?: string, baseDir?: strin
     ?? normalizeFeatureModel(rawFeature.requestedModel)
     ?? normalizeFeatureModel(rawFeature.effectiveModel)
     ?? normalizeFeatureModel(rawFeature.resolvedModel);
+  const scopedReviewCheckpointIds = normalizeStringList(rawFeature.scopedReviewCheckpointIds);
   return {
     id: normalizedId,
     description: synthesizeFeatureDescription(rawFeature, {
@@ -572,6 +574,7 @@ function normalizeFeature(feature: unknown, fallbackId?: string, baseDir?: strin
     qaPhase: normalizeQaPhase(rawFeature.qaPhase, normalizeFeatureKind(rawFeature.kind, reviewType)),
     reviewType,
     reviewGeneration: normalizeReviewGeneration(rawFeature.reviewGeneration),
+    scopedReviewCheckpointIds: scopedReviewCheckpointIds.length > 0 ? scopedReviewCheckpointIds : undefined,
     status: normalizeFeatureStatus(rawFeature.status),
     model,
     attempts: normalizeNonNegativeInteger(rawFeature.attempts),

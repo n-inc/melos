@@ -2739,6 +2739,7 @@ export class Orchestrator {
           description: `Address blocking ${reviewReport.reviewType} review findings`,
           trackingKey: `final-review-${reviewReport.reviewType}-g${reviewReport.generation}`,
           model: CODEX_LATEST_ALIAS,
+          rerunReviewTypes: ['code'],
         }]
     );
 
@@ -2812,7 +2813,10 @@ export class Orchestrator {
       return reviewReport;
     }
 
-    const contract = this.requireMissionPlan().productReviewContract;
+    const contract = selectScopedProductReviewContract(
+      this.requireMissionPlan().productReviewContract,
+      feature.scopedReviewCheckpointIds
+    );
     if (!contract) {
       return reviewReport;
     }
@@ -2876,6 +2880,8 @@ export class Orchestrator {
       description: string;
       trackingKey?: string;
       model?: string;
+      rerunReviewTypes?: Array<'product' | 'code'>;
+      affectedProductCheckpoints?: string[];
     }>
   ): {
     plan: MissionPlan;
@@ -2911,7 +2917,13 @@ export class Orchestrator {
     });
 
     const updatedFeatures: Feature[] = [];
-    const appendDrafts: Array<{ description: string; trackingKey?: string; model?: string }> = [];
+    const appendDrafts: Array<{
+      description: string;
+      trackingKey?: string;
+      model?: string;
+      rerunReviewTypes?: Array<'product' | 'code'>;
+      affectedProductCheckpoints?: string[];
+    }> = [];
     for (const draft of followUps) {
       const trackingKey = draft.trackingKey?.trim();
       const matchIndex = trackingKey
@@ -2937,6 +2949,8 @@ export class Orchestrator {
         description: draft.description,
         trackingKey,
         model: normalizeModelName(draft.model) ?? CODEX_LATEST_ALIAS,
+        rerunReviewTypes: draft.rerunReviewTypes,
+        affectedProductCheckpoints: draft.affectedProductCheckpoints,
       });
     }
 
@@ -2963,22 +2977,33 @@ export class Orchestrator {
     }
 
     const nextGeneration = currentGeneration + 1;
+    const rerunReviewTypes = Array.from(new Set([
+      'code',
+      ...appendDrafts.flatMap((draft) => draft.rerunReviewTypes ?? []),
+    ])).filter((entry): entry is 'product' | 'code' => entry === 'product' || entry === 'code');
+    const affectedProductCheckpoints = Array.from(new Set(
+      appendDrafts.flatMap((draft) => draft.affectedProductCheckpoints ?? [])
+    ));
     const milestoneForReviews = nextPlan.milestones.find((item) => item.id === milestoneId);
     const reviewBaseCount = milestoneForReviews?.features.length ?? 0;
-    const addedReviewFeatures: Feature[] = [
-      {
-        id: `${milestoneId}-f${reviewBaseCount + 1}`,
-        description: 'Re-run final product review after remediation',
+    const addedReviewFeatures: Feature[] = [];
+    if (rerunReviewTypes.includes('product')) {
+      addedReviewFeatures.push({
+        id: `${milestoneId}-f${reviewBaseCount + addedReviewFeatures.length + 1}`,
+        description: 'Re-run scoped final product review after remediation',
         cwd: feature.cwd,
         kind: 'review',
         reviewType: 'product',
         reviewGeneration: nextGeneration,
+        scopedReviewCheckpointIds: affectedProductCheckpoints.length > 0 ? affectedProductCheckpoints : undefined,
         status: 'pending',
         attempts: 0,
         model: CODEX_LATEST_ALIAS,
-      },
-      {
-        id: `${milestoneId}-f${reviewBaseCount + 2}`,
+      });
+    }
+    if (rerunReviewTypes.includes('code')) {
+      addedReviewFeatures.push({
+        id: `${milestoneId}-f${reviewBaseCount + addedReviewFeatures.length + 1}`,
         description: 'Re-run final code review after remediation',
         kind: 'review',
         reviewType: 'code',
@@ -2986,8 +3011,8 @@ export class Orchestrator {
         status: 'pending',
         attempts: 0,
         model: CODEX_LATEST_ALIAS,
-      },
-    ];
+      });
+    }
     nextPlan = appendFeaturesToMilestone(nextPlan, milestoneId, addedReviewFeatures);
 
     return {
@@ -4201,6 +4226,23 @@ function hasNonEmptyValue(value: string | undefined): value is string {
 
 function hasAnyValue(pathValue?: string, urlValue?: string): boolean {
   return hasNonEmptyValue(pathValue) || hasNonEmptyValue(urlValue);
+}
+
+function selectScopedProductReviewContract(
+  contract: MissionPlan['productReviewContract'],
+  scopedCheckpointIds: string[] | undefined
+): MissionPlan['productReviewContract'] {
+  if (!contract || !scopedCheckpointIds || scopedCheckpointIds.length === 0) {
+    return contract;
+  }
+  const checkpoints = contract.checkpoints.filter((checkpoint) => scopedCheckpointIds.includes(checkpoint.id));
+  if (checkpoints.length === 0) {
+    return contract;
+  }
+  return {
+    ...contract,
+    checkpoints,
+  };
 }
 
 type FeatureModelSource = 'explicit' | 'default';

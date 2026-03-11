@@ -672,6 +672,12 @@ describe('WorkerAgent', () => {
             visual: true,
             evidenceMode: 'single',
           },
+          {
+            id: 'seo-head-signals',
+            description: 'Verify SEO head signals',
+            visual: false,
+            evidenceMode: 'single',
+          },
         ],
         artifactsDir: 'artifacts/screenshots',
       },
@@ -693,6 +699,7 @@ describe('WorkerAgent', () => {
               kind: 'review',
               reviewType: 'product',
               reviewGeneration: 1,
+              scopedReviewCheckpointIds: ['root-dispatcher'],
               status: 'pending',
               attempts: 0,
               model: 'codex-latest',
@@ -721,6 +728,8 @@ describe('WorkerAgent', () => {
     expect(prompt).toContain('For every visual checkpoint, capture at least one `after` screenshot');
     expect(prompt).toContain('every screenshot/video should include the matching `checkpointId` and `phase`');
     expect(prompt).toContain('Only omit `checkpointResults` when you return `BLOCKED` before the review could start.');
+    expect(prompt).toContain('root-dispatcher');
+    expect(prompt).not.toContain('Verify SEO head signals');
     expect(options?.enabledFeatures).toEqual(['js_repl']);
   });
 

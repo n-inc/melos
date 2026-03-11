@@ -657,7 +657,19 @@ export class WorkerAgent implements Agent {
   }
 
   private resolveProductReviewContract(input: WorkerInput): ProductReviewContract | undefined {
-    return input.missionPlan.productReviewContract;
+    const contract = input.missionPlan.productReviewContract;
+    const scopedCheckpointIds = input.feature.scopedReviewCheckpointIds;
+    if (!contract || !scopedCheckpointIds || scopedCheckpointIds.length === 0) {
+      return contract;
+    }
+    const checkpoints = contract.checkpoints.filter((checkpoint) => scopedCheckpointIds.includes(checkpoint.id));
+    if (checkpoints.length === 0) {
+      return contract;
+    }
+    return {
+      ...contract,
+      checkpoints,
+    };
   }
 
   private resolveSkillPath(skillId: string): string {
