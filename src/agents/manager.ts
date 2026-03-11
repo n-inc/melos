@@ -7,12 +7,12 @@ import {
   type AppServerEngineOptions,
 } from '../engines/app-server.js';
 import type { EngineResult } from '../engines/base.js';
-import type { MissionPlan } from '../state/mission.js';
+import type { Feature, MissionPlan } from '../state/mission.js';
 import {
   createMissionPlan,
   ensurePullRequestFollowUpMilestone,
 } from '../state/mission.js';
-import type { ProductReviewContract, ReviewFinding, ReviewType } from '../state/review.js';
+import type { ProductReviewContract, ReviewDecision, ReviewFinding, ReviewType } from '../state/review.js';
 import { normalizeProductReviewContract } from '../state/review.js';
 import type {
   ValidationArtifact,
@@ -39,6 +39,7 @@ import type {
   AgentMode,
   FollowUpFeatureDraft,
   ManagerInput,
+  ReviewDispositionDraft,
   SteerResult,
 } from './types.js';
 
@@ -529,6 +530,68 @@ export class ManagerAgent implements Agent {
     const drafts = normalizeReviewFollowUpDrafts(parsed, input.findings);
     if (drafts.length === 0) {
       return fallbackReviewFollowUpFeatures(input.findings);
+    }
+
+    return drafts;
+  }
+
+  async decideReviewDisposition(input: {
+    milestoneId: string;
+    reviewType: ReviewType;
+    generation: number;
+    findings: ReviewFinding[];
+    missionPlan: MissionPlan;
+    onAgentMessageDelta?: (chunk: string) => void;
+    onCommandOutputDelta?: (chunk: string) => void;
+    onAppServerEvent?: (method: string, params: unknown) => void;
+  }): Promise<ReviewDispositionDraft[]> {
+    if (input.findings.length === 0) {
+      return [];
+    }
+
+    const prompt = [
+      'You are a technical manager.',
+      `Decide how Melos should handle blocking findings from a failed ${input.reviewType} final review.`,
+      'The reviewer may propose a classification, but that proposal is advisory only. Manager decides.',
+      'For each finding, choose exactly one decision:',
+      '- remediate: create follow-up implementation work and rerun review',
+      '- accept_deviation: implementation is better than the PRD or the tradeoff is acceptable; do not create remediation for this finding',
+      '- handoff_gap: do not create remediation; record the gap in HANDOFF for the user',
+      'Use accept_deviation only when the implementation should be preferred over the PRD.',
+      'Use handoff_gap when the PRD remains unmet or constrained and the user should be told explicitly.',
+      'Return JSON array only.',
+      '',
+      `Milestone ID: ${input.milestoneId}`,
+      `Review generation: ${input.generation}`,
+      'Mission constraints:',
+      JSON.stringify(input.missionPlan.mission.constraints, null, 2),
+      'Success criteria:',
+      JSON.stringify(input.missionPlan.mission.successCriteria, null, 2),
+      'Findings:',
+      JSON.stringify(input.findings, null, 2),
+      '',
+      'Schema:',
+      '[{"findingId":"review-finding-id","decision":"remediate|accept_deviation|handoff_gap","rationale":"why"}]',
+    ].join('\n');
+
+    const result = await this.executeWithConfiguredEngine(prompt, 'high', {
+      onAgentMessageDelta: input.onAgentMessageDelta,
+      onCommandOutputDelta: input.onCommandOutputDelta,
+      onAppServerEvent: input.onAppServerEvent,
+    });
+
+    if (!result.success) {
+      return fallbackReviewDispositionDrafts(input.findings);
+    }
+
+    const parsed = this.parseJsonArray(result.output);
+    if (!parsed) {
+      return fallbackReviewDispositionDrafts(input.findings);
+    }
+
+    const drafts = normalizeReviewDispositionDrafts(parsed, input.findings);
+    if (drafts.length === 0) {
+      return fallbackReviewDispositionDrafts(input.findings);
     }
 
     return drafts;
@@ -1841,6 +1904,35 @@ function normalizeReviewFollowUpDrafts(
   return mergeFollowUpDrafts(drafts);
 }
 
+function normalizeReviewDispositionDrafts(
+  candidates: unknown[],
+  findings: ReviewFinding[]
+): ReviewDispositionDraft[] {
+  const findingIds = new Set(findings.map((finding) => finding.id));
+  const drafts: ReviewDispositionDraft[] = [];
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      continue;
+    }
+
+    const record = candidate as Record<string, unknown>;
+    const findingId = toNonEmptyString(record.findingId);
+    const decision = normalizeReviewDecision(record.decision);
+    const rationale = toNonEmptyString(record.rationale);
+    if (!findingId || !decision || !rationale || !findingIds.has(findingId)) {
+      continue;
+    }
+
+    drafts.push({ findingId, decision, rationale });
+  }
+
+  return findings.map((finding) =>
+    drafts.find((draft) => draft.findingId === finding.id)
+    ?? fallbackReviewDispositionDraft(finding)
+  );
+}
+
 function fallbackReviewFollowUpFeatures(findings: ReviewFinding[]): FollowUpFeatureDraft[] {
   const buckets = new Map<string, ReviewFinding[]>();
   for (const finding of findings) {
@@ -1866,6 +1958,18 @@ function fallbackReviewFollowUpFeatures(findings: ReviewFinding[]): FollowUpFeat
   }));
 }
 
+function fallbackReviewDispositionDrafts(findings: ReviewFinding[]): ReviewDispositionDraft[] {
+  return findings.map((finding) => fallbackReviewDispositionDraft(finding));
+}
+
+function fallbackReviewDispositionDraft(finding: ReviewFinding): ReviewDispositionDraft {
+  return {
+    findingId: finding.id,
+    decision: 'remediate',
+    rationale: 'Defaulting to remediation because no explicit manager decision was available.',
+  };
+}
+
 function deriveTrackingKeyFromReviewFinding(finding: ReviewFinding | undefined): string | null {
   if (!finding) {
     return null;
@@ -1882,6 +1986,12 @@ function normalizeReviewRerunTypes(
     : [];
   return Array.from(new Set(['code', ...requested]))
     .filter((entry): entry is ReviewType => entry === 'code' || entry === 'product');
+}
+
+function normalizeReviewDecision(value: unknown): ReviewDecision | null {
+  return value === 'remediate' || value === 'accept_deviation' || value === 'handoff_gap'
+    ? value
+    : null;
 }
 
 function normalizeAffectedProductCheckpoints(

@@ -31,7 +31,10 @@ export {
 export {
   type ReviewType,
   type ReviewFindingPriority,
+  type ReviewFindingClassification,
+  type ReviewDecision,
   type ReviewFinding,
+  type ReviewDecisionRecord,
   type ReviewArtifact,
   type ProductReviewCheckpoint,
   type ProductReviewStartupStep,

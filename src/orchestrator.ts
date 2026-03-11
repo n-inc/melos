@@ -33,10 +33,13 @@ import { resolveFeatureExecutionCwd } from './state/execution-cwd.js';
 import {
   type ProductReviewContract,
   type ProductReviewCheckpointResult,
+  type ReviewDecisionRecord,
+  type ReviewFinding,
   type ReviewReport,
   isBlockingReviewFinding,
 } from './state/review.js';
 import {
+  type ValidationArtifact,
   type ValidationCheck,
   type ValidationReport,
   type ValidationCheckResult,
@@ -143,6 +146,7 @@ interface RuntimeState {
   latestValidationReport: ValidationReport | null;
   latestWorkerReport: WorkerFeatureReport | null;
   latestReviewReport: ReviewReport | null;
+  reviewDecisions: ReviewDecisionRecord[];
   gitStrategy: GitStrategyState | null;
   startedAt: Date;
 }
@@ -268,6 +272,7 @@ export class Orchestrator {
       latestValidationReport: null,
       latestWorkerReport: null,
       latestReviewReport: null,
+      reviewDecisions: [],
       gitStrategy: config.gitStrategy?.enabled
         ? createGitStrategyState({
           missionId: config.gitStrategy.missionId,
@@ -653,6 +658,7 @@ export class Orchestrator {
 
     this.state.latestValidationReport = this.kernelState.latestValidationReport ?? null;
     this.state.latestReviewReport = this.kernelState.latestReviewReport ?? null;
+    this.state.reviewDecisions = this.kernelState.reviewDecisions ?? [];
     this.kernelState.missionPlan = this.state.missionPlan ?? null;
     this.kernelState.gitStrategy = this.state.gitStrategy;
     await this.emitStatusUpdate();
@@ -2708,11 +2714,74 @@ export class Orchestrator {
       return;
     }
 
-    const followUps = await this.manager.generateReviewFollowUpFeatures({
+    const dispositionDrafts = await this.manager.decideReviewDisposition({
       milestoneId: milestone.id,
       reviewType: reviewReport.reviewType,
       generation: reviewReport.generation,
       findings: actionableBlockingFindings,
+      missionPlan,
+      onAppServerEvent: (method, params) => {
+        const detail = formatAgentEventDetail(method, params);
+        if (!detail) {
+          return;
+        }
+        this.emitEvent('manager_decision', 'manager', {
+          action: 'review_disposition_planning',
+          milestoneId: milestone.id,
+          featureId: feature.id,
+          message: detail,
+        });
+      },
+    });
+    const decisionRecords = actionableBlockingFindings.map((finding) =>
+      createReviewDecisionRecord(
+        finding,
+        reviewReport.reviewType,
+        reviewReport.generation,
+        dispositionDrafts.find((draft) => draft.findingId === finding.id)
+      )
+    );
+    this.state.reviewDecisions = upsertReviewDecisionRecords(this.state.reviewDecisions, decisionRecords);
+    this.kernelState.reviewDecisions = this.state.reviewDecisions;
+    for (const decision of decisionRecords) {
+      this.emitEvent('manager_decision', 'manager', {
+        action: 'review_finding_decision',
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        reviewType: reviewReport.reviewType,
+        generation: reviewReport.generation,
+        message: `${decision.findingId}: ${decision.decision} (${decision.rationale})`,
+      });
+    }
+    const remediationFindings = actionableBlockingFindings.filter((finding) =>
+      decisionRecords.find((decision) => decision.findingId === finding.id)?.decision === 'remediate'
+    );
+    const nonRemediationDecisions = decisionRecords.filter((decision) => decision.decision !== 'remediate');
+
+    if (remediationFindings.length === 0) {
+      missionPlan = updateFeatureStatus(missionPlan, milestone.id, feature.id, 'done');
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('iteration_completed', 'orchestrator', {
+        iteration: missionPlan.totalIterations,
+        milestoneId: milestone.id,
+        featureId: feature.id,
+        status: 'done',
+      });
+      this.activityLabel = [
+        `${formatReviewLabel(feature)} closed by manager decision.`,
+        summarizeReviewDecisions(nonRemediationDecisions),
+      ].join(' ');
+      await this.persistMissionPlan();
+      await this.emitStatusUpdate();
+      return;
+    }
+
+    const followUps = await this.manager.generateReviewFollowUpFeatures({
+      milestoneId: milestone.id,
+      reviewType: reviewReport.reviewType,
+      generation: reviewReport.generation,
+      findings: remediationFindings,
       missionPlan,
       onAppServerEvent: (method, params) => {
         const detail = formatAgentEventDetail(method, params);
@@ -2772,10 +2841,12 @@ export class Orchestrator {
     }
 
     const addedRemediations = followUpResult.addedFeatures.length + followUpResult.updatedFeatures.length;
+    const decisionSummary = summarizeReviewDecisions(nonRemediationDecisions);
     this.activityLabel = [
-      `${formatReviewLabel(feature)} failed with ${actionableBlockingFindings.length} actionable blocking finding${actionableBlockingFindings.length === 1 ? '' : 's'}.`,
+      `${formatReviewLabel(feature)} failed with ${remediationFindings.length} remediation finding${remediationFindings.length === 1 ? '' : 's'}.`,
       `Added ${addedRemediations} remediation feature${addedRemediations === 1 ? '' : 's'} and scheduled ${followUpResult.addedReviewFeatures.length} review reruns.`,
-    ].join(' ');
+      decisionSummary.length > 0 ? decisionSummary : '',
+    ].filter((line) => line.length > 0).join(' ');
     await this.persistMissionPlan();
     await this.emitStatusUpdate();
   }
@@ -3617,6 +3688,7 @@ export class Orchestrator {
 
   private async persistRuntimeState(): Promise<void> {
     this.kernelState.gitStrategy = this.state.gitStrategy;
+    this.kernelState.reviewDecisions = this.state.reviewDecisions;
     this.recordAllowedProtectedRuntimeWrite(join(this.config.melosDir, 'state.json'));
     await saveSnapshot(this.config.melosDir, {
       seq: this.eventLog.getCurrentSeq(),
@@ -3670,6 +3742,12 @@ export class Orchestrator {
     const warnings = uniqueRuntimeWarnings(this.kernelState.warnings ?? [])
       .map((warning) => `- ${formatRuntimeWarningRecord(warning)}`);
     const latestReview = this.state.latestReviewReport;
+    const acceptedDeviations = this.state.reviewDecisions
+      .filter((decision) => decision.decision === 'accept_deviation')
+      .map((decision) => `- ${formatReviewDecisionRecord(decision)}`);
+    const handoffGaps = this.state.reviewDecisions
+      .filter((decision) => decision.decision === 'handoff_gap')
+      .map((decision) => `- ${formatReviewDecisionRecord(decision)}`);
     const reviewLines = latestReview
       ? [
         `Last review: ${latestReview.reviewType} g${latestReview.generation} (${latestReview.passed ? 'passed' : 'failed'})`,
@@ -3709,6 +3787,14 @@ export class Orchestrator {
       '## Final Review',
       '',
       ...reviewLines,
+      '',
+      '## Accepted Deviations',
+      '',
+      ...(acceptedDeviations.length > 0 ? acceptedDeviations : ['- none']),
+      '',
+      '## PRD Gaps To Share',
+      '',
+      ...(handoffGaps.length > 0 ? handoffGaps : ['- none']),
       '',
       '## Git / Pull Request',
       '',
@@ -4986,6 +5072,11 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
       .map((retry) => normalizeStoredFeatureRetry(retry))
       .filter((retry): retry is FeatureRetryRecord => retry !== null)
     : [];
+  const reviewDecisions = Array.isArray(kernel.reviewDecisions)
+    ? kernel.reviewDecisions
+      .map((decision) => normalizeStoredReviewDecision(decision))
+      .filter((decision): decision is ReviewDecisionRecord => decision !== null)
+    : [];
 
   return {
     ...base,
@@ -4997,6 +5088,7 @@ function normalizeKernelState(kernel: MissionKernelState): MissionKernelState {
     warnings,
     validationEvidence,
     latestValidationReport: kernel.latestValidationReport ?? null,
+    reviewDecisions,
     featureRetries,
     currentActor: kernel.currentActor ?? 'idle',
   };
@@ -5055,6 +5147,39 @@ function normalizeStoredFeatureRetry(value: unknown): FeatureRetryRecord | null 
     summary: typeof record.summary === 'string' && record.summary.trim().length > 0
       ? record.summary.trim()
       : undefined,
+  };
+}
+
+function normalizeStoredReviewDecision(value: unknown): ReviewDecisionRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const findingId = typeof record.findingId === 'string' ? record.findingId.trim() : '';
+  const reviewType = record.reviewType === 'product' || record.reviewType === 'code' ? record.reviewType : null;
+  const summary = typeof record.summary === 'string' ? record.summary.trim() : '';
+  const rationale = typeof record.rationale === 'string' ? record.rationale.trim() : '';
+  const decision = record.decision === 'remediate' || record.decision === 'accept_deviation' || record.decision === 'handoff_gap'
+    ? record.decision
+    : null;
+  if (!findingId || !reviewType || !summary || !rationale || !decision) {
+    return null;
+  }
+
+  return {
+    findingId,
+    reviewType,
+    generation: typeof record.generation === 'number' ? Math.max(1, Math.floor(record.generation)) : 1,
+    summary,
+    trackingKey: typeof record.trackingKey === 'string' && record.trackingKey.trim().length > 0
+      ? record.trackingKey.trim()
+      : undefined,
+    classification: record.classification === 'bug' || record.classification === 'unimplementable' || record.classification === 'better_than_prd'
+      ? record.classification
+      : undefined,
+    decision,
+    rationale,
   };
 }
 
@@ -5130,4 +5255,74 @@ function uniqueRuntimeWarnings(
   }
 
   return next;
+}
+
+function createReviewDecisionRecord(
+  finding: ReviewReport['findings'][number],
+  reviewType: ReviewReport['reviewType'],
+  generation: number,
+  draft?: { decision: 'remediate' | 'accept_deviation' | 'handoff_gap'; rationale: string }
+): ReviewDecisionRecord {
+  return {
+    findingId: finding.id,
+    reviewType,
+    generation,
+    summary: finding.summary,
+    trackingKey: finding.trackingKey,
+    classification: finding.classification,
+    decision: draft?.decision ?? 'remediate',
+    rationale: draft?.rationale ?? 'Defaulting to remediation because no explicit manager decision was recorded.',
+  };
+}
+
+function upsertReviewDecisionRecords(
+  existing: ReviewDecisionRecord[],
+  incoming: ReviewDecisionRecord[]
+): ReviewDecisionRecord[] {
+  const next = [...existing];
+  for (const decision of incoming) {
+    const matchIndex = next.findIndex((item) =>
+      item.findingId === decision.findingId
+      && item.reviewType === decision.reviewType
+      && item.generation === decision.generation
+    );
+    if (matchIndex >= 0) {
+      next[matchIndex] = decision;
+      continue;
+    }
+    next.push(decision);
+  }
+  return next;
+}
+
+function summarizeReviewDecisions(decisions: ReviewDecisionRecord[]): string {
+  if (decisions.length === 0) {
+    return '';
+  }
+  const accepted = decisions.filter((decision) => decision.decision === 'accept_deviation').length;
+  const handoff = decisions.filter((decision) => decision.decision === 'handoff_gap').length;
+  const parts: string[] = [];
+  if (accepted > 0) {
+    parts.push(`${accepted} accepted deviation${accepted === 1 ? '' : 's'}`);
+  }
+  if (handoff > 0) {
+    parts.push(`${handoff} handoff gap${handoff === 1 ? '' : 's'}`);
+  }
+  return parts.length > 0 ? `Manager recorded ${parts.join(' and ')}.` : '';
+}
+
+function formatReviewDecisionRecord(decision: ReviewDecisionRecord): string {
+  const segments = [
+    `${decision.reviewType} review g${decision.generation}`,
+    decision.summary,
+    `decision=${decision.decision}`,
+  ];
+  if (decision.classification) {
+    segments.push(`classification=${decision.classification}`);
+  }
+  if (decision.trackingKey) {
+    segments.push(`trackingKey=${decision.trackingKey}`);
+  }
+  segments.push(`rationale=${decision.rationale}`);
+  return segments.join(' | ');
 }

@@ -32,6 +32,11 @@ This review is Codex-only. You must use the Codex app-server with `js_repl` enab
 - Prefer a small number of precise findings over noisy lists.
 - Each finding should point to a root cause or user-visible surface when possible.
 - Do not claim success without actually exercising the browser flows.
+- You may add an advisory `classification` for each finding:
+  - `bug`: the implementation should be fixed
+  - `unimplementable`: the PRD cannot be met cleanly under current constraints
+  - `better_than_prd`: the implementation appears preferable to the PRD
+- `classification` is advisory only. Do not treat it as final approval.
 
 ## Artifact rules
 
@@ -61,7 +66,9 @@ The JSON must match this shape:
       "suggestedFix": "What to change",
       "trackingKey": "stable-root-cause-key",
       "surface": "checkout-flow",
-      "affectedFiles": ["src/app.tsx"]
+      "affectedFiles": ["src/app.tsx"],
+      "classification": "bug",
+      "classificationRationale": "Why this should be fixed or treated as a deviation"
     }
   ],
   "artifacts": [

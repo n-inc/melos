@@ -3,6 +3,7 @@ import type { ValidationCheckResult, ValidationReport } from '../state/validatio
 import type {
   ProductReviewCheckpointResult,
   ReviewArtifact,
+  ReviewDecision,
   ReviewFinding,
   ReviewType,
 } from '../state/review.js';
@@ -111,6 +112,12 @@ export interface FollowUpFeatureDraft {
   rationale?: string;
   model?: string;
   waivedReason?: string;
+}
+
+export interface ReviewDispositionDraft {
+  findingId: string;
+  decision: ReviewDecision;
+  rationale: string;
 }
 
 export interface Agent {

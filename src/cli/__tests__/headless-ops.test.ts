@@ -258,6 +258,8 @@ describe('cli headless operations', () => {
     await saveMissionPlan(missionPath, mission);
 
     await saveSnapshot(join(rootDir, '.melos'), {
+      seq: 0,
+      savedAt: new Date().toISOString(),
       state: {
         kernel: {
           missionPlan: mission,

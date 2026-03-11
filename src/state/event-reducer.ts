@@ -1,7 +1,7 @@
 import type { MissionPlan } from './mission.js';
 import type { MissionEvent } from './events.js';
 import type { GitStrategyState } from './git-strategy.js';
-import type { ReviewReport } from './review.js';
+import type { ReviewDecisionRecord, ReviewReport } from './review.js';
 import type { ValidationEvidenceMap, ValidationReport } from './validation.js';
 import { normalizeLogMessage, type LogActor, type UnifiedLogEntry } from './log-entry.js';
 
@@ -55,6 +55,7 @@ export interface MissionKernelState {
   validationEvidence?: ValidationEvidenceMap;
   latestValidationReport?: ValidationReport | null;
   latestReviewReport?: ReviewReport | null;
+  reviewDecisions?: ReviewDecisionRecord[];
   featureRetries?: FeatureRetryRecord[];
 }
 
@@ -73,6 +74,7 @@ export function createInitialKernelState(): MissionKernelState {
     validationEvidence: {},
     latestValidationReport: null,
     latestReviewReport: null,
+    reviewDecisions: [],
     featureRetries: [],
   };
 }

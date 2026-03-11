@@ -6,6 +6,8 @@ import type {
 
 export type ReviewType = 'product' | 'code';
 export type ReviewFindingPriority = 'P1' | 'P2' | 'P3';
+export type ReviewFindingClassification = 'bug' | 'unimplementable' | 'better_than_prd';
+export type ReviewDecision = 'remediate' | 'accept_deviation' | 'handoff_gap';
 
 export interface ReviewFinding {
   id: string;
@@ -17,6 +19,19 @@ export interface ReviewFinding {
   suggestedFix?: string;
   trackingKey?: string;
   surface?: string;
+  classification?: ReviewFindingClassification;
+  classificationRationale?: string;
+}
+
+export interface ReviewDecisionRecord {
+  findingId: string;
+  reviewType: ReviewType;
+  generation: number;
+  summary: string;
+  trackingKey?: string;
+  classification?: ReviewFindingClassification;
+  decision: ReviewDecision;
+  rationale: string;
 }
 
 export interface ReviewArtifact {
@@ -143,6 +158,8 @@ export function normalizeReviewFinding(
     suggestedFix: asTrimmedString(record.suggestedFix) || undefined,
     trackingKey: asTrimmedString(record.trackingKey) || undefined,
     surface: asTrimmedString(record.surface) || undefined,
+    classification: normalizeReviewFindingClassification(record.classification),
+    classificationRationale: asTrimmedString(record.classificationRationale) || undefined,
   };
 }
 
@@ -278,6 +295,13 @@ function normalizeReviewFindingPriority(value: unknown): ReviewFindingPriority {
     return normalized;
   }
   return 'P2';
+}
+
+function normalizeReviewFindingClassification(value: unknown): ReviewFindingClassification | undefined {
+  if (value === 'bug' || value === 'unimplementable' || value === 'better_than_prd') {
+    return value;
+  }
+  return undefined;
 }
 
 function normalizeStringList(value: unknown): string[] {

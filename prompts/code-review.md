@@ -24,6 +24,11 @@ Review the final implementation against the PRD, the manager briefing, and the c
 - `P3` is non-blocking.
 - Call out missing requirement coverage, broken contracts, unsafe assumptions, regression risks, and major testing gaps.
 - Do not invent issues. If there are no blocking findings, return success with an empty findings array.
+- You may add an advisory `classification` for each finding:
+  - `bug`: the implementation should be fixed
+  - `unimplementable`: the PRD cannot be met cleanly under current constraints
+  - `better_than_prd`: the implementation appears preferable to the PRD
+- `classification` is advisory only. Final acceptance is a manager decision.
 
 ## Output
 
@@ -43,7 +48,9 @@ Return exactly one fenced `json` block.
       "suggestedFix": "What should change",
       "trackingKey": "stable-root-cause-key",
       "surface": "api-contract",
-      "affectedFiles": ["src/server.ts"]
+      "affectedFiles": ["src/server.ts"],
+      "classification": "bug",
+      "classificationRationale": "Why this should be fixed or treated as a deviation"
     }
   ],
   "artifacts": [],

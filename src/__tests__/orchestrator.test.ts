@@ -16,6 +16,16 @@ import type { ValidationCheckResult } from '../state/validation.js';
 import type { MissionControlState } from '../ui/tui-views.js';
 
 describe('Orchestrator v0.8', () => {
+  beforeEach(() => {
+    jest.spyOn(ManagerAgent.prototype, 'decideReviewDisposition').mockImplementation(async ({ findings }) =>
+      findings.map((finding) => ({
+        findingId: finding.id,
+        decision: 'remediate',
+        rationale: 'default test decision',
+      }))
+    );
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
   });
@@ -187,10 +197,10 @@ describe('Orchestrator v0.8', () => {
       productReviewContract: {
         target: 'http://127.0.0.1:${PORT}',
         preconditions: ['js_repl enabled', 'playwright importable'],
+        artifactsDir: 'artifacts/screenshots',
         checkpoints: [
           { id: 'hero', description: 'Hero flow satisfies the PRD', visual: true },
         ],
-        artifactsDir: 'artifacts/screenshots',
       },
       milestones: [
         {
@@ -1303,6 +1313,7 @@ describe('Orchestrator v0.8', () => {
       productReviewContract: {
         target: 'http://127.0.0.1:${PORT}',
         preconditions: ['js_repl enabled', 'playwright importable'],
+        artifactsDir: 'artifacts/screenshots',
         checkpoints: [
           {
             id: 'seo-head-signals',
@@ -1311,7 +1322,6 @@ describe('Orchestrator v0.8', () => {
             evidenceMode: 'single',
           },
         ],
-        artifactsDir: 'artifacts/screenshots',
       },
       milestones: [
         {
@@ -1407,6 +1417,7 @@ describe('Orchestrator v0.8', () => {
       productReviewContract: {
         target: 'http://127.0.0.1:${PORT}',
         preconditions: ['js_repl enabled', 'playwright importable'],
+        artifactsDir: 'artifacts/screenshots',
         checkpoints: [
           {
             id: 'root-dispatcher',
@@ -1414,7 +1425,6 @@ describe('Orchestrator v0.8', () => {
             visual: true,
           },
         ],
-        artifactsDir: 'artifacts/screenshots',
       },
       milestones: [
         {
@@ -1543,6 +1553,7 @@ describe('Orchestrator v0.8', () => {
       productReviewContract: {
         target: 'http://127.0.0.1:${PORT}',
         preconditions: ['js_repl enabled', 'playwright importable'],
+        artifactsDir: 'artifacts/screenshots',
         checkpoints: [
           {
             id: 'seo-head-signals',
@@ -1937,6 +1948,166 @@ describe('Orchestrator v0.8', () => {
         }),
       }),
     ]));
+  });
+
+  it('lets manager accept deviations or handoff gaps without generating review remediation', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-review-decision-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Review decision mission\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'review-decision',
+      goal: 'Allow manager-owned review decisions',
+      constraints: ['Tests may pass even when PRD deviations must be handed off'],
+      successCriteria: ['Manager can stop remediation loops and preserve handoff context'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Final Review',
+          description: 'Run final code review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Run final code review',
+              kind: 'review',
+              reviewType: 'code',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    jest.spyOn(ManagerAgent.prototype, 'decideReviewDisposition').mockResolvedValue([
+      {
+        findingId: 'code-finding-1',
+        decision: 'accept_deviation',
+        rationale: 'The implementation is safer than the PRD and should be kept.',
+      },
+      {
+        findingId: 'code-finding-2',
+        decision: 'handoff_gap',
+        rationale: 'The remaining PRD gap should be explained to the user instead of retried.',
+      },
+    ]);
+    const reviewFollowUps = jest.spyOn(ManagerAgent.prototype, 'generateReviewFollowUpFeatures');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 8,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null; reviewDecisions: Array<{ decision: string; summary: string }> };
+      kernelState: { missionPlan: MissionPlan | null };
+      handleReviewFeatureResult: (
+        milestone: MissionPlan['milestones'][number],
+        feature: MissionPlan['milestones'][number]['features'][number],
+        result: {
+          type: 'success';
+          report: WorkerFeatureReport;
+        }
+      ) => Promise<void>;
+      writeHandoff: () => Promise<string>;
+    };
+    orchestratorAny.state.missionPlan = {
+      ...runningPlan,
+      activeMilestoneId: 'm1',
+      activeFeatureId: 'm1-f1',
+    };
+    orchestratorAny.kernelState.missionPlan = orchestratorAny.state.missionPlan;
+
+    const milestone = orchestratorAny.state.missionPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    await orchestratorAny.handleReviewFeatureResult(milestone, feature, {
+      type: 'success',
+      report: {
+        iteration: 1,
+        milestoneId: 'm1',
+        featureId: 'm1-f1',
+        status: 'SUCCESS',
+        summary: 'review identified one acceptable deviation and one handoff gap',
+        warnings: [],
+        filesChanged: [],
+        validation: {
+          testsRun: false,
+          testsPassed: 0,
+          testsFailed: 0,
+          lintPassed: false,
+          typecheckPassed: false,
+        },
+        checks: [],
+        review: {
+          reviewType: 'code',
+          generation: 1,
+          passed: false,
+          summary: 'review identified one acceptable deviation and one handoff gap',
+          findings: [
+            {
+              id: 'code-finding-1',
+              reviewType: 'code',
+              priority: 'P2',
+              summary: 'Current implementation is better than the original PRD routing split',
+              trackingKey: 'better-routing-split',
+              classification: 'better_than_prd',
+              classificationRationale: 'The reviewed implementation removes duplication and is safer to keep.',
+            },
+            {
+              id: 'code-finding-2',
+              reviewType: 'code',
+              priority: 'P2',
+              summary: 'One PRD edge case remains intentionally unsupported',
+              trackingKey: 'remaining-prd-gap',
+              classification: 'unimplementable',
+              classificationRationale: 'Framework limitations prevent this edge case from being implemented cleanly.',
+            },
+          ],
+          artifacts: [],
+        },
+        learnings: [],
+        requestsHelp: false,
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    expect(reviewFollowUps).not.toHaveBeenCalled();
+    expect(orchestratorAny.state.missionPlan?.milestones[0]?.features[0]?.status).toBe('done');
+    expect(orchestratorAny.state.reviewDecisions).toEqual([
+      expect.objectContaining({
+        findingId: 'code-finding-1',
+        decision: 'accept_deviation',
+      }),
+      expect.objectContaining({
+        findingId: 'code-finding-2',
+        decision: 'handoff_gap',
+      }),
+    ]);
+
+    const handoff = await orchestratorAny.writeHandoff();
+    expect(handoff).toContain('## Accepted Deviations');
+    expect(handoff).toContain('better-routing-split');
+    expect(handoff).toContain('## PRD Gaps To Share');
+    expect(handoff).toContain('remaining-prd-gap');
   });
 
   it('fails browser validation when worker does not report browser evidence', async () => {
