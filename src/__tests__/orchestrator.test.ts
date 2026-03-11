@@ -1062,6 +1062,110 @@ describe('Orchestrator v0.8', () => {
     ]);
   });
 
+  it('does not require screenshots for non-visual product review checkpoints', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-product-review-nonvisual-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Product review non visual\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'product-review-nonvisual',
+      goal: 'Non-visual checkpoints should not require screenshots by default',
+      constraints: [],
+      successCriteria: ['non-visual checkpoints pass evidence completeness without screenshots'],
+      productReviewContract: {
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          {
+            id: 'seo-head-signals',
+            description: 'Verify canonical and hreflang output',
+            visual: false,
+            evidenceMode: 'single',
+          },
+        ],
+        artifactsDir: 'artifacts/screenshots',
+      },
+      milestones: [
+        {
+          id: 'm3',
+          title: 'Final Review',
+          description: 'Run final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm3-f1',
+              description: 'Run final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 4,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null; validationEvidence?: Record<string, Record<string, ValidationCheckResult>> };
+      enforceProductReviewEvidenceContract: (
+        milestoneId: string,
+        feature: MissionPlan['milestones'][number]['features'][number],
+        reviewReport: ReviewReport
+      ) => ReviewReport;
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+    orchestratorAny.kernelState.validationEvidence = {};
+
+    const milestone = runningPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    const enforced = orchestratorAny.enforceProductReviewEvidenceContract('m3', feature, {
+      milestoneId: 'm3',
+      featureId: 'm3-f1',
+      reviewType: 'product',
+      generation: 1,
+      timestamp: new Date().toISOString(),
+      passed: true,
+      summary: 'product review passed',
+      findings: [],
+      artifacts: [],
+      checkpointResults: [
+        {
+          checkpointId: 'seo-head-signals',
+          passed: true,
+          afterObserved: 'canonical and hreflang matched the dispatcher policy',
+        },
+      ],
+      blockingFindingCount: 0,
+    });
+
+    expect(enforced.findings).toEqual([]);
+    expect(enforced.passed).toBe(true);
+  });
+
   it('does not add evidence completeness findings when a product review is already blocked', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-product-review-blocked-'));
     const melosDir = join(cwd, '.melos');

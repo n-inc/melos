@@ -4111,7 +4111,7 @@ function evaluateProductReviewCheckpointResults(
 
   for (const checkpoint of contract.checkpoints) {
     const evidenceMode = checkpoint.evidenceMode ?? (checkpoint.reproduceBefore ? 'before_after' : 'single');
-    const requiredArtifacts = checkpoint.requiredArtifacts ?? ['screenshot'];
+    const requiredArtifacts = resolveProductReviewRequiredArtifacts(checkpoint);
     const checkpointArtifacts = artifacts.filter((artifact) => artifact.checkpointId === checkpoint.id);
     const checkpointResult = resultsById.get(checkpoint.id);
     const baselineEvidence = evidenceByCheckId[checkpoint.id];
@@ -4180,6 +4180,15 @@ function evaluateProductReviewCheckpointResults(
   }
 
   return Array.from(new Set(failures));
+}
+
+function resolveProductReviewRequiredArtifacts(
+  checkpoint: ProductReviewContract['checkpoints'][number]
+): ValidationArtifact[] {
+  if (checkpoint.requiredArtifacts && checkpoint.requiredArtifacts.length > 0) {
+    return checkpoint.requiredArtifacts;
+  }
+  return checkpoint.visual === false ? [] : ['screenshot'];
 }
 
 function resolveArtifactPath(cwd: string, artifactPath: string): string {
