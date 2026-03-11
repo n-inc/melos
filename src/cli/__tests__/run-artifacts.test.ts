@@ -112,7 +112,7 @@ describe('cli run artifacts', () => {
     expect(existsSync(runPath)).toBe(false);
   });
 
-  it('prints the final state after auto-resuming an aborted mission', async () => {
+  it('treats an aborted mission with no remaining work as completed and refuses to auto-resume', async () => {
     const prdPath = join(rootDir, 'PRD.md');
     const taskPath = join(rootDir, 'TASK.json');
     writeFileSync(prdPath, '# Auto resume mission\n', 'utf-8');
@@ -156,24 +156,21 @@ describe('cli run artifacts', () => {
     }) as typeof process.stderr.write;
 
     try {
-      await executeWithOptions(
+      await expect(executeWithOptions(
         {
           plain: true,
           dryRun: true,
           autoApprove: true,
         },
         { resume: false }
-      );
+      )).rejects.toThrow('TASK.json は終了状態 (completed) のため、そのままでは新規ミッションを開始しません。');
     } finally {
       process.stderr.write = originalWrite;
     }
 
+    expect(stderrOutput.join('')).toBe('');
     const savedMission = await loadMissionPlan(taskPath);
-    expect(savedMission.state).toBe('completed');
-
-    const combinedOutput = stderrOutput.join('');
-    expect(combinedOutput).toContain('TASK.json の状態 aborted を検出したため、自動で再開モードに切り替えます。');
-    expect(combinedOutput).toContain('起動時点では state=aborted でしたが、自動再開後の最終状態は state=completed です');
+    expect(savedMission.state).toBe('aborted');
   });
 
   it('starts from RunSpec input without PRD.md and records run identity in events', async () => {

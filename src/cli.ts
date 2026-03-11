@@ -1242,12 +1242,13 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
     ].join('\n'));
   }
 
-  if (!ARCHIVE_ON_RUN_STATES.has(missionPlan.state)) {
+  const effectiveState = resolveTerminalMissionStateForRun(missionPlan);
+  if (!effectiveState || !ARCHIVE_ON_RUN_STATES.has(effectiveState)) {
     return messages;
   }
   throw new Error([
-    `TASK.json は終了状態 (${missionPlan.state}) のため、そのままでは新規ミッションを開始しません。`,
-    buildTerminalStateGuidance(missionPlan.state),
+    `TASK.json は終了状態 (${effectiveState}) のため、そのままでは新規ミッションを開始しません。`,
+    buildTerminalStateGuidance(effectiveState),
   ].join('\n'));
 }
 
@@ -1257,10 +1258,27 @@ export async function detectResumableMissionState(missionFilePath: string): Prom
   }
   try {
     const missionPlan = await loadMissionPlan(missionFilePath);
-    return AUTO_RESUME_ON_RUN_STATES.has(missionPlan.state) ? missionPlan.state : null;
+    const effectiveState = resolveTerminalMissionStateForRun(missionPlan) ?? missionPlan.state;
+    return AUTO_RESUME_ON_RUN_STATES.has(effectiveState) ? effectiveState : null;
   } catch {
     return null;
   }
+}
+
+function resolveTerminalMissionStateForRun(missionPlan: MissionPlan): MissionState | null {
+  if (missionPlan.state === 'aborted' || missionPlan.state === 'paused') {
+    const totalFeatures = missionPlan.milestones.reduce((sum, milestone) => sum + milestone.features.length, 0);
+    if (totalFeatures > 0) {
+      const completedFeatures = missionPlan.milestones.reduce(
+        (sum, milestone) => sum + milestone.features.filter((feature) => feature.status === 'done' || feature.status === 'skipped').length,
+        0
+      );
+      if (completedFeatures === totalFeatures) {
+        return 'completed';
+      }
+    }
+  }
+  return missionPlan.state;
 }
 
 function buildTerminalStateGuidance(state: MissionState): string {
