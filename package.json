@@ -1,6 +1,6 @@
 {
   "name": "@n-inc/melos",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Autonomous agent loop system",
   "license": "MIT",
   "type": "module",

@@ -490,6 +490,8 @@ export class WorkerAgent implements Agent {
       '- Complete the feature-local implementation and any checks directly required by this feature.',
       '- Milestone-level validation and dedicated QA are orchestrator-owned downstream steps; do not treat unexecuted milestone QA as a feature failure here.',
       '- Do not add warnings only to say dedicated QA was not run, `expected=no_match` may exit non-zero, unrelated existing repo warnings remain, or no commit was created for a no-op result.',
+      '- If the issue is already fixed in the current tree, set `resultKind` to `verified_existing` instead of pretending you implemented a new fix.',
+      '- If the blocker is really spec/fixture/evidence/tooling rather than app code, report `resultKind` as `contract_gap` or `tooling_gap` and set `changeScope` accurately.',
     ];
 
     if (this.shouldIncludeCommitWorkflow(input)) {
@@ -510,6 +512,9 @@ export class WorkerAgent implements Agent {
       '## Output JSON Schema',
       JSON.stringify({
         status: 'SUCCESS',
+        resultKind: 'implemented',
+        changeScope: 'tracked',
+        problemKeys: ['stable-root-cause'],
         summary: 'what was done',
         filesChanged: [{ path: 'src/file.ts', additions: 10, deletions: 2 }],
         validation: {
@@ -713,6 +718,9 @@ export class WorkerAgent implements Agent {
         const requirementNotes = [
           check.requiredRunner ? `runner=${check.requiredRunner}` : null,
           check.requiredArtifacts?.length ? `artifacts=${check.requiredArtifacts.join(',')}` : null,
+          check.artifactNames?.length ? `artifactNames=${check.artifactNames.join(',')}` : null,
+          check.preconditions?.length ? `preconditions=${check.preconditions.join(' | ')}` : null,
+          check.deterministicInputs?.length ? `deterministicInputs=${check.deterministicInputs.join(' | ')}` : null,
           check.evidenceMode ? `evidenceMode=${check.evidenceMode}` : null,
           check.reproduceBefore ? 'reproduceBefore=true' : null,
         ].filter((item): item is string => Boolean(item));
@@ -764,6 +772,22 @@ export class WorkerAgent implements Agent {
         parsedStructuredReport = true;
         if (parsed.status) {
           report.status = parsed.status;
+        }
+        if (parsed.resultKind === 'implemented'
+          || parsed.resultKind === 'verified_existing'
+          || parsed.resultKind === 'contract_gap'
+          || parsed.resultKind === 'tooling_gap'
+          || parsed.resultKind === 'env_blocked') {
+          report.resultKind = parsed.resultKind;
+        }
+        if (parsed.changeScope === 'tracked'
+          || parsed.changeScope === 'untracked'
+          || parsed.changeScope === 'gitignored'
+          || parsed.changeScope === 'none') {
+          report.changeScope = parsed.changeScope;
+        }
+        if (Array.isArray(parsed.problemKeys)) {
+          report.problemKeys = parsed.problemKeys.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
         }
         if (typeof parsed.summary === 'string') {
           report.summary = parsed.summary;

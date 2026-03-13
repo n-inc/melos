@@ -307,6 +307,9 @@ describe('ManagerAgent', () => {
                   type: 'browser',
                   requiredRunner: 'playwright-interactive',
                   requiredArtifacts: ['screenshot'],
+                  artifactNames: ['artifacts/screenshots/m1-qa-1-after.png'],
+                  preconditions: ['seed content exists'],
+                  deterministicInputs: ['locale=en', 'viewport=1440x900'],
                 },
               ],
             },
@@ -323,6 +326,11 @@ describe('ManagerAgent', () => {
     });
 
     expect(plan.milestones[0]?.validationContract.qaChecks).toHaveLength(1);
+    expect(plan.milestones[0]?.validationContract.qaChecks?.[0]).toMatchObject({
+      artifactNames: ['artifacts/screenshots/m1-qa-1-after.png'],
+      preconditions: ['seed content exists'],
+      deterministicInputs: ['locale=en', 'viewport=1440x900'],
+    });
     expect(plan.milestones[0]?.features.at(-1)).toMatchObject({
       kind: 'qa',
       model: 'codex-latest',
@@ -547,6 +555,63 @@ describe('ManagerAgent', () => {
     expect(followUps[0]?.description).toContain('shared ts config mismatch');
   });
 
+  it('normalizes semantically similar follow-up keys to a shared canonical key', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4-codex',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+    };
+    jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: `\`\`\`json\n${JSON.stringify([
+        {
+          description: 'Align seeded review content with QA expectations',
+          trackingKey: 'learn-hub-seed-parity',
+          priority: 'high',
+          affectedChecks: ['m3-qa-hub'],
+        },
+        {
+          description: 'Fix fixture determinism for learn hub categories',
+          trackingKey: 'learn-content-fixture-parity',
+          priority: 'medium',
+          affectedChecks: ['m3-qa-hub'],
+        },
+      ])}\n\`\`\``,
+      exitCode: 0,
+    });
+
+    const followUps = await agent.generateFollowUpFeatures({
+      milestoneId: 'm3',
+      failures: [
+        {
+          checkId: 'm3-qa-hub',
+          passed: false,
+          failure: {
+            summary: 'Seed parity mismatch',
+            affectedFiles: ['src/learnArticles.ts'],
+            errorMessages: ['fixture determinism issue'],
+          },
+        },
+      ],
+      missionPlan: await agent.generateMissionPlan({
+        missionId: 'sample',
+        prd: '# Sample',
+      }),
+    });
+
+    expect(followUps).toHaveLength(1);
+    expect(followUps[0]?.trackingKey).toBe('learn-hub-fixture-determinism');
+  });
+
   it('fills missing follow-up descriptions from tracking data and merges duplicates', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
@@ -612,7 +677,7 @@ describe('ManagerAgent', () => {
     });
 
     expect(followUps).toHaveLength(1);
-    expect(followUps[0]).toEqual({
+    expect(followUps[0]).toMatchObject({
       decision: 'feature',
       description: 'Resolve flaky jest setup',
       trackingKey: 'shared-jest-root-cause',

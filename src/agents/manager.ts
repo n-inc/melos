@@ -26,6 +26,7 @@ import {
   normalizeValidationExpectedOutcome,
 } from '../state/validation.js';
 import type { CheckType } from '../state/validation.js';
+import { normalizeFollowUpProblemKey } from '../state/follow-up-key.js';
 import {
   CLAUDE_LATEST_ALIAS,
   CODEX_LATEST_ALIAS,
@@ -205,6 +206,9 @@ interface MissionPlanningOutput {
         type?: string;
         requiredRunner?: string;
         requiredArtifacts?: string[];
+        artifactNames?: string[];
+        preconditions?: string[];
+        deterministicInputs?: string[];
         evidenceMode?: ValidationEvidenceMode;
         reproduceBefore?: boolean;
       }>;
@@ -753,6 +757,9 @@ export class ManagerAgent implements Agent {
           command: check.command,
           requiredRunner: normalizeValidationRunner(check.requiredRunner),
           requiredArtifacts: normalizeValidationArtifacts(check.requiredArtifacts),
+          artifactNames: Array.isArray(check.artifactNames) ? check.artifactNames : undefined,
+          preconditions: Array.isArray(check.preconditions) ? check.preconditions : undefined,
+          deterministicInputs: Array.isArray(check.deterministicInputs) ? check.deterministicInputs : undefined,
           passed: false,
           failureCount: 0,
         })),
@@ -817,7 +824,7 @@ export class ManagerAgent implements Agent {
       'Return only valid JSON. Do not add prose outside JSON.',
       'Wrap output exactly with markers:',
       'BEGIN_MISSION_PLAN_JSON',
-      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true,"evidenceMode":"before_after","reproduceBefore":true,"requiredArtifacts":["screenshot"]}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"No legacy runtime references remain","type":"command","command":"rg -n \\"legacy_symbol\\" src","expectedOutcome":"no_match"}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"qaChecks":[{"id":"m1-qa-hero","description":"Open /settings/profile with playwright-interactive and verify the target state.","type":"browser","requiredRunner":"playwright-interactive","requiredArtifacts":["screenshot"],"evidenceMode":"before_after","reproduceBefore":true}]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
+      '{"goal":"...","constraints":["..."],"successCriteria":["..."],"productReviewContract":{"cwd":"frontend/apps/web","target":"http://127.0.0.1:${PORT}","startup":[{"cwd":"frontend/apps/web","command":"npm run dev"}],"preconditions":["js_repl must be enabled","playwright must be importable"],"checkpoints":[{"id":"hero","description":"Hero flow satisfies the PRD claim","claim":"hero CTA works","visual":true,"evidenceMode":"before_after","reproduceBefore":true,"requiredArtifacts":["screenshot"]}],"artifactsDir":"artifacts/screenshots"},"milestones":[{"id":"m1","title":"...","description":"...","validationContract":{"staticChecks":[{"id":"...","description":"No legacy runtime references remain","type":"command","command":"rg -n \\"legacy_symbol\\" src","expectedOutcome":"no_match"}],"testSuites":[{"id":"...","description":"...","type":"auto:test","command":"..."}],"qaChecks":[{"id":"m1-qa-hero","description":"Open /settings/profile with playwright-interactive and verify the target state.","type":"browser","requiredRunner":"playwright-interactive","requiredArtifacts":["screenshot"],"artifactNames":["artifacts/screenshots/m1-qa-hero-after.png"],"preconditions":["seed article pair exists"],"deterministicInputs":["locale=en","viewport=1440x900"],"evidenceMode":"before_after","reproduceBefore":true}]},"features":[{"id":"m1-f1","description":"...","model":"codex-latest","cwd":"frontend/apps/web"}]}]}',
       'END_MISSION_PLAN_JSON',
       '',
       'Constraints:',
@@ -834,6 +841,7 @@ export class ManagerAgent implements Agent {
       '- Feature IDs must follow mX-fY',
       '- Put interactive browser/manual/e2e verification in `validationContract.qaChecks`. Do not output dedicated qa features; Melos synthesizes baseline/after QA features automatically when qaChecks exist.',
       '- For user-visible changes, set structured evidence requirements on the relevant qaChecks instead of burying them only in prose. Use `evidenceMode: "before_after"` and `reproduceBefore: true` when a reproducible before/after comparison is required.',
+      '- When QA depends on specific fixtures, locales, or artifact paths, store them explicitly on the qaCheck via `artifactNames`, `preconditions`, and `deterministicInputs` instead of implying them in free-form prose.',
       '- Before evidence must be capturable before the first repo-tracked file edit; Melos inserts a baseline QA step for checks that set `evidenceMode: "before_after"` with `reproduceBefore: true`.',
       '- Use canonical artifact names when you describe QA expectations: `artifacts/screenshots/<qa-check-id>-before.png`, `artifacts/screenshots/<qa-check-id>-after.png`, `artifacts/videos/<qa-check-id>-before.webm`, and `artifacts/videos/<qa-check-id>-after.webm`.',
       '- Final product review checkpoints may also require structured evidence. Use `evidenceMode`, `reproduceBefore`, and `requiredArtifacts` on `productReviewContract.checkpoints` when sign-off needs a strict before/after comparison.',
@@ -1402,8 +1410,7 @@ function normalizeFollowUpTrackingKey(value: string | null | undefined): string 
   if (!value) {
     return undefined;
   }
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : undefined;
+  return normalizeFollowUpProblemKey(value);
 }
 
 function synthesizeFollowUpDescription(input: {
@@ -2164,6 +2171,9 @@ function normalizeQaValidationChecks(
     type?: string;
     requiredRunner?: ValidationRunner;
     requiredArtifacts?: ValidationArtifact[];
+    artifactNames?: string[];
+    preconditions?: string[];
+    deterministicInputs?: string[];
     evidenceMode?: ValidationEvidenceMode;
     reproduceBefore?: boolean;
   }> = [];
@@ -2187,6 +2197,9 @@ function normalizeQaValidationChecks(
       command: normalizeValidationCommand(command),
       requiredRunner: normalizeValidationRunner(record.requiredRunner),
       requiredArtifacts: normalizeValidationArtifacts(record.requiredArtifacts),
+      artifactNames: toStringArray(record.artifactNames),
+      preconditions: toStringArray(record.preconditions),
+      deterministicInputs: toStringArray(record.deterministicInputs),
       evidenceMode: normalizeValidationEvidenceMode(record.evidenceMode, record.reproduceBefore),
       reproduceBefore: normalizeValidationEvidenceMode(record.evidenceMode, record.reproduceBefore) === 'before_after'
         ? record.reproduceBefore === true

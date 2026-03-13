@@ -23,6 +23,7 @@ import {
   areMilestoneFeaturesDone,
   setActiveMilestone,
   setActiveFeature,
+  updateFeature,
   updateFeatureStatus,
   updateFeatureModel,
   updateMilestoneStatus,
@@ -61,6 +62,7 @@ import {
   runGitCommand,
 } from './state/git.js';
 import { EventLog } from './state/events.js';
+import { normalizeFollowUpProblemKey } from './state/follow-up-key.js';
 import {
   replayMissionEvents,
   reduceMissionEvent,
@@ -965,20 +967,33 @@ export class Orchestrator {
     this.state.latestWorkerReport = result.report;
     this.recordValidationEvidence(updatedMilestone.id, result.report.checks);
     this.emitWorkerWarnings(updatedMilestone.id, updatedFeature.id, result.report.warnings);
+    const missionPlanWithExecution = this.recordFeatureExecution(
+      this.requireMissionPlan(),
+      updatedMilestone.id,
+      updatedFeature.id,
+      result.report
+    );
+    this.state.missionPlan = missionPlanWithExecution;
+    this.kernelState.missionPlan = missionPlanWithExecution;
+    const milestoneWithExecution = missionPlanWithExecution.milestones.find((milestone) => milestone.id === updatedMilestone.id);
+    const featureWithExecution = milestoneWithExecution?.features.find((feature) => feature.id === updatedFeature.id);
+    if (!milestoneWithExecution || !featureWithExecution) {
+      throw new Error(`Active feature context not found after execution: ${updatedMilestone.id}/${updatedFeature.id}`);
+    }
 
-    if (updatedFeature.kind === 'review') {
-      await this.handleReviewFeatureResult(updatedMilestone, updatedFeature, result);
+    if (featureWithExecution.kind === 'review') {
+      await this.handleReviewFeatureResult(milestoneWithExecution, featureWithExecution, result);
       return;
     }
-    if (updatedFeature.kind === 'qa') {
-      await this.handleQaFeatureResult(updatedMilestone, updatedFeature, result);
+    if (featureWithExecution.kind === 'qa') {
+      await this.handleQaFeatureResult(milestoneWithExecution, featureWithExecution, result);
       return;
     }
-    if (updatedFeature.kind === 'pull_request' || updatedFeature.kind === 'pr_followup') {
-      await this.handleOperationalFeatureResult(updatedMilestone, updatedFeature, result);
+    if (featureWithExecution.kind === 'pull_request' || featureWithExecution.kind === 'pr_followup') {
+      await this.handleOperationalFeatureResult(milestoneWithExecution, featureWithExecution, result);
       return;
     }
-    await this.handleImplementationFeatureResult(updatedMilestone, updatedFeature, result);
+    await this.handleImplementationFeatureResult(milestoneWithExecution, featureWithExecution, result);
   }
 
   private ignoreLateFeatureResultIfPaused(milestoneId: string, featureId: string): boolean {
@@ -1202,6 +1217,20 @@ export class Orchestrator {
 
     const followUpResult = this.applyValidationFollowUps(missionPlan, milestoneId, followUps);
     missionPlan = followUpResult.plan;
+    if (followUpResult.pauseReason) {
+      missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
+      missionPlan = setActiveMilestone(missionPlan, milestoneId);
+      missionPlan = setActiveFeature(missionPlan, null);
+      this.state.missionPlan = missionPlan;
+      this.kernelState.missionPlan = missionPlan;
+      this.emitEvent('manager_decision', 'orchestrator', {
+        action: 'validation_followup_exhausted',
+        milestoneId,
+        message: followUpResult.pauseReason,
+      });
+      this.pause('validation follow-up exhausted', followUpResult.pauseReason);
+      return;
+    }
     missionPlan = updateMilestoneStatus(missionPlan, milestoneId, 'in_progress');
     this.state.missionPlan = missionPlan;
     this.kernelState.missionPlan = missionPlan;
@@ -2259,7 +2288,7 @@ export class Orchestrator {
         summary: `feature execution failed: ${feature.description}`,
         affectedFiles: report.filesChanged.map((file) => file.path),
         errorMessages,
-        rootCause: report.failureContext?.signature ?? errorMessages[0] ?? report.status,
+        rootCause: this.deriveImplementationFailureTrackingKey(feature, report),
       },
     }];
   }
@@ -2268,8 +2297,16 @@ export class Orchestrator {
     feature: Feature,
     report: WorkerFeatureReport
   ): string {
-    return report.failureContext?.signature
+    const candidate = report.problemKeys?.find((item) => typeof item === 'string' && item.trim().length > 0)
+      ?? report.failureContext?.signature
+      ?? report.warnings[0]
+      ?? report.summary
       ?? `feature-failure-${feature.id}`;
+    const normalized = normalizeFollowUpProblemKey(candidate);
+    if (normalized) {
+      return normalized;
+    }
+    return `feature-failure-${feature.id}`;
   }
 
   private scheduleFeatureRetry(
@@ -2614,6 +2651,25 @@ export class Orchestrator {
         milestone.id === milestoneId ? update(milestone) : milestone
       ),
     };
+  }
+
+  private recordFeatureExecution(
+    missionPlan: MissionPlan,
+    milestoneId: string,
+    featureId: string,
+    report: WorkerFeatureReport
+  ): MissionPlan {
+    return updateFeature(missionPlan, milestoneId, featureId, (feature) => ({
+      ...feature,
+      lastExecution: {
+        status: report.status,
+        resultKind: report.resultKind,
+        changeScope: report.changeScope,
+        problemKeys: report.problemKeys,
+        filesChangedCount: report.filesChanged.length,
+        createdAt: report.createdAt,
+      },
+    }));
   }
 
   private async handleReviewFeatureResult(
@@ -3113,6 +3169,7 @@ export class Orchestrator {
     addedFeatures: Feature[];
     updatedFeatures: Feature[];
     waivedCheckIds: string[];
+    pauseReason?: string;
   } {
     const milestone = missionPlan.milestones.find((item) => item.id === milestoneId);
     if (!milestone || followUps.length === 0) {
@@ -3121,13 +3178,15 @@ export class Orchestrator {
         addedFeatures: [],
         updatedFeatures: [],
         waivedCheckIds: [],
+        pauseReason: undefined,
       };
     }
 
     const updatedFeatures: Feature[] = [];
     const features = milestone.features.map((feature) => ({ ...feature }));
-    const appendDrafts: Array<{ description: string; trackingKey?: string; model?: string }> = [];
+    const appendDrafts: Array<{ description: string; trackingKey?: string; model?: string; recoveryStage?: 'remediation_attempted' }> = [];
     const waivers = new Map<string, string>();
+    let pauseReason: string | undefined;
 
     for (const draft of followUps) {
       if (draft.decision === 'ignore') {
@@ -3149,6 +3208,38 @@ export class Orchestrator {
 
       if (matchIndex >= 0) {
         const existing = features[matchIndex];
+        const recoveryDecision = this.resolveValidationRecoveryDecision(milestone, features, existing, draft);
+        if (recoveryDecision?.type === 'rerun_qa') {
+          const recoveredFeature: Feature = {
+            ...existing,
+            recoveryStage: 'qa_rerun_attempted',
+          };
+          features[matchIndex] = recoveredFeature;
+          updatedFeatures.push(recoveredFeature);
+          const qaFeature = features[recoveryDecision.qaFeatureIndex];
+          if (qaFeature.status !== 'pending') {
+            const updatedQaFeature: Feature = {
+              ...qaFeature,
+              status: 'pending',
+            };
+            features[recoveryDecision.qaFeatureIndex] = updatedQaFeature;
+            updatedFeatures.push(updatedQaFeature);
+          }
+          continue;
+        }
+        if (recoveryDecision?.type === 'append_remediation') {
+          appendDrafts.push({
+            description: draft.description,
+            trackingKey,
+            model: normalizeModelName(draft.model) ?? existing.model ?? CODEX_LATEST_ALIAS,
+            recoveryStage: 'remediation_attempted',
+          });
+          continue;
+        }
+        if (recoveryDecision?.type === 'pause') {
+          pauseReason = recoveryDecision.message;
+          break;
+        }
         const shouldRequeueFailedMatch = options.requeueFailedMatches !== false || existing.status !== 'failed';
         const merged: Feature = {
           ...existing,
@@ -3228,12 +3319,23 @@ export class Orchestrator {
       validationContract,
     }));
 
+    if (pauseReason) {
+      return {
+        plan: nextPlan,
+        addedFeatures: [],
+        updatedFeatures,
+        waivedCheckIds: Array.from(new Set(waivedCheckIds)),
+        pauseReason,
+      };
+    }
+
     if (appendDrafts.length === 0) {
       return {
         plan: nextPlan,
         addedFeatures: [],
         updatedFeatures,
         waivedCheckIds: Array.from(new Set(waivedCheckIds)),
+        pauseReason,
       };
     }
 
@@ -3247,6 +3349,7 @@ export class Orchestrator {
       status: 'pending',
       attempts: 0,
       model: draft.model ?? CODEX_LATEST_ALIAS,
+      recoveryStage: draft.recoveryStage,
     }));
 
     nextPlan = appendFeaturesToMilestone(nextPlan, milestoneId, addedFeatures);
@@ -3255,13 +3358,80 @@ export class Orchestrator {
       addedFeatures,
       updatedFeatures,
       waivedCheckIds: Array.from(new Set(waivedCheckIds)),
+      pauseReason,
     };
   }
 
+  private resolveValidationRecoveryDecision(
+    milestone: Milestone,
+    features: Feature[],
+    existing: Feature,
+    draft: {
+      affectedChecks?: string[];
+      trackingKey?: string;
+      description: string;
+    }
+  ): { type: 'rerun_qa'; qaFeatureIndex: number } | { type: 'append_remediation' } | { type: 'pause'; message: string } | null {
+    if (!this.isValidationRecoveryCandidate(milestone, existing, draft.affectedChecks)) {
+      return null;
+    }
+
+    if (existing.recoveryStage === 'remediation_attempted') {
+      const affectedChecks = (draft.affectedChecks ?? []).join(', ') || 'the same QA checks';
+      return {
+        type: 'pause',
+        message: `${existing.id} already exhausted QA rerun and remediation, but ${affectedChecks} still failed after a no-op execution. Review the validation contract or runtime evidence before resuming.`,
+      };
+    }
+
+    if (existing.recoveryStage === 'qa_rerun_attempted') {
+      return { type: 'append_remediation' };
+    }
+
+    const qaFeatureIndex = features.findIndex((feature) => feature.kind === 'qa' && feature.qaPhase !== 'baseline');
+    if (qaFeatureIndex < 0) {
+      return { type: 'append_remediation' };
+    }
+
+    return {
+      type: 'rerun_qa',
+      qaFeatureIndex,
+    };
+  }
+
+  private isValidationRecoveryCandidate(
+    milestone: Milestone,
+    feature: Feature,
+    affectedChecks?: string[]
+  ): boolean {
+    if (feature.kind !== 'implementation' || feature.status !== 'done') {
+      return false;
+    }
+
+    const execution = feature.lastExecution;
+    if (!execution) {
+      return false;
+    }
+    const isNoOp = execution.resultKind === 'verified_existing' || execution.filesChangedCount === 0;
+    if (!isNoOp) {
+      return false;
+    }
+
+    const checkIds = affectedChecks ?? [];
+    if (checkIds.length === 0) {
+      return false;
+    }
+
+    const qaCheckIds = new Set((milestone.validationContract.qaChecks ?? []).map((check) => check.id));
+    return checkIds.every((checkId) => qaCheckIds.has(checkId));
+  }
+
   private findReusableFollowUpFeatureIndex(features: Feature[], trackingKey: string): number {
+    const normalizedTrackingKey = normalizeFollowUpProblemKey(trackingKey) ?? trackingKey;
     for (let index = features.length - 1; index >= 0; index -= 1) {
       const feature = features[index];
-      if (feature.trackingKey !== trackingKey) {
+      const normalizedFeatureKey = normalizeFollowUpProblemKey(feature.trackingKey) ?? feature.trackingKey;
+      if (normalizedFeatureKey !== normalizedTrackingKey) {
         continue;
       }
       if (feature.kind === 'qa' || feature.kind === 'review' || feature.kind === 'pull_request' || feature.kind === 'pr_followup') {

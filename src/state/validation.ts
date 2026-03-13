@@ -23,6 +23,9 @@ export interface ValidationCheck {
   waivedReason?: string;
   requiredRunner?: ValidationRunner;
   requiredArtifacts?: ValidationArtifact[];
+  artifactNames?: string[];
+  preconditions?: string[];
+  deterministicInputs?: string[];
   evidenceMode?: ValidationEvidenceMode;
   reproduceBefore?: boolean;
   passed: boolean;
@@ -158,6 +161,21 @@ export function normalizeValidationCheck(input: Partial<ValidationCheck>, index:
   const requiredArtifacts = Array.isArray(input.requiredArtifacts)
     ? input.requiredArtifacts.filter((artifact): artifact is ValidationArtifact => artifact === 'screenshot' || artifact === 'video')
     : [];
+  const artifactNames = Array.isArray(input.artifactNames)
+    ? input.artifactNames
+      .filter((name): name is string => typeof name === 'string' && name.trim().length > 0)
+      .map((name) => name.trim())
+    : [];
+  const preconditions = Array.isArray(input.preconditions)
+    ? input.preconditions
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.trim())
+    : [];
+  const deterministicInputs = Array.isArray(input.deterministicInputs)
+    ? input.deterministicInputs
+      .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      .map((item) => item.trim())
+    : [];
   const waivedReason = typeof input.waivedReason === 'string' && input.waivedReason.trim().length > 0
     ? input.waivedReason.trim()
     : undefined;
@@ -178,6 +196,9 @@ export function normalizeValidationCheck(input: Partial<ValidationCheck>, index:
       ? input.requiredRunner
       : undefined,
     requiredArtifacts: requiredArtifacts.length > 0 ? requiredArtifacts : undefined,
+    artifactNames: artifactNames.length > 0 ? artifactNames : undefined,
+    preconditions: preconditions.length > 0 ? preconditions : undefined,
+    deterministicInputs: deterministicInputs.length > 0 ? deterministicInputs : undefined,
     evidenceMode,
     reproduceBefore: evidenceMode === 'before_after' ? input.reproduceBefore === true : undefined,
     passed: waivedReason ? true : Boolean(input.passed),

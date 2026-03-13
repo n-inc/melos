@@ -19,6 +19,7 @@ export type MissionState =
 export type FeatureStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped';
 export type FeatureKind = 'implementation' | 'qa' | 'review' | 'review_remediation' | 'pull_request' | 'pr_followup';
 export type QaPhase = 'baseline' | 'after';
+export type FeatureRecoveryStage = 'qa_rerun_attempted' | 'remediation_attempted';
 export type MilestoneStatus =
   | 'pending'
   | 'in_progress'
@@ -31,6 +32,15 @@ export interface CheckItem {
   text: string;
   type?: string;
   passed?: boolean;
+}
+
+export interface FeatureLastExecution {
+  status: 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'BLOCKED';
+  resultKind?: 'implemented' | 'verified_existing' | 'contract_gap' | 'tooling_gap' | 'env_blocked';
+  changeScope?: 'tracked' | 'untracked' | 'gitignored' | 'none';
+  problemKeys?: string[];
+  filesChangedCount: number;
+  createdAt?: string;
 }
 
 export interface MissionPlan {
@@ -72,6 +82,8 @@ export interface Feature {
   status: FeatureStatus;
   model?: string;
   attempts: number;
+  lastExecution?: FeatureLastExecution;
+  recoveryStage?: FeatureRecoveryStage;
 }
 
 interface CreateMissionFeatureInput extends Omit<Feature, 'model' | 'kind' | 'qaPhase' | 'reviewType' | 'reviewGeneration'> {
@@ -265,29 +277,11 @@ export function updateFeatureStatus(
   status: FeatureStatus,
   options: { incrementAttempts?: boolean } = {}
 ): MissionPlan {
-  return {
-    ...plan,
-    milestones: plan.milestones.map((milestone) => {
-      if (milestone.id !== milestoneId) {
-        return milestone;
-      }
-      return {
-        ...milestone,
-        features: milestone.features.map((feature) => {
-          if (feature.id !== featureId) {
-            return feature;
-          }
-
-          const attempts = options.incrementAttempts ? feature.attempts + 1 : feature.attempts;
-          return {
-            ...feature,
-            status,
-            attempts,
-          };
-        }),
-      };
-    }),
-  };
+  return updateFeature(plan, milestoneId, featureId, (feature) => ({
+    ...feature,
+    status,
+    attempts: options.incrementAttempts ? feature.attempts + 1 : feature.attempts,
+  }));
 }
 
 export function updateFeatureModel(
@@ -295,6 +289,18 @@ export function updateFeatureModel(
   milestoneId: string,
   featureId: string,
   model: string | null
+): MissionPlan {
+  return updateFeature(plan, milestoneId, featureId, (feature) => ({
+    ...feature,
+    model: model ?? undefined,
+  }));
+}
+
+export function updateFeature(
+  plan: MissionPlan,
+  milestoneId: string,
+  featureId: string,
+  update: (feature: Feature) => Feature
 ): MissionPlan {
   return {
     ...plan,
@@ -308,10 +314,7 @@ export function updateFeatureModel(
           if (feature.id !== featureId) {
             return feature;
           }
-          return {
-            ...feature,
-            model: model ?? undefined,
-          };
+          return update(feature);
         }),
       };
     }),
@@ -578,6 +581,8 @@ function normalizeFeature(feature: unknown, fallbackId?: string, baseDir?: strin
     status: normalizeFeatureStatus(rawFeature.status),
     model,
     attempts: normalizeNonNegativeInteger(rawFeature.attempts),
+    lastExecution: normalizeFeatureLastExecution(rawFeature.lastExecution),
+    recoveryStage: normalizeFeatureRecoveryStage(rawFeature.recoveryStage),
   };
 }
 
@@ -636,6 +641,8 @@ function ensureMilestoneQaFeatures(
       status: existingBaselineQaFeature?.status ?? 'pending',
       model: CODEX_LATEST_ALIAS,
       attempts: existingBaselineQaFeature?.attempts ?? 0,
+      lastExecution: existingBaselineQaFeature?.lastExecution,
+      recoveryStage: existingBaselineQaFeature?.recoveryStage,
     }
     : null;
   const afterQaFeature: Feature = {
@@ -649,6 +656,8 @@ function ensureMilestoneQaFeatures(
     status: existingAfterQaFeature?.status ?? 'pending',
     model: CODEX_LATEST_ALIAS,
     attempts: existingAfterQaFeature?.attempts ?? 0,
+    lastExecution: existingAfterQaFeature?.lastExecution,
+    recoveryStage: existingAfterQaFeature?.recoveryStage,
   };
 
   return [
@@ -683,6 +692,42 @@ function normalizeFeatureChecks(value: unknown): CheckItem[] | undefined {
     })
     .filter((check) => check.text.length > 0);
   return checks.length > 0 ? checks : undefined;
+}
+
+function normalizeFeatureLastExecution(value: unknown): FeatureLastExecution | undefined {
+  const raw = asRecord(value);
+  if (raw.status !== 'SUCCESS' && raw.status !== 'PARTIAL' && raw.status !== 'FAILED' && raw.status !== 'BLOCKED') {
+    return undefined;
+  }
+
+  const resultKind = raw.resultKind === 'implemented'
+    || raw.resultKind === 'verified_existing'
+    || raw.resultKind === 'contract_gap'
+    || raw.resultKind === 'tooling_gap'
+    || raw.resultKind === 'env_blocked'
+    ? raw.resultKind
+    : undefined;
+  const changeScope = raw.changeScope === 'tracked'
+    || raw.changeScope === 'untracked'
+    || raw.changeScope === 'gitignored'
+    || raw.changeScope === 'none'
+    ? raw.changeScope
+    : undefined;
+  const problemKeys = normalizeStringList(raw.problemKeys);
+  return {
+    status: raw.status,
+    resultKind,
+    changeScope,
+    problemKeys: problemKeys.length > 0 ? problemKeys : undefined,
+    filesChangedCount: normalizeNonNegativeInteger(raw.filesChangedCount),
+    createdAt: asTrimmedString(raw.createdAt) || undefined,
+  };
+}
+
+function normalizeFeatureRecoveryStage(value: unknown): FeatureRecoveryStage | undefined {
+  return value === 'qa_rerun_attempted' || value === 'remediation_attempted'
+    ? value
+    : undefined;
 }
 
 function normalizeQaPhase(value: unknown, kind: FeatureKind): QaPhase | undefined {

@@ -7,9 +7,9 @@ import { jest } from '@jest/globals';
 import { Orchestrator } from '../orchestrator.js';
 import { ManagerAgent, MissionPlanningError } from '../agents/manager.js';
 import { WorkerAgent } from '../agents/worker.js';
-import type { WorkerFeatureReport, WorkerResult } from '../agents/types.js';
+import type { WorkerFeatureReport } from '../agents/types.js';
 import { getDefaultPromptsDir } from '../prompts/index.js';
-import { createMissionPlan, type MissionPlan } from '../state/mission.js';
+import { createMissionPlan, type MissionPlan, updateFeatureStatus } from '../state/mission.js';
 import { createGitStrategyState } from '../state/git-strategy.js';
 import type { ReviewReport } from '../state/review.js';
 import type { ValidationCheckResult } from '../state/validation.js';
@@ -5991,6 +5991,79 @@ describe('Orchestrator v0.8', () => {
     expect(followUpResult.plan.milestones[0]?.features).toHaveLength(1);
   });
 
+  it('reuses completed validation follow-up features when tracking keys normalize to the same problem', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-reuse-normalized-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# reuse normalized', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const plan = createMissionPlan({
+      missionId: 'reuse-normalized',
+      goal: 'Reuse normalized follow-ups',
+      constraints: [],
+      successCriteria: ['No duplicate follow-up features for the same QA problem'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'desc',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Align seeded content with hub expectations',
+              trackingKey: 'learn-hub-seed-parity',
+              status: 'done',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      applyValidationFollowUps: (
+        missionPlan: MissionPlan,
+        milestoneId: string,
+        followUps: Array<{ description: string; trackingKey?: string; model?: string }>
+      ) => {
+        plan: MissionPlan;
+        addedFeatures: Array<{ id: string }>;
+        updatedFeatures: Array<{ id: string; status: string; description: string }>;
+      };
+    };
+
+    const followUpResult = orchestratorAny.applyValidationFollowUps(plan, 'm1', [{
+      description: 'Fix learn fixture determinism for hub QA',
+      trackingKey: 'learn-content-fixture-parity',
+      model: 'codex-latest',
+    }]);
+
+    expect(followUpResult.addedFeatures).toHaveLength(0);
+    expect(followUpResult.updatedFeatures).toHaveLength(1);
+    expect(followUpResult.updatedFeatures[0]?.id).toBe('m1-f1');
+    expect(followUpResult.plan.milestones[0]?.features).toHaveLength(1);
+  });
+
   it('keeps exhausted failed follow-up features failed when requeueFailedMatches is false', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-reuse-exhausted-'));
     const melosDir = join(cwd, '.melos');
@@ -6996,6 +7069,318 @@ describe('Orchestrator v0.8', () => {
     expect(events).not.toContain('"type":"mission_interrupted"');
 
     spy.mockRestore();
+  });
+
+  it('reruns milestone QA instead of requeueing a done no-op implementation follow-up', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-validation-recovery-qa-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'validations'), { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# validation recovery qa rerun', 'utf-8');
+
+    let plan = createMissionPlan({
+      missionId: 'validation-recovery-qa',
+      goal: 'Retry QA before implementation remediation',
+      constraints: [],
+      successCriteria: ['QA rerun is preferred for done no-op features'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Repair ToC QA regression',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            qaChecks: [
+              {
+                id: 'manual-qa',
+                description: 'Validate article ToC state',
+                type: 'manual',
+                passed: false,
+                failureCount: 2,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Fix ToC active sync',
+              trackingKey: 'learn-toc-active-sync',
+              status: 'done',
+              attempts: 1,
+              model: 'codex-latest',
+              lastExecution: {
+                status: 'SUCCESS',
+                resultKind: 'verified_existing',
+                changeScope: 'none',
+                problemKeys: ['toc-scrollspy-click-hash-active-desync'],
+                filesChangedCount: 0,
+                createdAt: '2026-03-13T00:00:00.000Z',
+              },
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    plan = updateFeatureStatus(plan, 'm1', 'm1-f2', 'done');
+    writeFileSync(missionPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf-8');
+
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Fix ToC active sync',
+        trackingKey: 'learn-toc-active-sync',
+        priority: 'high',
+        affectedChecks: ['manual-qa'],
+        model: 'codex-latest',
+      },
+    ]);
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      runMilestoneValidation: (milestoneId: string) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = plan;
+    orchestratorAny.kernelState.missionPlan = plan;
+
+    await orchestratorAny.runMilestoneValidation('m1');
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('running');
+    expect(missionPlan.milestones[0]?.features).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'm1-f1',
+        status: 'done',
+        recoveryStage: 'qa_rerun_attempted',
+      }),
+      expect.objectContaining({
+        id: 'm1-f2',
+        kind: 'qa',
+        status: 'pending',
+      }),
+    ]));
+    expect(missionPlan.milestones[0]?.features).toHaveLength(2);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"action":"validation_loop_modify_followups"');
+    expect(events).toContain('"id":"m1-f2"');
+    expect(events).not.toContain('"id":"m1-f3"');
+  });
+
+  it('appends one remediation feature after a QA rerun already failed for the same no-op implementation feature', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-validation-recovery-remediation-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'validations'), { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# validation recovery remediation', 'utf-8');
+
+    let plan = createMissionPlan({
+      missionId: 'validation-recovery-remediation',
+      goal: 'Escalate from QA rerun to implementation remediation',
+      constraints: [],
+      successCriteria: ['remediation follow-up is created once QA rerun was already attempted'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Repair ToC QA regression',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            qaChecks: [
+              {
+                id: 'manual-qa',
+                description: 'Validate article ToC state',
+                type: 'manual',
+                passed: false,
+                failureCount: 2,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Fix ToC active sync',
+              trackingKey: 'learn-toc-active-sync',
+              status: 'done',
+              attempts: 1,
+              model: 'codex-latest',
+              recoveryStage: 'qa_rerun_attempted',
+              lastExecution: {
+                status: 'SUCCESS',
+                resultKind: 'verified_existing',
+                changeScope: 'none',
+                problemKeys: ['toc-scrollspy-click-hash-active-desync'],
+                filesChangedCount: 0,
+                createdAt: '2026-03-13T00:00:00.000Z',
+              },
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    plan = updateFeatureStatus(plan, 'm1', 'm1-f2', 'done');
+    writeFileSync(missionPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf-8');
+
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Fix ToC active sync after QA rerun',
+        trackingKey: 'learn-toc-active-sync',
+        priority: 'high',
+        affectedChecks: ['manual-qa'],
+        model: 'codex-latest',
+      },
+    ]);
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      runMilestoneValidation: (milestoneId: string) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = plan;
+    orchestratorAny.kernelState.missionPlan = plan;
+
+    await orchestratorAny.runMilestoneValidation('m1');
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('running');
+    expect(missionPlan.milestones[0]?.features.map((feature) => ({
+      id: feature.id,
+      status: feature.status,
+      recoveryStage: feature.recoveryStage,
+    }))).toEqual([
+      { id: 'm1-f1', status: 'done', recoveryStage: 'qa_rerun_attempted' },
+      { id: 'm1-f3', status: 'pending', recoveryStage: 'remediation_attempted' },
+      { id: 'm1-f2', status: 'done', recoveryStage: undefined },
+    ]);
+  });
+
+  it('pauses once QA rerun and remediation are both exhausted for the same no-op failure', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-validation-recovery-pause-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    mkdirSync(join(melosDir, 'validations'), { recursive: true });
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# validation recovery pause', 'utf-8');
+
+    let plan = createMissionPlan({
+      missionId: 'validation-recovery-pause',
+      goal: 'Pause only after autonomous recovery is exhausted',
+      constraints: [],
+      successCriteria: ['mission pauses after remediation also finishes as a no-op'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Milestone 1',
+          description: 'Repair ToC QA regression',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+            qaChecks: [
+              {
+                id: 'manual-qa',
+                description: 'Validate article ToC state',
+                type: 'manual',
+                passed: false,
+                failureCount: 2,
+              },
+            ],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'Fix ToC active sync remediation',
+              trackingKey: 'learn-toc-active-sync',
+              status: 'done',
+              attempts: 1,
+              model: 'codex-latest',
+              recoveryStage: 'remediation_attempted',
+              lastExecution: {
+                status: 'SUCCESS',
+                resultKind: 'verified_existing',
+                changeScope: 'none',
+                problemKeys: ['toc-scrollspy-click-hash-active-desync'],
+                filesChangedCount: 0,
+                createdAt: '2026-03-13T00:00:00.000Z',
+              },
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+    plan = updateFeatureStatus(plan, 'm1', 'm1-f2', 'done');
+    writeFileSync(missionPath, `${JSON.stringify(plan, null, 2)}\n`, 'utf-8');
+
+    jest.spyOn(ManagerAgent.prototype, 'generateFollowUpFeatures').mockResolvedValue([
+      {
+        description: 'Fix ToC active sync after remediation',
+        trackingKey: 'learn-toc-active-sync',
+        priority: 'high',
+        affectedChecks: ['manual-qa'],
+        model: 'codex-latest',
+      },
+    ]);
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 5,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null };
+      runMilestoneValidation: (milestoneId: string) => Promise<void>;
+    };
+    orchestratorAny.state.missionPlan = plan;
+    orchestratorAny.kernelState.missionPlan = plan;
+
+    await orchestratorAny.runMilestoneValidation('m1');
+
+    const missionPlan = orchestratorAny.state.missionPlan!;
+    expect(missionPlan.state).toBe('paused');
+    expect(missionPlan.activeMilestoneId).toBe('m1');
+    expect(missionPlan.activeFeatureId).toBeNull();
+    expect(missionPlan.milestones[0]?.features).toHaveLength(2);
+
+    const events = readFileSync(join(melosDir, 'events.jsonl'), 'utf-8');
+    expect(events).toContain('"action":"validation_followup_exhausted"');
+    expect(events).toContain('"type":"mission_interrupted"');
   });
 });
 

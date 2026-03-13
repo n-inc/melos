@@ -733,6 +733,92 @@ describe('WorkerAgent', () => {
     expect(options?.enabledFeatures).toEqual(['js_repl']);
   });
 
+  it('normalizes repo-root startup contracts for product review execution', async () => {
+    const repoCwd = await mkdtemp(join(tmpdir(), 'melos-product-review-root-'));
+    try {
+      await mkdir(join(repoCwd, '.claude', 'skills', 'git-commit'), { recursive: true });
+      await writeFile(join(repoCwd, '.claude', 'skills', 'git-commit', 'SKILL.md'), '---\nname: git-commit\n---\n');
+
+      const agent = new WorkerAgent({
+        cwd: repoCwd,
+        promptsDir: join(process.cwd(), 'prompts'),
+        model: 'gpt-5.4',
+      });
+      const codexExecute = jest.spyOn((agent as unknown as { engine: { execute: (...args: unknown[]) => Promise<unknown> } }).engine, 'execute')
+        .mockResolvedValue({
+          success: true,
+          output: '```json\n{"status":"SUCCESS","summary":"product review passed","warnings":[],"findings":[],"artifacts":[],"checkpointResults":[],"requestsHelp":false}\n```',
+          exitCode: 0,
+        });
+
+      const plan = createMissionPlan({
+        missionId: 'product-review-root-contract',
+        goal: 'Run final product review',
+        productReviewContract: {
+          cwd: 'frontend/apps/web',
+          target: 'http://127.0.0.1:$(cat ../../.port 2>/dev/null || echo ${CONDUCTOR_PORT:-8000})',
+          startup: [{ command: 'make dev-watch' }],
+          preconditions: [
+            'repo root の .port もしくは CONDUCTOR_PORT で nginx 入口 URL を解決できること',
+          ],
+          checkpoints: [
+            {
+              id: 'hub',
+              description: 'Verify learn hub',
+              visual: true,
+              evidenceMode: 'single',
+            },
+          ],
+          artifactsDir: 'artifacts/screenshots/learn',
+        },
+        milestones: [
+          {
+            id: 'm4',
+            title: 'Final Review',
+            description: 'Run final product review',
+            order: 1,
+            status: 'pending',
+            validationContract: {
+              staticChecks: [],
+              testSuites: [],
+            },
+            features: [
+              {
+                id: 'm4-f1',
+                description: 'Run final product review',
+                kind: 'review',
+                reviewType: 'product',
+                reviewGeneration: 1,
+                status: 'pending',
+                attempts: 0,
+                model: 'codex-latest',
+              },
+            ],
+          },
+        ],
+      });
+
+      await agent.run({
+        iteration: 1,
+        missionPlan: plan,
+        milestone: plan.milestones[0],
+        feature: plan.milestones[0].features[0],
+        prd: '# PRD',
+        briefing: 'product review briefing',
+        currentBranch: 'main',
+        baseBranch: 'main',
+      });
+
+      const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
+      const options = codexExecute.mock.calls[0]?.[1] as { cwd?: string } | undefined;
+      expect(prompt).toContain(`Execution cwd: ${repoCwd}`);
+      expect(prompt).toContain('"target": "http://127.0.0.1:$(cat .port 2>/dev/null || echo ${CONDUCTOR_PORT:-8000})"');
+      expect(options?.cwd).toBe(repoCwd);
+    } finally {
+      await rm(repoCwd, { recursive: true, force: true });
+    }
+  });
+
   it('synthesizes review artifacts from checkpoint result paths when the model omits artifacts', async () => {
     const agent = new WorkerAgent({
       cwd: process.cwd(),
@@ -843,6 +929,9 @@ describe('WorkerAgent', () => {
         success: true,
         output: `\`\`\`json\n${JSON.stringify({
           status: 'SUCCESS',
+          resultKind: 'verified_existing',
+          changeScope: 'gitignored',
+          problemKeys: ['qa-evidence-capture'],
           summary: 'ok',
           warnings: [' fallback used ', '', 1],
           filesChanged: [],
@@ -884,6 +973,9 @@ describe('WorkerAgent', () => {
 
     const result = await agent.run(createRunInput());
 
+    expect(result.report.resultKind).toBe('verified_existing');
+    expect(result.report.changeScope).toBe('gitignored');
+    expect(result.report.problemKeys).toEqual(['qa-evidence-capture']);
     expect(result.report.warnings).toEqual(['fallback used']);
     expect(result.report.checks).toEqual([
       {

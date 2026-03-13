@@ -13,6 +13,7 @@ import {
   loadMissionPlan,
   saveMissionPlan,
   transitionMissionState,
+  updateFeature,
   updateFeatureStatus,
   updateMilestoneStatus,
 } from '../mission.js';
@@ -101,6 +102,55 @@ describe('state/mission', () => {
 
     plan = updateMilestoneStatus(plan, 'm1', 'done');
     expect(areAllMilestonesDone(plan)).toBe(true);
+  });
+
+  it('persists feature execution metadata across save/load', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mission-last-execution-'));
+    const missionPath = join(dir, 'TASK.json');
+    let plan = createMissionPlan({
+      goal: 'Execution metadata',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'pending',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [{ id: 'm1-f1', description: 'f1', status: 'pending', attempts: 0 }],
+        },
+      ],
+    });
+
+    plan = updateFeature(plan, 'm1', 'm1-f1', (feature) => ({
+      ...feature,
+      status: 'done',
+      recoveryStage: 'qa_rerun_attempted',
+      lastExecution: {
+        status: 'SUCCESS',
+        resultKind: 'verified_existing',
+        changeScope: 'none',
+        problemKeys: ['toc-scrollspy-click-hash-active-desync'],
+        filesChangedCount: 0,
+        createdAt: '2026-03-13T00:00:00.000Z',
+      },
+    }));
+
+    await saveMissionPlan(missionPath, plan);
+    const loaded = await loadMissionPlan(missionPath);
+
+    expect(loaded.milestones[0]?.features[0]).toMatchObject({
+      status: 'done',
+      recoveryStage: 'qa_rerun_attempted',
+      lastExecution: {
+        status: 'SUCCESS',
+        resultKind: 'verified_existing',
+        changeScope: 'none',
+        problemKeys: ['toc-scrollspy-click-hash-active-desync'],
+        filesChangedCount: 0,
+        createdAt: '2026-03-13T00:00:00.000Z',
+      },
+    });
   });
 
   it('appends follow-up features into milestone', () => {

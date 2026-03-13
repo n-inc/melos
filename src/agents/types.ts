@@ -32,6 +32,9 @@ export interface WorkerFeatureReport {
   milestoneId: string;
   featureId: string;
   status: 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'BLOCKED';
+  resultKind?: 'implemented' | 'verified_existing' | 'contract_gap' | 'tooling_gap' | 'env_blocked';
+  changeScope?: 'tracked' | 'untracked' | 'gitignored' | 'none';
+  problemKeys?: string[];
   summary: string;
   failureContext?: {
     stage: 'worker' | 'post_process';

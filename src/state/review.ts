@@ -93,6 +93,11 @@ export interface ReviewReport {
   blockingFindingCount: number;
 }
 
+const REPO_ROOT_PORT_EXPRESSION = '$(cat .port 2>/dev/null || echo ${CONDUCTOR_PORT:-8000})';
+const REPO_ROOT_PORT_HINT = /(?:\.port|CONDUCTOR_PORT)/;
+const REPO_ROOT_STARTUP_COMMAND = /\bmake\s+(?:dev-watch|info|open|open-sub)\b/;
+const SHELL_PORT_EXPRESSION = /\$\(\s*cat\s+[^)]*?\.port\s+2>\/dev\/null\s+\|\|\s+echo\s+\$\{CONDUCTOR_PORT:-8000\}\s*\)/g;
+
 export function normalizeProductReviewContract(
   value: unknown,
   baseDir?: string
@@ -102,11 +107,13 @@ export function normalizeProductReviewContract(
   }
 
   const record = value as Record<string, unknown>;
-  const target = asTrimmedString(record.target) || 'http://127.0.0.1:${PORT}';
+  const rawTarget = asTrimmedString(record.target) || 'http://127.0.0.1:${PORT}';
   const checkpoints = normalizeProductReviewCheckpoints(record.checkpoints);
   const preconditions = normalizeStringList(record.preconditions);
-  const startup = normalizeProductReviewStartup(record.startup, baseDir);
-  const cwd = normalizeRelativePath(record.cwd, baseDir);
+  const preferRepoRoot = shouldPreferRepoRootProductReviewContract(rawTarget, preconditions, record.startup);
+  const target = preferRepoRoot ? normalizeRepoRootPortExpression(rawTarget) : rawTarget;
+  const startup = normalizeProductReviewStartup(record.startup, baseDir, preferRepoRoot);
+  const cwd = preferRepoRoot ? undefined : normalizeRelativePath(record.cwd, baseDir);
   const artifactsDir = normalizeRelativePath(record.artifactsDir, baseDir) ?? 'artifacts/screenshots';
 
   return {
@@ -258,7 +265,8 @@ function normalizeProductReviewCheckpoints(value: unknown): ProductReviewCheckpo
 
 function normalizeProductReviewStartup(
   value: unknown,
-  baseDir?: string
+  baseDir?: string,
+  preferRepoRoot = false
 ): ProductReviewStartupStep[] {
   if (!Array.isArray(value)) {
     return [];
@@ -281,12 +289,43 @@ function normalizeProductReviewStartup(
       if (!command) {
         return null;
       }
+      const normalizedCwd = normalizeRelativePath(record.cwd, baseDir);
       return {
-        cwd: normalizeRelativePath(record.cwd, baseDir),
+        cwd: preferRepoRoot && REPO_ROOT_STARTUP_COMMAND.test(command) ? undefined : normalizedCwd,
         command,
       };
     })
     .filter((entry): entry is ProductReviewStartupStep => Boolean(entry));
+}
+
+function shouldPreferRepoRootProductReviewContract(
+  target: string,
+  preconditions: string[],
+  startup: unknown
+): boolean {
+  const startupCommands = Array.isArray(startup)
+    ? startup
+      .map((entry) => {
+        if (typeof entry === 'string') {
+          return entry.trim();
+        }
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+          return '';
+        }
+        return asTrimmedString((entry as Record<string, unknown>).command);
+      })
+      .filter((command) => command.length > 0)
+    : [];
+
+  const usesRepoRootPortStrategy =
+    REPO_ROOT_PORT_HINT.test(target) || preconditions.some((item) => REPO_ROOT_PORT_HINT.test(item));
+  const usesRepoRootStartup = startupCommands.some((command) => REPO_ROOT_STARTUP_COMMAND.test(command));
+
+  return usesRepoRootPortStrategy && usesRepoRootStartup;
+}
+
+function normalizeRepoRootPortExpression(target: string): string {
+  return target.replace(SHELL_PORT_EXPRESSION, REPO_ROOT_PORT_EXPRESSION);
 }
 
 function normalizeReviewFindingPriority(value: unknown): ReviewFindingPriority {
