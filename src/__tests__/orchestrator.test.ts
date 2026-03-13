@@ -1044,11 +1044,20 @@ describe('Orchestrator v0.8', () => {
     expect(missionPlan.state).toBe('running');
     expect(missionPlan.activeMilestoneId).toBe('m1');
     expect(missionPlan.activeFeatureId).toBeNull();
-    expect(missionPlan.milestones[0]?.features.map((item) => ({ id: item.id, status: item.status, kind: item.kind }))).toEqual([
-      { id: 'm1-f1', status: 'done', kind: 'review' },
-      { id: 'm1-f2', status: 'skipped', kind: 'review' },
-      { id: 'm1-f3', status: 'pending', kind: 'review_remediation' },
-      { id: 'm1-f4', status: 'pending', kind: 'review' },
+    expect(
+      missionPlan.milestones[0]?.features.map((item) => ({
+        id: item.id,
+        status: item.status,
+        kind: item.kind,
+        reviewType: item.reviewType,
+        generation: item.reviewGeneration,
+      }))
+    ).toEqual([
+      { id: 'm1-f1', status: 'done', kind: 'review', reviewType: 'product', generation: 1 },
+      { id: 'm1-f2', status: 'skipped', kind: 'review', reviewType: 'code', generation: 1 },
+      { id: 'm1-f3', status: 'pending', kind: 'review_remediation', reviewType: undefined, generation: undefined },
+      { id: 'm1-f4', status: 'pending', kind: 'review', reviewType: 'product', generation: 2 },
+      { id: 'm1-f5', status: 'pending', kind: 'review', reviewType: 'code', generation: 2 },
     ]);
     expect(missionPlan.milestones[0]?.features[2]?.trackingKey).toBe('product-review-runtime-missing-cable-and-ml');
     expect(reviewFollowUps).toHaveBeenCalledWith(expect.objectContaining({

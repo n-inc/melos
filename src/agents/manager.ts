@@ -501,7 +501,7 @@ export class ManagerAgent implements Agent {
       'Do not create review tasks. Create only implementation/remediation features.',
       'Use a small number of meaningful features instead of one feature per finding.',
       'Assume code review rerun is always required after remediation.',
-      'Add product review rerun only when the fix changes a user-visible or core product experience.',
+      'Add product review rerun when the fix changes a user-visible or core product experience, or when the prior product review result was invalid because the review contract/runtime/evidence was broken.',
       'When product review rerun is needed, limit it to the impacted productReviewContract checkpoints instead of rerunning the full product review.',
       'Return JSON array only.',
       '',
@@ -1958,7 +1958,7 @@ function fallbackReviewFollowUpFeatures(findings: ReviewFinding[]): FollowUpFeat
     description: synthesizeReviewFollowUpDescription(groupedFindings, trackingKey) ?? `Address ${trackingKey.replace(/[-_]+/g, ' ')}`,
     trackingKey,
     priority: index === 0 ? 'high' : 'medium',
-    rerunReviewTypes: ['code'],
+    rerunReviewTypes: normalizeReviewRerunTypes(undefined, groupedFindings),
     affectedProductCheckpoints: normalizeAffectedProductCheckpoints(undefined, groupedFindings),
     rationale: groupedFindings[0]?.rationale,
     model: CODEX_LATEST_ALIAS,
@@ -1986,13 +1986,26 @@ function deriveTrackingKeyFromReviewFinding(finding: ReviewFinding | undefined):
 
 function normalizeReviewRerunTypes(
   value: unknown,
-  _findings: ReviewFinding[]
+  findings: ReviewFinding[]
 ): ReviewType[] {
   const requested = Array.isArray(value)
     ? value.filter((entry): entry is ReviewType => entry === 'product' || entry === 'code')
     : [];
-  return Array.from(new Set(['code', ...requested]))
+  const defaultProductRerun = requiresProductReviewRerun(findings) ? ['product' as const] : [];
+  return Array.from(new Set(['code', ...defaultProductRerun, ...requested]))
     .filter((entry): entry is ReviewType => entry === 'code' || entry === 'product');
+}
+
+function requiresProductReviewRerun(findings: ReviewFinding[]): boolean {
+  return findings.some((finding) =>
+    finding.reviewType === 'product'
+    && (
+      finding.id === 'product-review-blocked'
+      || finding.trackingKey === 'product-review-blocked'
+      || finding.id === 'product-review-evidence-incomplete'
+      || finding.trackingKey === 'product-review-evidence-incomplete'
+    )
+  );
 }
 
 function normalizeReviewDecision(value: unknown): ReviewDecision | null {

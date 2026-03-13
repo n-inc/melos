@@ -2864,7 +2864,7 @@ export class Orchestrator {
           description: `Address blocking ${reviewReport.reviewType} review findings`,
           trackingKey: `final-review-${reviewReport.reviewType}-g${reviewReport.generation}`,
           model: CODEX_LATEST_ALIAS,
-          rerunReviewTypes: ['code'],
+          rerunReviewTypes: hasBlockedProductReviewFinding(reviewReport.findings) ? ['product', 'code'] : ['code'],
         }]
     );
 
@@ -3104,8 +3104,11 @@ export class Orchestrator {
     }
 
     const nextGeneration = currentGeneration + 1;
+    const defaultReviewReruns: Array<'product' | 'code'> = hasBlockedProductReviewFinding(reviewReport.findings)
+      ? ['product', 'code']
+      : ['code'];
     const rerunReviewTypes = Array.from(new Set([
-      'code',
+      ...defaultReviewReruns,
       ...appendDrafts.flatMap((draft) => draft.rerunReviewTypes ?? []),
     ])).filter((entry): entry is 'product' | 'code' => entry === 'product' || entry === 'code');
     const affectedProductCheckpoints = Array.from(new Set(
