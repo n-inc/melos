@@ -139,10 +139,8 @@ describe('WorkerAgent', () => {
     const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
     expect(prompt).toContain('# Worker Agent - Feature Executor');
     expect(prompt).toContain('git-commit');
-    expect(prompt).toContain('type(scope): subject');
     expect(prompt).toContain('.claude/skills/git-commit/SKILL.md');
-    expect(prompt).toContain('The git-commit skill is authoritative for commit message language and structure');
-    expect(prompt).toContain('write `subject` and any commit body in the language required by the git-commit skill');
+    expect(prompt).toContain('Follow the git-commit skill at:');
     expect(prompt).toContain('git status --porcelain');
     expect(prompt).toContain('git diff --staged');
     expect(prompt).toContain('## Runtime Context');

@@ -498,13 +498,9 @@ export class WorkerAgent implements Agent {
       sections.push(
         '',
         '## Commit Workflow',
-        `- Follow the git-commit skill at: ${this.resolveGitCommitSkillPath()}`,
+        `- Follow the git-commit skill at: ${this.resolveGitCommitSkillPath()} for the commit message and workflow.`,
         '- Before committing, inspect: `git status --porcelain`, `git log --oneline -20`, `git diff --staged`',
-        '- Create the commit only after implementation and scope-local validation are complete for the current branch',
-        '- The git-commit skill is authoritative for commit message language and structure. If it conflicts with generic Melos hints, follow the skill.',
-        '- Keep the subject in `type(scope): subject` form, but write `subject` and any commit body in the language required by the git-commit skill.',
-        '- Do not use `...` or other abbreviated placeholders in the commit message',
-        '- If you add a commit body, briefly explain why the change is needed'
+        '- Create the commit only after implementation and scope-local validation are complete for the current branch'
       );
     }
 
