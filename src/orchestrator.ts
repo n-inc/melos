@@ -63,6 +63,7 @@ import {
 } from './state/git.js';
 import { EventLog } from './state/events.js';
 import { normalizeFollowUpProblemKey } from './state/follow-up-key.js';
+import { loadReconciledMissionPlan } from './state/reconciled-mission-plan.js';
 import {
   replayMissionEvents,
   reduceMissionEvent,
@@ -626,8 +627,23 @@ export class Orchestrator {
       }
     }
 
-    if (missionFileExists(this.config.missionFile)) {
-      this.state.missionPlan = await loadMissionPlan(this.config.missionFile);
+    if (missionFileExists(this.config.missionFile) || this.config.resume) {
+      const reconciledMission = await loadReconciledMissionPlan({
+        missionFilePath: this.config.missionFile,
+        melosDir: this.config.melosDir,
+        strictTaskRead: missionFileExists(this.config.missionFile),
+      });
+      this.state.missionPlan = reconciledMission.missionPlan;
+
+      if (
+        this.config.resume
+        && reconciledMission.source === 'snapshot'
+        && reconciledMission.snapshotPlan
+        && JSON.stringify(reconciledMission.taskPlan) !== JSON.stringify(reconciledMission.snapshotPlan)
+      ) {
+        await saveMissionPlan(this.config.missionFile, reconciledMission.snapshotPlan);
+      }
+
       this.state.missionPlanFingerprint = await this.computeMissionPlanFingerprintFromDisk();
       if (this.state.missionPlan && this.config.resume && isRecoverableResumeState(this.state.missionPlan.state)) {
         this.state.missionPlan = recoverMissionPlanForResume(this.state.missionPlan);
@@ -2949,6 +2965,11 @@ export class Orchestrator {
     }
 
     const evidenceByCheckId = this.kernelState.validationEvidence?.[milestoneId] ?? {};
+    const missionPlan = this.requireMissionPlan();
+    const reviewExecutionCwd = resolveFeatureExecutionCwd(this.config.cwd, {
+      feature,
+      missionPlan,
+    });
     const hydratedCheckpointResults = backfillProductReviewCheckpointResults(
       contract,
       reviewReport,
@@ -2965,6 +2986,7 @@ export class Orchestrator {
     }
     const completenessFailures = evaluateProductReviewCheckpointResults(
       this.config.cwd,
+      reviewExecutionCwd,
       contract,
       hydratedReviewReport.checkpointResults,
       hydratedReviewReport.artifacts,
@@ -4262,6 +4284,10 @@ function getMissingBrowserArtifactPaths(cwd: string, evidence: ValidationCheckRe
   return missing;
 }
 
+function resolveArtifactPath(cwd: string, artifactPath: string): string {
+  return isAbsolute(artifactPath) ? artifactPath : join(cwd, artifactPath);
+}
+
 function mergeValidationEvidenceResult(
   existing: ValidationCheckResult | undefined,
   incoming: ValidationCheckResult
@@ -4384,7 +4410,8 @@ function isReviewInfrastructureFinding(finding: ReviewFinding): boolean {
 }
 
 function evaluateProductReviewCheckpointResults(
-  cwd: string,
+  repoCwd: string,
+  reviewExecutionCwd: string,
   contract: ProductReviewContract,
   checkpointResults: ProductReviewCheckpointResult[] | undefined,
   artifacts: ReviewReport['artifacts'],
@@ -4457,7 +4484,7 @@ function evaluateProductReviewCheckpointResults(
       ...checkpointArtifacts.map((artifact) => artifact.path),
     ].filter((value): value is string => hasNonEmptyValue(value));
     for (const path of checkpointPaths) {
-      if (!existsSync(resolveArtifactPath(cwd, path))) {
+      if (!resolveProductReviewArtifactPath(repoCwd, reviewExecutionCwd, path)) {
         failures.push(`${checkpoint.id}: artifact not found: ${path}`);
       }
     }
@@ -4475,8 +4502,23 @@ function resolveProductReviewRequiredArtifacts(
   return checkpoint.visual === false ? [] : ['screenshot'];
 }
 
-function resolveArtifactPath(cwd: string, artifactPath: string): string {
-  return isAbsolute(artifactPath) ? artifactPath : join(cwd, artifactPath);
+function resolveProductReviewArtifactPath(repoCwd: string, reviewExecutionCwd: string, artifactPath: string): string | null {
+  if (isAbsolute(artifactPath)) {
+    return existsSync(artifactPath) ? artifactPath : null;
+  }
+
+  const candidates = Array.from(new Set([
+    join(repoCwd, artifactPath),
+    join(reviewExecutionCwd, artifactPath),
+  ]));
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function hasNonEmptyValue(value: string | undefined): value is string {

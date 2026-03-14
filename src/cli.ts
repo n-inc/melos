@@ -20,6 +20,7 @@ import {
   saveRuntime,
   terminateProcess,
 } from './state/runtime.js';
+import { loadReconciledMissionPlan } from './state/reconciled-mission-plan.js';
 import { loadSnapshot } from './state/snapshot.js';
 import { loadGitStrategyState, type PullRequestState } from './state/git-strategy.js';
 import { getCurrentBranch, isGitRepository } from './state/git.js';
@@ -401,7 +402,7 @@ export async function executeWithOptions(
   });
   if (autoResumeState) {
     preflightMessages.unshift([
-      `TASK.json の状態 ${autoResumeState} を検出したため、自動で再開モードに切り替えます。`,
+      `前回ミッションの状態 ${autoResumeState} を検出したため、自動で再開モードに切り替えます。`,
       '前回のミッションを継続します。状態確認は別端末で `melos status --plain` / `melos logs --plain` を使ってください。',
       '新規ミッションを開始したい場合は、既存の TASK.json を退避または更新してから再実行してください。',
     ].join('\n'));
@@ -1231,15 +1232,23 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
     return messages;
   }
 
-  let missionPlan: MissionPlan;
+  let missionPlan: MissionPlan | null;
   try {
-    missionPlan = await loadMissionPlan(input.missionFilePath);
+    ({ missionPlan } = await loadReconciledMissionPlan({
+      missionFilePath: input.missionFilePath,
+      melosDir: input.melosDir,
+      strictTaskRead: true,
+    }));
   } catch (error) {
     const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
     throw new Error([
       `TASK.json の読み込みに失敗したため、実行を停止しました: ${reason}`,
       'TASK.json を修正してから再実行してください。',
     ].join('\n'));
+  }
+
+  if (!missionPlan) {
+    return messages;
   }
 
   const effectiveState = resolveTerminalMissionStateForRun(missionPlan);
@@ -1252,12 +1261,22 @@ export async function prepareRunPreflight(input: RunPreflightInput): Promise<str
   ].join('\n'));
 }
 
-export async function detectResumableMissionState(missionFilePath: string): Promise<MissionState | null> {
-  if (!existsSync(missionFilePath)) {
+export async function detectResumableMissionState(
+  missionFilePath: string,
+  melosDir: string = join(dirname(missionFilePath), '.melos')
+): Promise<MissionState | null> {
+  if (!existsSync(missionFilePath) && !existsSync(melosDir)) {
     return null;
   }
   try {
-    const missionPlan = await loadMissionPlan(missionFilePath);
+    const { missionPlan } = await loadReconciledMissionPlan({
+      missionFilePath,
+      melosDir,
+      strictTaskRead: false,
+    });
+    if (!missionPlan) {
+      return null;
+    }
     const effectiveState = resolveTerminalMissionStateForRun(missionPlan) ?? missionPlan.state;
     return AUTO_RESUME_ON_RUN_STATES.has(effectiveState) ? effectiveState : null;
   } catch {

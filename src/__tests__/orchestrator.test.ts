@@ -1304,6 +1304,123 @@ describe('Orchestrator v0.8', () => {
     ]);
   });
 
+  it('accepts product review artifacts that are saved relative to the review execution cwd', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-product-review-feature-cwd-artifacts-'));
+    const melosDir = join(cwd, '.melos');
+    const reviewCwd = join(cwd, 'frontend', 'apps', 'web');
+    mkdirSync(join(melosDir, 'reviews'), { recursive: true });
+    mkdirSync(join(reviewCwd, 'artifacts', 'screenshots', 'learn'), { recursive: true });
+    writeFileSync(join(reviewCwd, 'artifacts', 'screenshots', 'learn', 'hub-after.png'), 'png', 'utf-8');
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Product review feature cwd artifacts\n', 'utf-8');
+    writeFileSync(missionPath, '{}\n', 'utf-8');
+
+    const runningPlan = createMissionPlan({
+      missionId: 'product-review-feature-cwd-artifacts',
+      goal: 'Accept review artifacts saved under the review execution cwd',
+      constraints: [],
+      successCriteria: ['single-evidence review artifacts resolve from productReviewContract.cwd'],
+      productReviewContract: {
+        cwd: 'frontend/apps/web',
+        target: 'http://127.0.0.1:${PORT}',
+        preconditions: ['js_repl enabled', 'playwright importable'],
+        checkpoints: [
+          {
+            id: 'hub-lang-filter',
+            description: 'Verify learn hub language filtering',
+            visual: true,
+            evidenceMode: 'single',
+            requiredArtifacts: ['screenshot'],
+          },
+        ],
+        artifactsDir: 'artifacts/screenshots/learn',
+      },
+      milestones: [
+        {
+          id: 'm4',
+          title: 'Final Review',
+          description: 'Run scoped final product review',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm4-f1',
+              description: 'Run scoped final product review',
+              kind: 'review',
+              reviewType: 'product',
+              reviewGeneration: 1,
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex-latest',
+            },
+          ],
+        },
+      ],
+      state: 'running',
+    });
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 4,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+    });
+    const orchestratorAny = orchestrator as unknown as {
+      state: { missionPlan: MissionPlan | null };
+      kernelState: { missionPlan: MissionPlan | null; validationEvidence?: Record<string, Record<string, ValidationCheckResult>> };
+      enforceProductReviewEvidenceContract: (
+        milestoneId: string,
+        feature: MissionPlan['milestones'][number]['features'][number],
+        reviewReport: ReviewReport
+      ) => ReviewReport;
+    };
+    orchestratorAny.state.missionPlan = runningPlan;
+    orchestratorAny.kernelState.missionPlan = runningPlan;
+    orchestratorAny.kernelState.validationEvidence = {};
+
+    const milestone = runningPlan.milestones[0]!;
+    const feature = milestone.features[0]!;
+    const enforced = orchestratorAny.enforceProductReviewEvidenceContract('m4', feature, {
+      milestoneId: 'm4',
+      featureId: 'm4-f1',
+      reviewType: 'product',
+      generation: 1,
+      timestamp: new Date().toISOString(),
+      passed: true,
+      summary: 'scoped product review passed',
+      findings: [],
+      artifacts: [
+        {
+          kind: 'screenshot',
+          path: 'artifacts/screenshots/learn/hub-after.png',
+          checkpointId: 'hub-lang-filter',
+          phase: 'after',
+        },
+      ],
+      checkpointResults: [
+        {
+          checkpointId: 'hub-lang-filter',
+          passed: true,
+          afterObserved: 'EN and JA hub categories were correctly separated.',
+          afterScreenshotPath: 'artifacts/screenshots/learn/hub-after.png',
+        },
+      ],
+      blockingFindingCount: 0,
+    });
+
+    expect(enforced.findings).toEqual([]);
+    expect(enforced.passed).toBe(true);
+  });
+
   it('does not require screenshots for non-visual product review checkpoints', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-product-review-nonvisual-'));
     const melosDir = join(cwd, '.melos');
@@ -4144,6 +4261,124 @@ describe('Orchestrator v0.8', () => {
     expect(result.success).toBe(true);
     expect(result.reason).toBe('completed');
     expect(snapshots.length).toBeGreaterThan(0);
+  });
+
+  it('prefers a newer snapshot mission plan over stale TASK.json when resuming', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-orchestrator-resume-stale-task-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const prdPath = join(cwd, 'PRD.md');
+    const missionPath = join(cwd, 'TASK.json');
+    writeFileSync(prdPath, '# Resume stale task mission\n', 'utf-8');
+
+    const abortedPlan = createMissionPlan({
+      missionId: 'resume-stale-task',
+      goal: 'Resume from snapshot truth',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['Mission completes from snapshot state'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'stale task',
+          order: 1,
+          status: 'in_progress',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'work',
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'aborted',
+    });
+    const completedPlan = createMissionPlan({
+      missionId: 'resume-stale-task',
+      goal: 'Resume from snapshot truth',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['Mission completes from snapshot state'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Done',
+          description: 'Already done in snapshot',
+          order: 1,
+          status: 'done',
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'done',
+              status: 'done',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'completed',
+    });
+    writeFileSync(missionPath, `${JSON.stringify(abortedPlan, null, 2)}\n`, 'utf-8');
+
+    const eventsPath = join(melosDir, 'events.jsonl');
+    writeFileSync(eventsPath, [
+      JSON.stringify({
+        seq: 1,
+        type: 'mission_started',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        iteration: 0,
+        agent: 'orchestrator',
+        payload: { message: 'start' },
+      }),
+      '',
+    ].join('\n'), 'utf-8');
+
+    writeFileSync(join(melosDir, 'state.json'), JSON.stringify({
+      seq: 1,
+      savedAt: '2099-01-01T00:00:00.000Z',
+      state: {
+        kernel: {
+          missionPlan: completedPlan,
+          iteration: 1,
+          workerRuns: [],
+          progressLog: [],
+          activeWorkerRunId: null,
+          gitStrategy: null,
+        },
+      },
+    }, null, 2), 'utf-8');
+
+    const orchestrator = new Orchestrator({
+      cwd,
+      maxIterations: 3,
+      prdFile: prdPath,
+      missionFile: missionPath,
+      melosDir,
+      autoApprove: true,
+      interactivePlanning: false,
+      dryRun: false,
+      resume: true,
+    });
+
+    const result = await orchestrator.run();
+    expect(result.success).toBe(true);
+    expect(result.reason).toBe('completed');
+
+    const savedMission = JSON.parse(readFileSync(missionPath, 'utf-8')) as MissionPlan;
+    expect(savedMission.state).toBe('completed');
+    expect(savedMission.milestones[0]?.features[0]?.status).toBe('done');
   });
 
   it('recovers aborted mission state on resume and continues from pending feature', async () => {

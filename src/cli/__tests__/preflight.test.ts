@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -108,6 +108,56 @@ describe('cli preflight', () => {
     writeFileSync(missionFilePath, `${JSON.stringify(mission, null, 2)}\n`, 'utf-8');
 
     await expect(detectResumableMissionState(missionFilePath)).resolves.toBe('aborted');
+  });
+
+  it('does not mark stale aborted TASK.json as resumable when a newer snapshot is completed', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-preflight-resumable-stale-task-'));
+    const missionFilePath = join(cwd, 'TASK.json');
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+
+    const abortedMission = createMissionPlan({
+      goal: 'Sample mission',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'in_progress',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [{ id: 'm1-f1', description: 'work', status: 'in_progress', attempts: 1 }],
+        },
+      ],
+      state: 'aborted',
+    });
+    const completedMission = createMissionPlan({
+      goal: 'Sample mission',
+      milestones: [
+        {
+          id: 'm1',
+          title: 'M1',
+          description: 'desc',
+          status: 'done',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [{ id: 'm1-f1', description: 'done', status: 'done', attempts: 1 }],
+        },
+      ],
+      state: 'completed',
+    });
+    writeFileSync(missionFilePath, `${JSON.stringify(abortedMission, null, 2)}\n`, 'utf-8');
+    writeFileSync(join(melosDir, 'state.json'), JSON.stringify({
+      seq: 3,
+      savedAt: '2099-01-01T00:00:00.000Z',
+      state: {
+        kernel: {
+          missionPlan: completedMission,
+        },
+      },
+    }, null, 2), 'utf-8');
+
+    await expect(detectResumableMissionState(missionFilePath)).resolves.toBeNull();
   });
 
   it('does not mark completed mission as resumable', async () => {

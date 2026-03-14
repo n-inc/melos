@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -171,6 +171,110 @@ describe('cli run artifacts', () => {
     expect(stderrOutput.join('')).toBe('');
     const savedMission = await loadMissionPlan(taskPath);
     expect(savedMission.state).toBe('aborted');
+  });
+
+  it('does not announce auto-resume when a newer snapshot already marks the mission completed', async () => {
+    const prdPath = join(rootDir, 'PRD.md');
+    const taskPath = join(rootDir, 'TASK.json');
+    const melosDir = join(rootDir, '.melos');
+    writeFileSync(prdPath, '# Snapshot wins mission\n', 'utf-8');
+    mkdirSync(melosDir, { recursive: true });
+
+    const abortedMission = createMissionPlan({
+      missionId: 'snapshot-wins',
+      goal: 'Snapshot wins mission',
+      constraints: ['No backward compatibility layer'],
+      successCriteria: ['Mission completed'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Completed scope',
+          description: 'still stale on disk',
+          status: 'in_progress',
+          order: 1,
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'work',
+              status: 'in_progress',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'aborted',
+    });
+    const completedMission = createMissionPlan({
+      missionId: 'snapshot-wins',
+      goal: 'Snapshot wins mission',
+      constraints: ['No backward compatibility layer'],
+      successCriteria: ['Mission completed'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Completed scope',
+          description: 'completed in runtime snapshot',
+          status: 'done',
+          order: 1,
+          validationContract: {
+            staticChecks: [],
+            testSuites: [],
+          },
+          features: [
+            {
+              id: 'm1-f1',
+              description: 'done',
+              status: 'done',
+              attempts: 1,
+              model: 'codex',
+            },
+          ],
+        },
+      ],
+      state: 'completed',
+    });
+    await saveMissionPlan(taskPath, abortedMission);
+    writeFileSync(join(melosDir, 'state.json'), JSON.stringify({
+      seq: 7,
+      savedAt: '2099-01-01T00:00:00.000Z',
+      state: {
+        kernel: {
+          missionPlan: completedMission,
+          iteration: 1,
+          workerRuns: [],
+          progressLog: [],
+          activeWorkerRunId: null,
+          gitStrategy: null,
+        },
+      },
+    }, null, 2), 'utf-8');
+
+    const stderrOutput: string[] = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderrOutput.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      await expect(executeWithOptions(
+        {
+          plain: true,
+          dryRun: true,
+          autoApprove: true,
+        },
+        { resume: false }
+      )).rejects.toThrow('TASK.json は終了状態 (completed) のため、そのままでは新規ミッションを開始しません。');
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+
+    expect(stderrOutput.join('')).not.toContain('自動で再開モードに切り替えます');
   });
 
   it('starts from RunSpec input without PRD.md and records run identity in events', async () => {
