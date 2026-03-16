@@ -7,18 +7,26 @@ import {
   type AppServerEngineOptions,
 } from '../engines/app-server.js';
 import type { EngineResult } from '../engines/base.js';
-import type { Feature, MissionPlan } from '../state/mission.js';
+import type { Feature, Milestone, MissionPlan } from '../state/mission.js';
 import {
   createMissionPlan,
   ensurePullRequestFollowUpMilestone,
 } from '../state/mission.js';
-import type { ProductReviewContract, ReviewDecision, ReviewFinding, ReviewType } from '../state/review.js';
+import type {
+  ProductReviewContract,
+  ReviewDecision,
+  ReviewDecisionRecord,
+  ReviewFinding,
+  ReviewReport,
+  ReviewType,
+} from '../state/review.js';
 import { normalizeProductReviewContract } from '../state/review.js';
 import type {
   ValidationArtifact,
   ValidationEvidenceMode,
   ValidationCheckResult,
   ValidationExpectedOutcome,
+  ValidationReport,
   ValidationRunner,
 } from '../state/validation.js';
 import {
@@ -601,6 +609,90 @@ export class ManagerAgent implements Agent {
     return drafts;
   }
 
+  async generateHumanHandoff(input: {
+    finalState: 'completed' | 'paused' | 'failed' | 'aborted' | 'max_iterations';
+    missionPlan: MissionPlan;
+    prd: string | null;
+    latestValidationReport: ValidationReport | null;
+    latestReviewReport: ReviewReport | null;
+    reviewDecisions: ReviewDecisionRecord[];
+    warnings: string[];
+    activeMilestone: Milestone | null;
+    activeFeature: Feature | null;
+    onAgentMessageDelta?: (chunk: string) => void;
+    onCommandOutputDelta?: (chunk: string) => void;
+    onAppServerEvent?: (method: string, params: unknown) => void;
+  }): Promise<string | undefined> {
+    const preferredLanguage = detectPreferredLanguage(input.prd, input.missionPlan.mission.goal);
+    const localized = getHumanHandoffTemplate(preferredLanguage);
+    const completedFeatures = input.missionPlan.milestones.flatMap((milestone) =>
+      milestone.features
+        .filter((feature) => feature.status === 'done' || feature.status === 'skipped')
+        .map((feature) => `${feature.id}: ${feature.description}`)
+    );
+
+    const prompt = [
+      'You are a technical manager writing the final HANDOFF.md for a human operator/developer after a Melos run.',
+      `Write all natural language in ${preferredLanguage === 'ja' ? 'Japanese' : 'English'}.`,
+      'Return Markdown only. Do not return JSON. Do not wrap the answer in code fences.',
+      'The reader is a human, not another system.',
+      'Focus on what finished, what is still important, and exactly what the human should check, fix, or decide next.',
+      'Do not dump every feature mechanically. Compress aggressively and keep only high-signal items.',
+      'If there is no follow-up needed, say that clearly.',
+      'Accepted deviations should be explained briefly so the human understands why they were kept.',
+      'handoff_gap items and unresolved warnings should become explicit human follow-up items when relevant.',
+      '',
+      'Use these headings exactly:',
+      `- ${localized.title}`,
+      `- ${localized.statusHeading}`,
+      `- ${localized.doneHeading}`,
+      `- ${localized.checkHeading}`,
+      `- ${localized.followUpHeading}`,
+      `- ${localized.improvementHeading}`,
+      `- ${localized.notesHeading}`,
+      '',
+      `Final state: ${input.finalState}`,
+      `Mission goal: ${input.missionPlan.mission.goal}`,
+      'Success criteria:',
+      JSON.stringify(input.missionPlan.mission.successCriteria, null, 2),
+      'Constraints:',
+      JSON.stringify(input.missionPlan.mission.constraints, null, 2),
+      'Active milestone / feature:',
+      JSON.stringify({
+        milestoneId: input.activeMilestone?.id ?? null,
+        milestoneTitle: input.activeMilestone?.title ?? null,
+        featureId: input.activeFeature?.id ?? null,
+        featureDescription: input.activeFeature?.description ?? null,
+        featureStatus: input.activeFeature?.status ?? null,
+      }, null, 2),
+      'Completed features:',
+      JSON.stringify(completedFeatures, null, 2),
+      'Latest validation report:',
+      JSON.stringify(input.latestValidationReport, null, 2),
+      'Latest review report:',
+      JSON.stringify(input.latestReviewReport, null, 2),
+      'Review decisions:',
+      JSON.stringify(input.reviewDecisions, null, 2),
+      'Warnings:',
+      JSON.stringify(input.warnings, null, 2),
+      '',
+      'Write a handoff that helps a human continue or verify the mission without reading raw runtime artifacts first.',
+    ].join('\n');
+
+    const result = await this.executeWithConfiguredEngine(prompt, 'high', {
+      onAgentMessageDelta: input.onAgentMessageDelta,
+      onCommandOutputDelta: input.onCommandOutputDelta,
+      onAppServerEvent: input.onAppServerEvent,
+    });
+
+    if (!result.success) {
+      return undefined;
+    }
+
+    const normalized = normalizeHumanHandoffOutput(result.output);
+    return normalized.length > 0 ? normalized : undefined;
+  }
+
   abort(): void {
     this.claudeEngine.abort();
     this.codexEngine.abort();
@@ -996,6 +1088,47 @@ function normalizeCheckType(
     return value;
   }
   return fallback;
+}
+
+function normalizeHumanHandoffOutput(output: string): string {
+  const trimmed = output.trim();
+  if (trimmed.length === 0) {
+    return '';
+  }
+  const fenced = trimmed.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i);
+  return (fenced?.[1] ?? trimmed).trim();
+}
+
+function getHumanHandoffTemplate(language: DocumentLanguage): {
+  title: string;
+  statusHeading: string;
+  doneHeading: string;
+  checkHeading: string;
+  followUpHeading: string;
+  improvementHeading: string;
+  notesHeading: string;
+} {
+  if (language === 'ja') {
+    return {
+      title: '# Handoff',
+      statusHeading: '## 現在の状況',
+      doneHeading: '## 完了したこと',
+      checkHeading: '## 人間が確認すべきこと',
+      followUpHeading: '## 人間が修正・判断すべきこと',
+      improvementHeading: '## 発見した改善候補',
+      notesHeading: '## 補足',
+    };
+  }
+
+  return {
+    title: '# Handoff',
+    statusHeading: '## Current Status',
+    doneHeading: '## What Was Completed',
+    checkHeading: '## What A Human Should Verify',
+    followUpHeading: '## What A Human Should Fix Or Decide',
+    improvementHeading: '## Improvement Opportunities Found',
+    notesHeading: '## Notes',
+  };
 }
 
 function resolveFeatureModel(

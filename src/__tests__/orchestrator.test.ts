@@ -24,6 +24,33 @@ describe('Orchestrator v0.8', () => {
         rationale: 'default test decision',
       }))
     );
+    jest.spyOn(ManagerAgent.prototype, 'generateHumanHandoff').mockResolvedValue([
+      '# Handoff',
+      '',
+      '## 現在の状況',
+      '',
+      '- テスト用の human handoff',
+      '',
+      '## 完了したこと',
+      '',
+      '- 特になし',
+      '',
+      '## 人間が確認すべきこと',
+      '',
+      '- 特になし',
+      '',
+      '## 人間が修正・判断すべきこと',
+      '',
+      '- 特になし',
+      '',
+      '## 発見した改善候補',
+      '',
+      '- 特になし',
+      '',
+      '## 補足',
+      '',
+      '- 特になし',
+    ].join('\n'));
   });
 
   afterEach(() => {
@@ -2045,6 +2072,7 @@ describe('Orchestrator v0.8', () => {
 
     expect(result.success).toBe(false);
     expect(result.reason).toBe('max_iterations');
+    expect(result.handoffContent).toContain('# Handoff');
 
     const report = JSON.parse(readFileSync(join(melosDir, 'validations', 'm1-attempt-1.json'), 'utf-8')) as {
       passed: boolean;
@@ -2154,7 +2182,7 @@ describe('Orchestrator v0.8', () => {
           report: WorkerFeatureReport;
         }
       ) => Promise<void>;
-      writeHandoff: () => Promise<string>;
+      writeHandoff: (state: 'completed' | 'paused' | 'failed' | 'aborted' | 'max_iterations') => Promise<string>;
     };
     orchestratorAny.state.missionPlan = {
       ...runningPlan,
@@ -2229,10 +2257,37 @@ describe('Orchestrator v0.8', () => {
       }),
     ]);
 
-    const handoff = await orchestratorAny.writeHandoff();
-    expect(handoff).toContain('## Accepted Deviations');
+    jest.spyOn(ManagerAgent.prototype, 'generateHumanHandoff').mockResolvedValue([
+      '# Handoff',
+      '',
+      '## 現在の状況',
+      '',
+      '- review identified one acceptable deviation and one handoff gap',
+      '',
+      '## 完了したこと',
+      '',
+      '- final code review was completed',
+      '',
+      '## 人間が確認すべきこと',
+      '',
+      '- better-routing-split',
+      '',
+      '## 人間が修正・判断すべきこと',
+      '',
+      '- remaining-prd-gap',
+      '',
+      '## 発見した改善候補',
+      '',
+      '- better-routing-split',
+      '',
+      '## 補足',
+      '',
+      '- keep the safer routing split',
+    ].join('\n'));
+
+    const handoff = await orchestratorAny.writeHandoff('completed');
+    expect(handoff).toContain('# Handoff');
     expect(handoff).toContain('better-routing-split');
-    expect(handoff).toContain('## PRD Gaps To Share');
     expect(handoff).toContain('remaining-prd-gap');
   });
 

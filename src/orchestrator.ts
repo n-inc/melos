@@ -167,6 +167,8 @@ interface ResolvedVerificationConfig {
   failOnWorkerWarnings: boolean;
 }
 
+type HumanHandoffState = 'completed' | 'paused' | 'failed' | 'aborted' | 'max_iterations';
+
 const MODEL_ROTATION: string[] = getModelRotation();
 const DEFAULT_EXECUTION_CONFIG: ResolvedExecutionConfig = {
   maxFeatureAttempts: 3,
@@ -332,6 +334,7 @@ export class Orchestrator {
             success: false,
             reason: 'failed',
             completedIterations: this.state.missionPlan?.totalIterations ?? 0,
+            handoffContent: await this.writeHandoff('failed'),
             error: this.fatalFailureReason,
           };
         }
@@ -365,6 +368,7 @@ export class Orchestrator {
                 success: false,
                 reason: 'max_iterations',
                 completedIterations: missionPlan.totalIterations,
+                handoffContent: await this.writeHandoff('max_iterations'),
               };
             }
             await this.runExecutionIteration();
@@ -379,7 +383,7 @@ export class Orchestrator {
               success: true,
               reason: 'completed',
               completedIterations: missionPlan.totalIterations,
-              handoffContent: await this.writeHandoff(),
+              handoffContent: await this.writeHandoff('completed'),
             };
 
           case 'failed':
@@ -387,6 +391,7 @@ export class Orchestrator {
               success: false,
               reason: 'failed',
               completedIterations: missionPlan.totalIterations,
+              handoffContent: await this.writeHandoff('failed'),
             };
 
           case 'aborted':
@@ -394,6 +399,7 @@ export class Orchestrator {
               success: false,
               reason: 'aborted',
               completedIterations: missionPlan.totalIterations,
+              handoffContent: await this.writeHandoff('aborted'),
             };
 
           default:
@@ -405,6 +411,7 @@ export class Orchestrator {
         success: false,
         reason: this.fatalFailureReason ? 'failed' : 'aborted',
         completedIterations: this.state.missionPlan?.totalIterations ?? 0,
+        handoffContent: await this.writeHandoff(this.fatalFailureReason ? 'failed' : 'aborted'),
         error: this.fatalFailureReason ?? undefined,
       };
     } finally {
@@ -434,6 +441,7 @@ export class Orchestrator {
     }
     void this.persistMissionPlan();
     this.emitEvent('mission_interrupted', 'orchestrator', { reason });
+    void this.writeHandoff('paused', true);
     void this.emitStatusUpdate();
   }
 
@@ -3927,83 +3935,258 @@ export class Orchestrator {
     return 'mission';
   }
 
-  private async writeHandoff(): Promise<string> {
-    const missionPlan = this.requireMissionPlan();
-    const completedFeatures = missionPlan.milestones.flatMap((milestone) =>
-      milestone.features
-        .filter((feature) => feature.status === 'done' || feature.status === 'skipped')
-        .map((feature) => `- [x] ${feature.id}: ${feature.description}`)
-    );
-    const warnings = uniqueRuntimeWarnings(this.kernelState.warnings ?? [])
-      .map((warning) => `- ${formatRuntimeWarningRecord(warning)}`);
-    const latestReview = this.state.latestReviewReport;
-    const acceptedDeviations = this.state.reviewDecisions
-      .filter((decision) => decision.decision === 'accept_deviation')
-      .map((decision) => `- ${formatReviewDecisionRecord(decision)}`);
-    const handoffGaps = this.state.reviewDecisions
-      .filter((decision) => decision.decision === 'handoff_gap')
-      .map((decision) => `- ${formatReviewDecisionRecord(decision)}`);
-    const reviewLines = latestReview
-      ? [
-        `Last review: ${latestReview.reviewType} g${latestReview.generation} (${latestReview.passed ? 'passed' : 'failed'})`,
-        `Summary: ${latestReview.summary}`,
-        `Blocking findings: ${latestReview.blockingFindingCount}`,
-      ]
-      : ['No final review report'];
-    const gitStrategy = this.state.gitStrategy;
-    const gitLines = gitStrategy
-      ? [
-        `Base branch: ${gitStrategy.config.baseBranch}`,
-        `Active branch: ${gitStrategy.activeBranch ?? '-'}`,
-        `Pull request: ${gitStrategy.pullRequest ? `${gitStrategy.pullRequest.url} (${gitStrategy.pullRequest.action})` : '-'}`,
-        `Quiet until: ${gitStrategy.quietUntil ?? '-'}`,
-        `Last external activity: ${gitStrategy.lastExternalActivityAt ?? '-'}`,
-        `Handled feedback count: ${gitStrategy.handledFeedbackIds.length}`,
-      ]
-      : ['Git strategy disabled'];
+  private async writeHandoff(finalState: HumanHandoffState, preferFallbackOnly: boolean = false): Promise<string> {
+    const missionPlan = this.state.missionPlan;
+    if (!missionPlan) {
+      const fallback = buildUninitializedHumanHandoff(finalState, this.state.prd);
+      const handoffPath = join(this.config.cwd, 'HANDOFF.md');
+      await writeFile(handoffPath, `${fallback}\n`, 'utf-8');
+      return fallback;
+    }
+    const warnings = uniqueRuntimeWarnings(this.kernelState.warnings ?? []);
+    const formattedWarnings = warnings.map((warning) => formatRuntimeWarningRecord(warning));
+    const activeMilestone = missionPlan.activeMilestoneId
+      ? missionPlan.milestones.find((milestone) => milestone.id === missionPlan.activeMilestoneId) ?? null
+      : null;
+    const activeFeature = activeMilestone && missionPlan.activeFeatureId
+      ? activeMilestone.features.find((feature) => feature.id === missionPlan.activeFeatureId) ?? null
+      : null;
 
-    const content = [
-      '# Melos Mission Handoff',
-      '',
-      `Generated: ${new Date().toISOString()}`,
-      `Mission: ${missionPlan.mission.goal}`,
-      `State: ${missionPlan.state}`,
-      '',
-      '## Completed Features',
-      '',
-      ...(completedFeatures.length > 0 ? completedFeatures : ['- none']),
-      '',
-      '## Validation',
-      '',
-      this.state.latestValidationReport
-        ? `Last report: ${this.state.latestValidationReport.milestoneId} attempt ${this.state.latestValidationReport.attempt} (${this.state.latestValidationReport.passed ? 'passed' : 'failed'})`
-        : 'No validation report',
-      '',
-      '## Final Review',
-      '',
-      ...reviewLines,
-      '',
-      '## Accepted Deviations',
-      '',
-      ...(acceptedDeviations.length > 0 ? acceptedDeviations : ['- none']),
-      '',
-      '## PRD Gaps To Share',
-      '',
-      ...(handoffGaps.length > 0 ? handoffGaps : ['- none']),
-      '',
-      '## Git / Pull Request',
-      '',
-      ...gitLines,
-      '',
-      '## Warnings',
-      '',
-      ...(warnings.length > 0 ? warnings : ['- none']),
-    ].join('\n');
+    let content: string | undefined;
+    if (!this.config.dryRun && !preferFallbackOnly) {
+      content = await this.manager.generateHumanHandoff({
+        finalState,
+        missionPlan,
+        prd: this.state.prd,
+        latestValidationReport: this.state.latestValidationReport,
+        latestReviewReport: this.state.latestReviewReport,
+        reviewDecisions: this.state.reviewDecisions,
+        warnings: formattedWarnings,
+        activeMilestone,
+        activeFeature,
+      });
+    }
+
+    const finalContent = content ?? buildFallbackHumanHandoff({
+      finalState,
+      missionPlan,
+      prd: this.state.prd,
+      latestValidationReport: this.state.latestValidationReport,
+      latestReviewReport: this.state.latestReviewReport,
+      reviewDecisions: this.state.reviewDecisions,
+      warnings: formattedWarnings,
+      activeMilestone,
+      activeFeature,
+    });
 
     const handoffPath = join(this.config.cwd, 'HANDOFF.md');
-    await writeFile(handoffPath, `${content}\n`, 'utf-8');
-    return content;
+    await writeFile(handoffPath, `${finalContent}\n`, 'utf-8');
+    return finalContent;
   }
+}
+
+function buildUninitializedHumanHandoff(finalState: HumanHandoffState, prd: string | null): string {
+  const language = detectHumanHandoffLanguage(prd, '');
+  const labels = getFallbackHumanHandoffLabels(language);
+  return [
+    '# Handoff',
+    '',
+    labels.statusHeading,
+    '',
+    `- ${labels.stateLabel}: ${finalState}`,
+    `- ${labels.missionLabel}: ${language === 'ja' ? 'mission plan が未初期化のまま終了しました。' : 'Mission ended before the plan was initialized.'}`,
+    '',
+    labels.doneHeading,
+    '',
+    `- ${labels.none}`,
+    '',
+    labels.checkHeading,
+    '',
+    `- ${language === 'ja' ? 'PRD と実行ログを確認してください。' : 'Check the PRD and runtime logs.'}`,
+    '',
+    labels.followUpHeading,
+    '',
+    `- ${language === 'ja' ? 'planning 失敗または初期化前中断の原因確認が必要です。' : 'Investigate why planning failed or the run stopped before initialization.'}`,
+    '',
+    labels.improvementHeading,
+    '',
+    `- ${labels.none}`,
+    '',
+    labels.notesHeading,
+    '',
+    `- ${labels.none}`,
+  ].join('\n');
+}
+
+function buildFallbackHumanHandoff(input: {
+  finalState: HumanHandoffState;
+  missionPlan: MissionPlan;
+  prd: string | null;
+  latestValidationReport: ValidationReport | null;
+  latestReviewReport: ReviewReport | null;
+  reviewDecisions: ReviewDecisionRecord[];
+  warnings: string[];
+  activeMilestone: Milestone | null;
+  activeFeature: Feature | null;
+}): string {
+  const language = detectHumanHandoffLanguage(input.prd, input.missionPlan.mission.goal);
+  const labels = getFallbackHumanHandoffLabels(language);
+  const completedFeatures = input.missionPlan.milestones.flatMap((milestone) =>
+    milestone.features
+      .filter((feature) => feature.status === 'done' || feature.status === 'skipped')
+      .map((feature) => `${feature.id}: ${feature.description}`)
+  );
+  const acceptedDeviations = input.reviewDecisions
+    .filter((decision) => decision.decision === 'accept_deviation')
+    .map((decision) => formatReviewDecisionRecord(decision));
+  const handoffGaps = input.reviewDecisions
+    .filter((decision) => decision.decision === 'handoff_gap')
+    .map((decision) => formatReviewDecisionRecord(decision));
+
+  const statusLines = [
+    `${labels.stateLabel}: ${input.finalState}`,
+    `${labels.missionLabel}: ${input.missionPlan.mission.goal}`,
+    input.latestValidationReport
+      ? `${labels.validationLabel}: ${input.latestValidationReport.milestoneId} attempt ${input.latestValidationReport.attempt} (${input.latestValidationReport.passed ? labels.passed : labels.failed})`
+      : null,
+    input.latestReviewReport
+      ? `${labels.reviewLabel}: ${input.latestReviewReport.reviewType} g${input.latestReviewReport.generation} (${input.latestReviewReport.passed ? labels.passed : labels.failed}) - ${input.latestReviewReport.summary}`
+      : null,
+    input.activeFeature
+      ? `${labels.activeLabel}: ${input.activeFeature.id} ${input.activeFeature.description}`
+      : null,
+  ];
+
+  const checkLines = [
+    ...(!input.latestValidationReport?.passed && input.latestValidationReport
+      ? [language === 'ja'
+        ? `最新 validation の失敗内容と証跡を確認してください。(${input.latestValidationReport.milestoneId} attempt ${input.latestValidationReport.attempt})`
+        : `Check the latest validation failures and evidence. (${input.latestValidationReport.milestoneId} attempt ${input.latestValidationReport.attempt})`]
+      : []),
+    ...(!input.latestReviewReport?.passed && input.latestReviewReport
+      ? [language === 'ja'
+        ? `最新 review の findings と artifacts を確認してください。(${input.latestReviewReport.reviewType} g${input.latestReviewReport.generation})`
+        : `Check the latest review findings and artifacts. (${input.latestReviewReport.reviewType} g${input.latestReviewReport.generation})`]
+      : []),
+  ];
+
+  const followUpLines = [
+    ...(handoffGaps.length > 0 ? handoffGaps : []),
+    ...((input.finalState === 'failed' || input.finalState === 'aborted' || input.finalState === 'max_iterations') && input.activeFeature
+      ? [`${labels.resumeLabel}: ${input.activeFeature.id} ${input.activeFeature.description}`]
+      : []),
+  ];
+
+  const improvementLines = input.warnings.length > 0
+    ? input.warnings
+    : [labels.none];
+
+  const noteLines = [
+    ...(acceptedDeviations.length > 0 ? acceptedDeviations : []),
+    ...(input.finalState === 'completed' && input.warnings.length === 0 && handoffGaps.length === 0
+      ? [labels.noAdditionalAction]
+      : []),
+  ];
+
+  return [
+    '# Handoff',
+    '',
+    labels.statusHeading,
+    '',
+    ...toMarkdownBullets(statusLines, labels.none),
+    '',
+    labels.doneHeading,
+    '',
+    ...toMarkdownBullets(completedFeatures, labels.none),
+    '',
+    labels.checkHeading,
+    '',
+    ...toMarkdownBullets(checkLines, labels.none),
+    '',
+    labels.followUpHeading,
+    '',
+    ...toMarkdownBullets(followUpLines, labels.none),
+    '',
+    labels.improvementHeading,
+    '',
+    ...toMarkdownBullets(improvementLines, labels.none),
+    '',
+    labels.notesHeading,
+    '',
+    ...toMarkdownBullets(noteLines, labels.none),
+  ].join('\n');
+}
+
+function detectHumanHandoffLanguage(prd: string | null, goal: string): 'ja' | 'en' {
+  const source = `${prd ?? ''}\n${goal}`.trim();
+  return /[\u3040-\u30ff\u3400-\u9fff]/.test(source) ? 'ja' : 'en';
+}
+
+function getFallbackHumanHandoffLabels(language: 'ja' | 'en'): {
+  statusHeading: string;
+  doneHeading: string;
+  checkHeading: string;
+  followUpHeading: string;
+  improvementHeading: string;
+  notesHeading: string;
+  stateLabel: string;
+  missionLabel: string;
+  validationLabel: string;
+  reviewLabel: string;
+  activeLabel: string;
+  resumeLabel: string;
+  noAdditionalAction: string;
+  none: string;
+  passed: string;
+  failed: string;
+} {
+  if (language === 'ja') {
+    return {
+      statusHeading: '## 現在の状況',
+      doneHeading: '## 完了したこと',
+      checkHeading: '## 人間が確認すべきこと',
+      followUpHeading: '## 人間が修正・判断すべきこと',
+      improvementHeading: '## 発見した改善候補',
+      notesHeading: '## 補足',
+      stateLabel: '最終状態',
+      missionLabel: 'ミッション',
+      validationLabel: '最新 validation',
+      reviewLabel: '最新 review',
+      activeLabel: '最後に見ていた feature',
+      resumeLabel: '再開時の起点候補',
+      noAdditionalAction: '現時点で追加対応は不要です。',
+      none: '特になし',
+      passed: 'passed',
+      failed: 'failed',
+    };
+  }
+
+  return {
+    statusHeading: '## Current Status',
+    doneHeading: '## What Was Completed',
+    checkHeading: '## What A Human Should Verify',
+    followUpHeading: '## What A Human Should Fix Or Decide',
+    improvementHeading: '## Improvement Opportunities Found',
+    notesHeading: '## Notes',
+    stateLabel: 'Final state',
+    missionLabel: 'Mission',
+    validationLabel: 'Latest validation',
+    reviewLabel: 'Latest review',
+    activeLabel: 'Last active feature',
+    resumeLabel: 'Recommended resume point',
+    noAdditionalAction: 'No additional human action is required at this time.',
+    none: 'None',
+    passed: 'passed',
+    failed: 'failed',
+  };
+}
+
+function toMarkdownBullets(lines: Array<string | null | undefined>, fallback: string): string[] {
+  const normalized = lines
+    .map((line) => (typeof line === 'string' ? line.trim() : ''))
+    .filter((line) => line.length > 0);
+  const source = normalized.length > 0 ? normalized : [fallback];
+  return source.map((line) => `- ${line}`);
 }
 
 function extractGoalFromPrd(prd: string | null): string | null {

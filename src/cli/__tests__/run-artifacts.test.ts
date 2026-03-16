@@ -84,9 +84,10 @@ describe('cli run artifacts', () => {
     const handoffPath = join(rootDir, 'HANDOFF.md');
     expect(existsSync(handoffPath)).toBe(true);
     const handoff = readFileSync(handoffPath, 'utf-8');
-    expect(handoff).toContain('# Melos Mission Handoff');
+    expect(handoff).toContain('# Handoff');
+    expect(handoff).toContain('## What Was Completed');
     expect(handoff).toContain('Artifact validation mission');
-    expect(handoff).toContain('m1-f1');
+    expect(handoff).toContain('m1-f1: done');
 
     const eventsPath = join(melosDir, 'events.jsonl');
     expect(existsSync(eventsPath)).toBe(true);

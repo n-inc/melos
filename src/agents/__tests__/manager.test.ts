@@ -220,6 +220,93 @@ describe('ManagerAgent', () => {
     expect(briefing).not.toContain('AppHead.test.tsx');
   });
 
+  it('generates a human handoff with the configured engine', async () => {
+    const agent = new ManagerAgent({
+      cwd: process.cwd(),
+      promptsDir: 'prompts',
+      model: 'gpt-5.4',
+    });
+    const agentAny = agent as unknown as {
+      codexEngine: {
+        execute: (...args: unknown[]) => Promise<{
+          success: boolean;
+          output: string;
+          exitCode: number;
+        }>;
+      };
+      claudeEngine: {
+        execute: (...args: unknown[]) => Promise<unknown>;
+      };
+    };
+    const codexExecute = jest.spyOn(agentAny.codexEngine, 'execute').mockResolvedValue({
+      success: true,
+      output: [
+        '# Handoff',
+        '',
+        '## 現在の状況',
+        '',
+        '- completed',
+        '',
+        '## 完了したこと',
+        '',
+        '- done',
+        '',
+        '## 人間が確認すべきこと',
+        '',
+        '- 特になし',
+        '',
+        '## 人間が修正・判断すべきこと',
+        '',
+        '- 特になし',
+        '',
+        '## 発見した改善候補',
+        '',
+        '- 特になし',
+        '',
+        '## 補足',
+        '',
+        '- 特になし',
+      ].join('\n'),
+      exitCode: 0,
+    });
+
+    const missionPlan = createMissionPlan({
+      missionId: 'human-handoff',
+      goal: '完了後に人間向け handoff を残す',
+      constraints: ['No backward compatibility'],
+      successCriteria: ['handoff is human readable'],
+      milestones: [
+        {
+          id: 'm1',
+          title: 'Done',
+          description: 'desc',
+          status: 'done',
+          order: 1,
+          validationContract: { staticChecks: [], testSuites: [] },
+          features: [{ id: 'm1-f1', description: 'done', status: 'done', attempts: 1 }],
+        },
+      ],
+      state: 'completed',
+    });
+
+    const handoff = await agent.generateHumanHandoff({
+      finalState: 'completed',
+      missionPlan,
+      prd: '# handoff',
+      latestValidationReport: null,
+      latestReviewReport: null,
+      reviewDecisions: [],
+      warnings: [],
+      activeMilestone: null,
+      activeFeature: null,
+    });
+
+    expect(codexExecute).toHaveBeenCalled();
+    expect(handoff).toContain('# Handoff');
+    expect(handoff).toContain('## 現在の状況');
+    expect(handoff).toContain('## 発見した改善候補');
+  });
+
   it('generates mission plan from model output', async () => {
     const agent = new ManagerAgent({
       cwd: process.cwd(),
