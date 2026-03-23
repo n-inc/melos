@@ -84,62 +84,62 @@ When you ask, be specific: state what you've already investigated, what the opti
 
   sections.push(`## Git Commit Convention
 
-Commit often in meaningful units. Each commit is your handoff to the next iteration and serves as **the execution log** for the Manager monitoring your progress. The Manager reads \`git log\` to understand what you did, why, and what decisions you made — so commit messages must be detailed enough to reconstruct your reasoning.
+意味のある単位でこまめにコミットする。各コミットは次のイテレーションへの引き継ぎであり、Manager が進捗を監視するための**実行ログ**になる。Manager は \`git log\` を読んで何をしたか・なぜそうしたか・どんな判断をしたかを把握するので、コミットメッセージはその推論を再構成できる詳細さで書くこと。
 
 ### Format
 
 \`\`\`
-prefix: concise summary (imperative mood)
+prefix: 変更内容の要約
 
-Body: explain "why" — the reasoning, decisions, and context that
-cannot be understood from the diff alone.
+本文: diff から読み取れない「なぜ」を中心に書く。
+経緯・背景、問題、判断理由、結果を散文で記述する。
 \`\`\`
 
 ### Prefixes
 
-- \`feat:\` — new feature or capability
-- \`fix:\` — bug fix
-- \`update:\` — enhancement to existing functionality
-- \`refactor:\` — structural change with no behavior change
-- \`test:\` — tests only
-- \`chore:\` — maintenance, dependency updates
+- \`feat:\` — 新機能
+- \`fix:\` — バグ修正
+- \`update:\` — 既存機能の改善
+- \`refactor:\` — 振る舞いを変えない構造変更
+- \`test:\` — テストのみ
+- \`chore:\` — メンテナンス、依存関係の更新
 
-### Body structure
+### 本文の構成
 
-The body is **always required** (even for small changes). Structure it as a narrative:
+本文は**常に必須**（軽微な変更でも）。散文形式で以下を書く:
 
-1. **経緯・背景**: What were you trying to accomplish? What was the situation?
-2. **問題**: What issue did you encounter? (For bug fixes: reproduction conditions, symptoms)
-3. **判断**: What alternatives did you consider? Why did you choose this approach?
-4. **結果**: What is the outcome? Are there remaining concerns or follow-up items?
+1. **経緯・背景**: そもそも何をしようとしていたのか、どういう状況だったのか
+2. **問題**: 何が起きていたのか（バグ修正の場合は再現条件や症状）
+3. **判断**: どんな選択肢を検討し、なぜこのアプローチを選んだのか
+4. **結果**: 結果はどうなったか。残っている懸念やフォローアップはあるか
 
-Write in narrative prose, not a bullet list of file changes. The diff shows what changed — the body explains *why* those changes were made and *what decisions* led to them.
+ファイル変更の箇条書きではなく散文で書くこと。diff を見れば何が変わったかは分かる。本文には「なぜその変更をしたか」「どんな判断がそこに至ったか」を書く。
 
 ### Example
 
 \`\`\`
-fix: prevent blank page on initial load with collapsed sidebar
+fix: 折りたたみサイドバー時の初回ロードで白紙になる問題を修正
 
-CollapsedSidebar was switched to always-mounted to fix a flicker
-issue during open/close transitions.
+開閉トランジション時のちらつきを解消するため、CollapsedSidebar を
+常時マウント方式に変更していた（前回コミット）。
 
-However, always-mounting caused useLazyLoadQuery inside
-CollapsedSidebar to fire immediately on page load. Without a
-Suspense boundary, the thrown Promise propagated up to
-RequireAccountLogin's error boundary, rendering a blank page.
+しかし常時マウントにしたことで、ページ読み込み直後に
+CollapsedSidebar 内の useLazyLoadQuery が発火し、Suspense
+境界がないまま Promise が throw されて RequireAccountLogin の
+エラーバウンダリに到達、ページ全体が白紙になっていた。
 
-Wrapping CollapsedSidebar in Suspense absorbs the data-fetching
-suspension. Also added an isMounted guard to prevent SSR
-hydration mismatches with Suspense.
+CollapsedSidebar を Suspense で囲むことで、データ取得中の
+一時停止を吸収するようにした。また isMounted ガードを追加し、
+SSR 時の Suspense ハイドレーション不整合も回避した。
 \`\`\`
 
 ### Rules
 
-- Do NOT include person names in commit messages
-- Do NOT write a body that merely lists the files changed — that information is in the diff
-- Commit after each meaningful unit of work, not only at the end
-- Secret files (.env, credentials.json, etc.) must never be committed
-- \`.melos/\` directory must never be committed — it is a temporary working directory for melos exec`);
+- コミットメッセージに個人名を含めない
+- 変更ファイルの列挙だけの本文は書かない（その情報は diff にある）
+- 意味のある作業単位ごとにコミットする（最後にまとめてではなく）
+- 秘密ファイル（.env, credentials.json 等）は絶対にコミットしない
+- \`.melos/\` ディレクトリは絶対にコミットしない（melos exec の一時作業ディレクトリ）`);
 
   sections.push(`## Progress Tracking
 
