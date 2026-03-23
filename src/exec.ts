@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path';
 import { AppServerEngine } from './engines/app-server.js';
 import { ClaudeEngine } from './engines/claude.js';
-import { isClaudeFamily, isCodexFamily, resolveRuntimeModel } from './models/registry.js';
+import { isClaudeFamily, resolveRuntimeModel } from './models/registry.js';
 import type { Engine, EngineOptions } from './engines/base.js';
 
 export interface ExecOptions {
@@ -190,7 +190,7 @@ export function createEngine(model: string): Engine {
 
 export function buildEngineOptions(model: string, opts: ExecOptions): EngineOptions {
   const runtimeModel = resolveRuntimeModel(model);
-  const base = { cwd: opts.cwd, model: runtimeModel, timeout: 0 }; // 0 = no timeout for exec
+  const base = { cwd: opts.cwd, model: runtimeModel, timeout: 4 * 60 * 60 * 1000 }; // 4h fail-safe for exec
   if (isClaudeFamily(model)) {
     return { ...base, effort: opts.effort as EngineOptions['effort'] };
   }
@@ -229,6 +229,7 @@ export async function exec(task: string, options: ExecOptions): Promise<boolean>
 
   try {
     const startHead = gitHead(options.cwd);
+    clearProgressLog(options.cwd);
 
     for (let iteration = 1; iteration <= options.maxIterations; iteration++) {
       const handoff = iteration > 1 ? gitDiffStat(options.cwd, startHead) : '';
@@ -247,7 +248,7 @@ export async function exec(task: string, options: ExecOptions): Promise<boolean>
 
       const result = await engine.execute(prompt, optsWithLogging);
 
-      if (!result.success && !result.output) {
+      if (!result.success) {
         const msg = `engine error: ${result.error || 'unknown'}`;
         process.stderr.write(`  ✗ ${msg}\n`);
         logger.log(`\n--- error: ${msg} ---`);
@@ -301,14 +302,29 @@ function readProgressLog(cwd: string): string {
   }
 }
 
+function clearProgressLog(cwd: string): void {
+  try {
+    const progressPath = join(cwd, '.melos', 'progress.md');
+    writeFileSync(progressPath, '');
+  } catch {
+    // .melos/ may not exist yet — createExecLogger will create it
+  }
+}
+
 function gitDiffStat(cwd: string, before: string): string {
   try {
+    const parts: string[] = [];
     const after = gitHead(cwd);
     if (before && after && before !== after) {
-      return execSync(`git diff --stat ${before}..${after}`, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      const committed = execSync(`git diff --stat ${before}..${after}`, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      if (committed) parts.push(committed);
     }
-    // コミットされていない変更を取得
-    return execSync('git diff --stat', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    // Uncommitted changes (staged + unstaged + untracked)
+    const dirty = execSync('git diff --stat', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    if (dirty) parts.push(dirty);
+    const untracked = execSync('git ls-files --others --exclude-standard', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    if (untracked) parts.push('Untracked files:\n' + untracked);
+    return parts.join('\n');
   } catch {
     return '';
   }
