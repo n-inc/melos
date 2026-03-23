@@ -312,36 +312,32 @@ export function createProgram(): Command {
 
   program
     .command('exec')
-    .description('タスクを完了まで自律的にループ実行する')
-    .argument('<task>', '実行するタスク')
-    .requiredOption('--criteria <condition>', '完了条件')
+    .description('recipe または prompt を実行する')
+    .option('--recipe <path>', '実行する recipe module (.ts または -)')
+    .option('--prompt <text>', '1回だけ実行する prompt')
     .option('--model <model>', 'モデル', CODEX_LATEST_ALIAS)
     .option('--cwd <dir>', '作業ディレクトリ')
-    .option('--max-iterations <n>', 'ループ最大回数', '50')
-    .option('--effort <level>', 'reasoning effort', 'high')
-    .option('--no-ask', '質問せず自律判断する')
-    .option('--steering <text>', 'Manager からのステアリング（Q&A回答・方針修正）')
-    .action(async (task: string, options: {
-      criteria: string;
+    .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
+    .option('--effort <level>', '推論 effort (simple prompt mode 用)')
+    .action(async (options: {
+      recipe?: string;
+      prompt?: string;
       model: string;
       cwd?: string;
-      maxIterations: string;
-      effort: string;
-      ask: boolean;
-      steering?: string;
+      outputFormat: 'text' | 'json' | 'stream-json';
+      effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     }) => {
       await handleCommandAction(async () => {
-        const { exec } = await import('./exec.js');
-        const success = await exec(task, {
+        const { exec } = await import('./exec/index.js');
+        const summary = await exec({
+          recipe: options.recipe,
+          prompt: options.prompt,
           model: options.model,
           cwd: options.cwd ?? process.cwd(),
           effort: options.effort,
-          criteria: options.criteria,
-          maxIterations: parseInt(options.maxIterations, 10),
-          noAsk: !options.ask,
-          steering: options.steering ?? '',
+          outputFormat: options.outputFormat,
         });
-        if (!success) process.exit(1);
+        if (!summary.success) process.exit(1);
       });
     });
 
