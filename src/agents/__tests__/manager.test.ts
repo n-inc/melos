@@ -874,7 +874,7 @@ describe('ManagerAgent', () => {
     });
 
     const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
-    expect(prompt).toContain('All natural language fields must be written in Japanese.');
+    expect(prompt).toContain('自然言語フィールドはすべてJapaneseで書く。');
     expect(prompt).toContain('BEGIN_MISSION_PLAN_JSON');
     expect(prompt).toContain('END_MISSION_PLAN_JSON');
   });
@@ -1207,11 +1207,11 @@ describe('ManagerAgent', () => {
     });
 
     const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
-    expect(prompt).toContain('Prefer 2-3 milestones (phases)');
-    expect(prompt).toContain('For large implementations, keep phase count compact but allow sufficient features');
-    expect(prompt).toContain('Default feature model is codex-latest');
-    expect(prompt).toContain('Use model "claude-latest" only when the primary deliverable is a user-visible UI change in the rendered surface.');
-    expect(prompt).toContain('Do not use "claude-latest" for React/runtime/hooks/providers/contexts/types/dependencies/tests/config/build/tooling tasks');
+    expect(prompt).toContain('マイルストーンは 2-3 を推奨（フェーズ）');
+    expect(prompt).toContain('大規模な実装では、フェーズ数はコンパクトに保ちつつ、必要に応じて十分な feature を許容する');
+    expect(prompt).toContain('デフォルトの feature model は codex-latest');
+    expect(prompt).toContain('model "claude-latest" は、主要な成果物がレンダリングされたサーフェスでのユーザー可視 UI 変更である場合のみ使う。');
+    expect(prompt).toContain('React/ランタイム/hooks/providers/contexts/types/dependencies/tests/config/build/tooling タスクには "claude-latest" を使わない');
   });
 
   it('preserves planner-selected model for UI tasks', async () => {
@@ -1416,9 +1416,9 @@ describe('ManagerAgent', () => {
     });
 
     const prompt = String(executeSpy.mock.calls[0]?.[0] ?? '');
-    expect(prompt).toContain('You must inspect the repository before finalizing the plan.');
-    expect(prompt).toContain('Files already reviewed by system and required for planning coverage:');
-    expect(prompt).toContain('Repository Context (coverage-oriented, pre-read by system):');
+    expect(prompt).toContain('プランを決める前にリポジトリを調べる。');
+    expect(prompt).toContain('システムが既にレビュー済みで、プランニングカバレッジに必要なファイル:');
+    expect(prompt).toContain('リポジトリコンテキスト（カバレッジ重視、システムが事前読み込み済み）:');
     expect(prompt).toContain('Package name: planning-context-app');
     expect(prompt).toContain('Framework hints: react, vite');
     expect(prompt).toContain('src/auth/session.ts');

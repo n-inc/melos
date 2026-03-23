@@ -38,48 +38,48 @@ export function buildPrompt(
 ): string {
   const sections: string[] = [];
 
-  sections.push(`## Task\n\n${task}`);
-  sections.push(`## Completion Criteria\n\n${criteria}`);
+  sections.push(`## タスク\n\n${task}`);
+  sections.push(`## 完了条件\n\n${criteria}`);
 
   if (steering) {
-    sections.push(`## Steering\n\n${steering}`);
+    sections.push(`## ステアリング\n\n${steering}`);
   }
 
   if (progressLog) {
-    sections.push(`## Progress Log\n\nThe file \`.melos/progress.md\` contains notes from previous iterations:\n\n${progressLog}`);
+    sections.push(`## 進捗ログ\n\n\`.melos/progress.md\` に前回イテレーションのメモがあります:\n\n${progressLog}`);
   }
 
   if (handoff) {
-    sections.push(`## Previous Progress (Iteration ${iteration})\n\nFiles changed so far:\n${handoff}`);
+    sections.push(`## 前回の進捗（イテレーション ${iteration}）\n\nこれまでの変更ファイル:\n${handoff}`);
   }
 
   const instructions: string[] = [
-    'Work on the task above.',
-    `When you have fully completed the task and all criteria are met, output <complete></complete>.`,
+    '上記のタスクに取り組む。',
+    `タスクが完全に完了し、すべての条件を満たしたら <complete></complete> を出力する。`,
   ];
 
   if (!noAsk) {
     instructions.push(
-      `If any of the following apply, you MUST stop and ask by outputting <question>your question here</question> instead of making assumptions:`,
+      `以下のいずれかに該当する場合、仮定せずに <question>質問内容</question> を出力して必ず質問する:`,
     );
-    sections.push(`## Instructions\n\n${instructions.map((s) => `- ${s}`).join('\n')}`);
-    sections.push(`## When to Ask
+    sections.push(`## 指示\n\n${instructions.map((s) => `- ${s}`).join('\n')}`);
+    sections.push(`## 質問すべきとき
 
-You MUST ask a question (\`<question>...</question>\`) before proceeding if:
+次のどれかに当てはまるなら、\`<question>...</question>\` で質問してから進める:
 
-- **Architecture/technology choice is unspecified** — e.g., which framework, library, authentication method (JWT vs session), database, etc.
-- **Multiple valid interpretations exist** — the task or criteria can be read in more than one reasonable way
-- **Scope is unclear** — it's not obvious what files, modules, or boundaries the task covers
-- **Breaking changes are involved** — the task might require changes that affect other parts of the system
-- **No existing patterns to follow** — there is no prior code in the repo to infer the expected style or approach
+- **技術選定が決まっていない**: フレームワーク、ライブラリ、認証方式、DB など
+- **読み方が複数ある**: タスクや条件を複数の妥当な方法で解釈できる
+- **スコープがはっきりしない**: どのファイル・モジュール・境界が対象か分からない
+- **壊す可能性がある**: 変更がシステムの他の部分に波及しそう
+- **手本がない**: リポジトリにスタイルやアプローチを推測できる既存コードがない
 
-Do NOT ask about things you can determine by reading the codebase. Only ask about decisions that require human judgment.
-When you ask, be specific: state what you've already investigated, what the options are, and what you need to decide.`);
+コードを読めば分かることは聞かない。人間の判断が要る決定だけ質問する。
+質問は具体的に: 何を調べたか、選択肢は何か、何を決めてほしいかを書く。`);
   } else {
     instructions.push(
-      'Make your own decisions without asking questions. Use your best judgment.',
+      '質問せずに自分で判断する。最善の判断を使う。',
     );
-    sections.push(`## Instructions\n\n${instructions.map((s) => `- ${s}`).join('\n')}`);
+    sections.push(`## 指示\n\n${instructions.map((s) => `- ${s}`).join('\n')}`);
   }
 
   sections.push(`## Git Commit Convention
@@ -141,42 +141,42 @@ SSR 時の Suspense ハイドレーション不整合も回避した。
 - 秘密ファイル（.env, credentials.json 等）は絶対にコミットしない
 - \`.melos/\` ディレクトリは絶対にコミットしない（melos exec の一時作業ディレクトリ）`);
 
-  sections.push(`## Progress Tracking
+  sections.push(`## 進捗トラッキング
 
-Before your session ends, append a progress entry to \`.melos/progress.md\`.
+セッション終了前に、\`.melos/progress.md\` に進捗エントリを追記する。
 
-### Format
+### フォーマット
 
 \`\`\`markdown
-## Iteration ${iteration}
+## イテレーション ${iteration}
 
-### Status: [🟢 On Track | 🟡 Partial | 🔴 Blocked]
+### ステータス: [🟢 順調 | 🟡 部分的 | 🔴 ブロック]
 
-### What Was Done
-- [action taken and its outcome]
+### やったこと
+- [実施した内容とその結果]
 
-### Key Decisions
-- [what you chose] — [why; what alternatives you considered]
+### 主な判断
+- [何を選んだか] — [なぜ。どんな選択肢を検討したか]
 
-### Current State
-- Tests: [pass/fail count, specific failures]
-- Build: [compiles? type errors?]
-- Modified files: \`path/to/file.ts\` — [what changed and why]
+### 現在の状態
+- テスト: [pass/fail 数、具体的な失敗]
+- ビルド: [コンパイル通る？型エラーは？]
+- 変更ファイル: \`path/to/file.ts\` — [何をなぜ変えたか]
 
-### Next Steps
-1. **Immediate**: [the single most important next action]
-2. **Then**: [subsequent actions in priority order]
+### 次のステップ
+1. **最優先**: [次にやるべき最も重要なアクション]
+2. **その後**: [優先順位順の後続アクション]
 
-### Blockers / Open Questions
-- [ ] [anything preventing progress — be specific]
+### ブロッカー / 未解決の質問
+- [ ] [進捗を妨げているもの — 具体的に]
 \`\`\`
 
-### Rules
+### ルール
 
-- Write as if briefing a colleague who has zero context beyond this file and the git log
-- Be specific: "test_auth fails with 'JWT expired' on line 42" not "some tests fail"
-- Include error messages verbatim — the next iteration cannot see your terminal
-- Decisions without rationale are useless`);
+- このファイルと git log 以外のコンテキストがない同僚にブリーフィングするつもりで書く
+- 具体的に: 「test_auth が42行目で 'JWT expired' で失敗」であって「テストが失敗」ではない
+- エラーメッセージはそのまま含める — 次のイテレーションはターミナルを見られない
+- 根拠のない判断は無価値`);
 
   return sections.join('\n\n');
 }

@@ -50,7 +50,7 @@ describe('buildPrompt', () => {
   it('ステアリング', () => {
     const p = buildPrompt('認証を追加', 'テスト通過', '', 'JWT を使って', 1, false);
     expect(p).toContain('JWT を使って');
-    expect(p).toContain('Steering');
+    expect(p).toContain('ステアリング');
   });
 
   it('noAsk=true で question 指示なし', () => {
@@ -60,13 +60,13 @@ describe('buildPrompt', () => {
 
   it('progressLog 付き', () => {
     const p = buildPrompt('認証を追加', 'テスト通過', '', '', 2, false, '## Iteration 1\nテスト失敗: assert error');
-    expect(p).toContain('Progress Log');
+    expect(p).toContain('進捗ログ');
     expect(p).toContain('テスト失敗');
   });
 
   it('progressLog なしなら表示しない', () => {
     const p = buildPrompt('認証を追加', 'テスト通過', '', '', 1, false);
-    expect(p).not.toContain('Progress Log');
+    expect(p).not.toContain('進捗ログ');
   });
 });
 

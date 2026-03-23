@@ -140,21 +140,21 @@ describe('WorkerAgent', () => {
     expect(prompt).toContain('# Worker Agent - Feature Executor');
     expect(prompt).toContain('git-commit');
     expect(prompt).toContain('.claude/skills/git-commit/SKILL.md');
-    expect(prompt).toContain('Follow the git-commit skill at:');
+    expect(prompt).toContain('git-commit スキル');
     expect(prompt).toContain('git status --porcelain');
     expect(prompt).toContain('git diff --staged');
-    expect(prompt).toContain('## Runtime Context');
-    expect(prompt).toContain('## Protected Runtime Files');
-    expect(prompt).toContain('## Validation Boundaries');
-    expect(prompt).toContain('Never edit TASK.json.');
-    expect(prompt).toContain('Never edit `.melos/state.json`, `.melos/validations/*`, or `.melos/reviews/*`.');
-    expect(prompt).toContain('Milestone-level validation and dedicated QA are orchestrator-owned downstream steps');
+    expect(prompt).toContain('## ランタイムコンテキスト');
+    expect(prompt).toContain('## 保護されたランタイムファイル');
+    expect(prompt).toContain('## バリデーション境界');
+    expect(prompt).toContain('TASK.json は編集しない。');
+    expect(prompt).toContain('`.melos/state.json`、`.melos/validations/*`、`.melos/reviews/*` は編集しない。');
+    expect(prompt).toContain('マイルストーンレベルのバリデーションと専用 QA はオーケストレーターが管理する下流ステップ');
     expect(prompt).not.toContain('## Milestone Validation Checks');
     expect(prompt).not.toContain('## Milestone Validation Commands');
     expect(prompt).not.toContain('## Dedicated QA Handoff');
     expect(prompt).toContain('`BLOCKED` は人手の介入が必要で、Melos が自動では前進できない場合にだけ使う');
     expect(prompt).toContain('`requestsHelp` は、人手の介入が必要で自動実行を止めるべきときだけ `true` にする');
-    expect(prompt).toContain('Mission goal: Sample goal');
+    expect(prompt).toContain('ミッションゴール: Sample goal');
   });
 
   it('builds a dedicated qa prompt and enables js_repl for browser qa', async () => {
@@ -228,13 +228,13 @@ describe('WorkerAgent', () => {
     const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
     const options = codexExecute.mock.calls[0]?.[1] as { enabledFeatures?: string[] } | undefined;
     expect(qaFeature.kind).toBe('qa');
-    expect(prompt).toContain('## QA Mode');
-    expect(prompt).toContain('## QA Checks');
-    expect(prompt).toContain('## Protected Runtime Files');
+    expect(prompt).toContain('## QA モード');
+    expect(prompt).toContain('## QA チェック');
+    expect(prompt).toContain('## 保護されたランタイムファイル');
     expect(prompt).toContain('playwright-interactive');
     expect(prompt).toContain('evidenceMode=before_after');
     expect(prompt).toContain('reproduceBefore=true');
-    expect(prompt).not.toContain('## Commit Workflow');
+    expect(prompt).not.toContain('## コミットワークフロー');
     expect(options?.enabledFeatures).toEqual(['js_repl']);
   });
 
@@ -394,7 +394,7 @@ describe('WorkerAgent', () => {
 
       const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
       const options = codexExecute.mock.calls[0]?.[1] as { cwd?: string } | undefined;
-      expect(prompt).toContain(`Execution cwd: ${join(repoCwd, 'frontend/apps/web')}`);
+      expect(prompt).toContain(`実行 cwd: ${join(repoCwd, 'frontend/apps/web')}`);
       expect(options?.cwd).toBe(join(repoCwd, 'frontend/apps/web'));
     } finally {
       await rm(repoCwd, { recursive: true, force: true });
@@ -724,10 +724,10 @@ describe('WorkerAgent', () => {
 
     const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
     const options = codexExecute.mock.calls[0]?.[1] as { enabledFeatures?: string[] } | undefined;
-    expect(prompt).toContain('Always return one `checkpointResults` entry per contract checkpoint when the browser review actually ran.');
-    expect(prompt).toContain('For every visual checkpoint, capture at least one `after` screenshot');
-    expect(prompt).toContain('every screenshot/video should include the matching `checkpointId` and `phase`');
-    expect(prompt).toContain('Only omit `checkpointResults` when you return `BLOCKED` before the review could start.');
+    expect(prompt).toContain('ブラウザレビューが実際に実行された場合、契約チェックポイントごとに1つの `checkpointResults` エントリを必ず返す。');
+    expect(prompt).toContain('すべてのビジュアルチェックポイントについて、少なくとも1つの `after` スクリーンショットをキャプチャし');
+    expect(prompt).toContain('すべてのスクリーンショット/ビデオに対応する `checkpointId` と `phase` を含める');
+    expect(prompt).toContain('`checkpointResults` を省略するのは、レビュー開始前に `BLOCKED` を返す場合のみ。');
     expect(prompt).toContain('root-dispatcher');
     expect(prompt).not.toContain('Verify SEO head signals');
     expect(options?.enabledFeatures).toEqual(['js_repl']);
@@ -811,7 +811,7 @@ describe('WorkerAgent', () => {
 
       const prompt = String(codexExecute.mock.calls[0]?.[0] ?? '');
       const options = codexExecute.mock.calls[0]?.[1] as { cwd?: string } | undefined;
-      expect(prompt).toContain(`Execution cwd: ${repoCwd}`);
+      expect(prompt).toContain(`実行 cwd: ${repoCwd}`);
       expect(prompt).toContain('"target": "http://127.0.0.1:$(cat .port 2>/dev/null || echo ${CONDUCTOR_PORT:-8000})"');
       expect(options?.cwd).toBe(repoCwd);
     } finally {
