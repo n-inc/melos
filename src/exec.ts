@@ -155,9 +155,7 @@ Before your session ends, append a progress entry to \`.melos/progress.md\`.
 - [action taken and its outcome]
 
 ### Key Decisions
-| Decision | Rationale |
-|----------|-----------|
-| [what you chose] | [why — what alternatives you considered] |
+- [what you chose] — [why; what alternatives you considered]
 
 ### Current State
 - Tests: [pass/fail count, specific failures]
@@ -176,9 +174,8 @@ Before your session ends, append a progress entry to \`.melos/progress.md\`.
 
 - Write as if briefing a colleague who has zero context beyond this file and the git log
 - Be specific: "test_auth fails with 'JWT expired' on line 42" not "some tests fail"
-- Include error messages verbatim when relevant — the next iteration cannot see your terminal
-- Decisions must include rationale — "chose X" without "because Y" is useless
-- Keep each entry concise (under 30 lines) — this is a handoff, not a journal`);
+- Include error messages verbatim — the next iteration cannot see your terminal
+- Decisions without rationale are useless`);
 
   return sections.join('\n\n');
 }
