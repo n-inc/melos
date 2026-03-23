@@ -310,6 +310,41 @@ export function createProgram(): Command {
       });
     });
 
+  program
+    .command('exec')
+    .description('タスクを完了まで自律的にループ実行する')
+    .argument('<task>', '実行するタスク')
+    .requiredOption('--criteria <condition>', '完了条件')
+    .option('--model <model>', 'モデル', CODEX_LATEST_ALIAS)
+    .option('--cwd <dir>', '作業ディレクトリ')
+    .option('--max-iterations <n>', 'ループ最大回数', '50')
+    .option('--effort <level>', 'reasoning effort', 'high')
+    .option('--no-ask', '質問せず自律判断する')
+    .option('--steering <text>', 'Manager からのステアリング（Q&A回答・方針修正）')
+    .action(async (task: string, options: {
+      criteria: string;
+      model: string;
+      cwd?: string;
+      maxIterations: string;
+      effort: string;
+      ask: boolean;
+      steering?: string;
+    }) => {
+      await handleCommandAction(async () => {
+        const { exec } = await import('./exec.js');
+        const success = await exec(task, {
+          model: options.model,
+          cwd: options.cwd ?? process.cwd(),
+          effort: options.effort,
+          criteria: options.criteria,
+          maxIterations: parseInt(options.maxIterations, 10),
+          noAsk: !options.ask,
+          steering: options.steering ?? '',
+        });
+        if (!success) process.exit(1);
+      });
+    });
+
   return program;
 }
 
