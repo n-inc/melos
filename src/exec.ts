@@ -142,16 +142,43 @@ hydration mismatches with Suspense.
 
   sections.push(`## Progress Tracking
 
-Before your session ends, append a progress entry to \`.melos/progress.md\` with:
+Before your session ends, append a progress entry to \`.melos/progress.md\`.
 
-- **What you did** — actions taken, files changed, tests run
-- **What happened** — results, errors, unexpected findings
-- **Decisions made** — why you chose this approach over alternatives
-- **What remains** — next steps, blockers, concerns
+### Format
 
-Format each entry with a heading: \`## Iteration ${iteration}\`
+\`\`\`markdown
+## Iteration ${iteration}
 
-This file is your handoff to the next iteration. Write it as if briefing a colleague who will continue your work with no other context.`);
+### Status: [🟢 On Track | 🟡 Partial | 🔴 Blocked]
+
+### What Was Done
+- [action taken and its outcome]
+
+### Key Decisions
+| Decision | Rationale |
+|----------|-----------|
+| [what you chose] | [why — what alternatives you considered] |
+
+### Current State
+- Tests: [pass/fail count, specific failures]
+- Build: [compiles? type errors?]
+- Modified files: \`path/to/file.ts\` — [what changed and why]
+
+### Next Steps
+1. **Immediate**: [the single most important next action]
+2. **Then**: [subsequent actions in priority order]
+
+### Blockers / Open Questions
+- [ ] [anything preventing progress — be specific]
+\`\`\`
+
+### Rules
+
+- Write as if briefing a colleague who has zero context beyond this file and the git log
+- Be specific: "test_auth fails with 'JWT expired' on line 42" not "some tests fail"
+- Include error messages verbatim when relevant — the next iteration cannot see your terminal
+- Decisions must include rationale — "chose X" without "because Y" is useless
+- Keep each entry concise (under 30 lines) — this is a handoff, not a journal`);
 
   return sections.join('\n\n');
 }
