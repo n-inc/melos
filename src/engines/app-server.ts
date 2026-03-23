@@ -518,14 +518,17 @@ export class AppServerEngine extends Engine {
     const transport = this.getTransport();
 
     return new Promise<TurnCompletionResult>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        unsubscribe();
-        void this.interruptActiveTurn().catch(() => {
-          // タイムアウト時の中断失敗は握りつぶす
-        });
-        reject(new Error('Timed out while waiting for turn completion'));
-      }, timeoutMs);
-      timer.unref();
+      // timeoutMs <= 0 means no timeout (long-running exec tasks)
+      const timer = timeoutMs > 0
+        ? setTimeout(() => {
+          unsubscribe();
+          void this.interruptActiveTurn().catch(() => {
+            // タイムアウト時の中断失敗は握りつぶす
+          });
+          reject(new Error('Timed out while waiting for turn completion'));
+        }, timeoutMs)
+        : null;
+      if (timer) timer.unref();
 
       const unsubscribe = transport.onNotification((method, rawParams) => {
         handlers.onEvent(method, rawParams);
@@ -574,7 +577,7 @@ export class AppServerEngine extends Engine {
             return;
           }
 
-          clearTimeout(timer);
+          if (timer) clearTimeout(timer);
           unsubscribe();
           resolve({
             status: notification.turn.status,

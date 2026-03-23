@@ -138,7 +138,8 @@ hydration mismatches with Suspense.
 - Do NOT include person names in commit messages
 - Do NOT write a body that merely lists the files changed — that information is in the diff
 - Commit after each meaningful unit of work, not only at the end
-- Secret files (.env, credentials.json, etc.) must never be committed`);
+- Secret files (.env, credentials.json, etc.) must never be committed
+- \`.melos/\` directory must never be committed — it is a temporary working directory for melos exec`);
 
   sections.push(`## Progress Tracking
 
@@ -189,7 +190,7 @@ export function createEngine(model: string): Engine {
 
 export function buildEngineOptions(model: string, opts: ExecOptions): EngineOptions {
   const runtimeModel = resolveRuntimeModel(model);
-  const base = { cwd: opts.cwd, model: runtimeModel };
+  const base = { cwd: opts.cwd, model: runtimeModel, timeout: 0 }; // 0 = no timeout for exec
   if (isClaudeFamily(model)) {
     return { ...base, effort: opts.effort as EngineOptions['effort'] };
   }
