@@ -6,6 +6,7 @@ import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
+import { buildIterationHandoff, cleanupHandoffArtifacts, writeIterationHandoff } from './handoff.js';
 import {
   defaultPromptRenderer,
   normalizeObservation,
@@ -15,7 +16,9 @@ import {
   type RecipeContextBase,
   type RecipeDefinition,
   type RecipeLog,
+  type ResolvedQuestion,
   type RunnerState,
+  type RuntimeTraceEntry,
   type RuntimeEngine,
 } from './recipe.js';
 
@@ -40,6 +43,13 @@ export interface RunRecipeOptions {
   cwd?: string;
   melosDir: string;
   recipePath?: string;
+  askMode?: 'agent-first' | 'never-user' | 'always-user';
+  askUser?: (input: {
+    question: string;
+    state: RunnerState;
+    recipe: RecipeDefinition;
+  }) => Promise<string | null>;
+  keepHandoff?: boolean;
 }
 
 export function eventLog(options: {
@@ -93,36 +103,56 @@ function resolveExecutionCwd(options: RunRecipeOptions): string {
   return resolve(baseCwd, recipeRunCwd);
 }
 
-function buildEngineOptions(recipe: RecipeDefinition, cwd: string): EngineOptions & {
+function buildEngineOptions(input: {
+  recipe: RecipeDefinition;
+  cwd: string;
+  state: RunnerState;
   onStream?: (chunk: string) => void;
+  onCommandOutput?: (chunk: string) => void;
+  onEvent?: (method: string, params: unknown) => void;
+}): EngineOptions & {
+  onStream?: (chunk: string) => void;
+  onCommandOutput?: (chunk: string) => void;
+  onEvent?: (method: string, params: unknown) => void;
   suppressTerminalOutput: boolean;
+  threadId?: string;
 } {
-  const model = recipe.run.model;
-  const timeout = recipe.run.timeoutMs;
-  const engineType = typeof recipe.run.engine === 'string'
-    ? recipe.run.engine
+  const model = input.recipe.run.model;
+  const timeout = input.recipe.run.timeoutMs;
+  const engineType = typeof input.recipe.run.engine === 'string'
+    ? input.recipe.run.engine
     : resolveModelEngine(model);
   const isClaude = engineType === 'claude' || (engineType === 'auto' && isClaudeFamily(model));
 
   const options: EngineOptions & {
     onStream?: (chunk: string) => void;
+    onCommandOutput?: (chunk: string) => void;
+    onEvent?: (method: string, params: unknown) => void;
     suppressTerminalOutput: boolean;
+    threadId?: string;
   } = {
-    cwd,
+    cwd: input.cwd,
     timeout,
     suppressTerminalOutput: true,
+    onStream: input.onStream,
+    onCommandOutput: input.onCommandOutput,
+    onEvent: input.onEvent,
   };
 
   if (model) {
     options.model = resolveRuntimeModel(model);
   }
 
-  if (recipe.run.effort) {
+  if (input.recipe.run.effort) {
     if (isClaude) {
-      options.effort = recipe.run.effort as EngineOptions['effort'];
+      options.effort = input.recipe.run.effort as EngineOptions['effort'];
     } else {
-      options.reasoningEffort = recipe.run.effort as EngineOptions['reasoningEffort'];
+      options.reasoningEffort = input.recipe.run.effort as EngineOptions['reasoningEffort'];
     }
+  }
+
+  if (!isClaude && input.state.engineThreadId) {
+    options.threadId = input.state.engineThreadId;
   }
 
   return options;
@@ -146,13 +176,19 @@ function applyDecisionStateUpdate(state: RunnerState, decision: Decision): Runne
   };
 }
 
-function createRecipeContext(state: RunnerState, melosDir: string): RecipeContextBase {
+function createRecipeContext(
+  state: RunnerState,
+  melosDir: string,
+  recipe: RecipeDefinition
+): RecipeContextBase {
   return {
     cwd: state.cwd,
     melosDir,
     recipePath: state.recipePath,
     state,
     previousObservation: state.lastObservation,
+    resolvedQuestions: state.resolvedQuestions ?? [],
+    runConfig: recipe.run,
   };
 }
 
@@ -176,6 +212,308 @@ function finalizeSummary(params: {
   };
 }
 
+function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): ContextSection[] {
+  if (resolvedQuestions.length === 0) {
+    return [];
+  }
+  return [{
+    title: 'resolved questions',
+    content: JSON.stringify(resolvedQuestions, null, 2),
+  }];
+}
+
+function pushTraceEntry(trace: RuntimeTraceEntry[], entry: RuntimeTraceEntry): void {
+  trace.push(entry);
+}
+
+function captureEngineTrace(trace: RuntimeTraceEntry[]): {
+  onStream: (chunk: string) => void;
+  onCommandOutput: (chunk: string) => void;
+  onEvent: (method: string, params: unknown) => void;
+} {
+  return {
+    onStream: (chunk) => {
+      if (chunk.trim().length === 0) {
+        return;
+      }
+      pushTraceEntry(trace, {
+        kind: 'agent_message',
+        timestamp: new Date().toISOString(),
+        text: chunk,
+      });
+    },
+    onCommandOutput: (chunk) => {
+      if (chunk.trim().length === 0) {
+        return;
+      }
+      pushTraceEntry(trace, {
+        kind: 'command_output',
+        timestamp: new Date().toISOString(),
+        text: chunk,
+      });
+    },
+    onEvent: (method, params) => {
+      const timestamp = new Date().toISOString();
+      if (method === 'item/commandExecution/requestApproval' && isRecord(params)) {
+        const command = readString(params, 'command');
+        if (command) {
+          pushTraceEntry(trace, {
+            kind: 'command',
+            timestamp,
+            command,
+            cwd: readString(params, 'cwd') ?? undefined,
+            reason: readString(params, 'reason') ?? undefined,
+            source: 'app-server',
+          });
+          return;
+        }
+      }
+      if (method === 'item/fileChange/requestApproval' && isRecord(params)) {
+        pushTraceEntry(trace, {
+          kind: 'file_change',
+          timestamp,
+          path: readString(params, 'path') ?? undefined,
+          source: 'app-server',
+          data: params,
+        });
+        return;
+      }
+      if (method === 'claude/tool_use' && isRecord(params)) {
+        const name = readString(params, 'name');
+        const input = isRecord(params.input) ? params.input : null;
+        if (name === 'Bash') {
+          const command = input ? readString(input, 'command') : null;
+          if (command) {
+            pushTraceEntry(trace, {
+              kind: 'command',
+              timestamp,
+              command,
+              cwd: input ? readString(input, 'cwd') ?? undefined : undefined,
+              source: 'claude',
+            });
+            return;
+          }
+        }
+        if (name === 'Edit' || name === 'Write' || name === 'MultiEdit') {
+          pushTraceEntry(trace, {
+            kind: 'file_change',
+            timestamp,
+            path: input ? readString(input, 'file_path') ?? undefined : undefined,
+            source: 'claude',
+            data: params,
+          });
+          return;
+        }
+      }
+      if (method === 'claude/tool_result' && isRecord(params)) {
+        pushTraceEntry(trace, {
+          kind: 'tool_result',
+          timestamp,
+          text: readString(params, 'content') ?? '',
+          source: 'claude',
+          isError: typeof params.is_error === 'boolean' ? params.is_error : undefined,
+          exitCode: typeof params.exit_code === 'number' ? params.exit_code : undefined,
+          durationMs: typeof params.duration_ms === 'number' ? params.duration_ms : undefined,
+        });
+        return;
+      }
+
+      pushTraceEntry(trace, {
+        kind: 'engine_event',
+        timestamp,
+        method,
+        data: params,
+      });
+    },
+  };
+}
+
+function buildAskResolverPrompt(input: {
+  question: string;
+  observationSummary: string;
+  observationDetails?: string;
+  assistantText: string;
+  resolvedQuestions: ResolvedQuestion[];
+}): string {
+  return defaultPromptRenderer(
+    [
+      'You are resolving a blocking question for melos exec.',
+      'Return strict JSON only.',
+      'Use this exact shape:',
+      '{"resolved":true|false,"answer":"...","rationale":"..."}',
+      'If the question cannot be answered from the available context, return {"resolved":false,...}.',
+    ].join('\n'),
+    [
+      {
+        title: 'question',
+        content: input.question,
+      },
+      {
+        title: 'latest observation',
+        content: JSON.stringify({
+          summary: input.observationSummary,
+          details: input.observationDetails,
+        }, null, 2),
+      },
+      {
+        title: 'latest assistant output',
+        content: input.assistantText.trim() || '(empty assistant output)',
+      },
+      ...(input.resolvedQuestions.length > 0
+        ? [{
+          title: 'resolved questions',
+          content: JSON.stringify(input.resolvedQuestions, null, 2),
+        }]
+        : []),
+    ]
+  );
+}
+
+async function resolveAskWithAgent(input: {
+  engine: Engine;
+  recipe: RecipeDefinition;
+  cwd: string;
+  melosDir: string;
+  state: RunnerState;
+  question: string;
+  observationSummary: string;
+  observationDetails?: string;
+  assistantText: string;
+  trace: RuntimeTraceEntry[];
+}): Promise<ResolvedQuestion | null> {
+  const traceCallbacks = captureEngineTrace(input.trace);
+  const result = await input.engine.execute(
+    buildAskResolverPrompt({
+      question: input.question,
+      observationSummary: input.observationSummary,
+      observationDetails: input.observationDetails,
+      assistantText: input.assistantText,
+      resolvedQuestions: input.state.resolvedQuestions ?? [],
+    }),
+    buildEngineOptions({
+      recipe: input.recipe,
+      cwd: input.cwd,
+      state: input.state,
+      ...traceCallbacks,
+    })
+  );
+  input.state.engineThreadId = readActiveThreadId(input.engine) ?? input.state.engineThreadId;
+  if (!result.success) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(result.output) as {
+      resolved?: boolean;
+      answer?: string;
+      rationale?: string;
+    };
+    if (parsed.resolved !== true || typeof parsed.answer !== 'string' || parsed.answer.trim().length === 0) {
+      return null;
+    }
+    return {
+      iteration: input.state.iteration,
+      question: input.question,
+      answer: parsed.answer.trim(),
+      source: 'agent',
+      rationale: typeof parsed.rationale === 'string' ? parsed.rationale.trim() : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveAskDecision(input: {
+  options: RunRecipeOptions;
+  recipe: RecipeDefinition;
+  logger: RecipeLog;
+  state: RunnerState;
+  decision: Extract<Decision, { kind: 'ask' }>;
+  engine: Engine;
+  observation: ReturnType<typeof normalizeObservation>;
+  assistantText: string;
+  trace: RuntimeTraceEntry[];
+}): Promise<{ resolvedQuestion: ResolvedQuestion | null; failureReason?: string }> {
+  const askMode = input.options.askMode ?? 'agent-first';
+
+  if (askMode !== 'always-user') {
+    const resolvedQuestion = await resolveAskWithAgent({
+      engine: input.engine,
+      recipe: input.recipe,
+      cwd: input.state.cwd,
+      melosDir: input.options.melosDir,
+      state: input.state,
+      question: input.decision.question,
+      observationSummary: input.observation.summary,
+      observationDetails: input.observation.details,
+      assistantText: input.assistantText,
+      trace: input.trace,
+    });
+    if (resolvedQuestion) {
+      return { resolvedQuestion };
+    }
+  }
+
+  if (askMode === 'never-user') {
+    return { resolvedQuestion: null, failureReason: `Could not resolve question: ${input.decision.question}` };
+  }
+
+  if (!input.options.askUser) {
+    return { resolvedQuestion: null, failureReason: `Could not resolve question: ${input.decision.question}` };
+  }
+
+  input.logger.emit({
+    type: 'exec_asked',
+    iteration: input.state.iteration,
+    agent: 'system',
+    payload: {
+      question: input.decision.question,
+      mode: askMode,
+    },
+  });
+  const answer = await input.options.askUser({
+    question: input.decision.question,
+    state: input.state,
+    recipe: input.recipe,
+  });
+  if (!answer || answer.trim().length === 0) {
+    return { resolvedQuestion: null, failureReason: `Could not resolve question: ${input.decision.question}` };
+  }
+  input.logger.emit({
+    type: 'user_answer',
+    iteration: input.state.iteration,
+    agent: 'system',
+    payload: {
+      question: input.decision.question,
+      answer,
+    },
+  });
+  return {
+    resolvedQuestion: {
+      iteration: input.state.iteration,
+      question: input.decision.question,
+      answer: answer.trim(),
+      source: 'user',
+    },
+  };
+}
+
+function readActiveThreadId(engine: Engine): string | undefined {
+  if ('getActiveThreadId' in engine && typeof engine.getActiveThreadId === 'function') {
+    const threadId = engine.getActiveThreadId();
+    return typeof threadId === 'string' && threadId.length > 0 ? threadId : undefined;
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(source: Record<string, unknown>, key: string): string | null {
+  return typeof source[key] === 'string' ? String(source[key]) : null;
+}
+
 export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSummary> {
   const cwd = resolveExecutionCwd(options);
   mkdirSync(options.melosDir, { recursive: true });
@@ -197,9 +535,14 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
     cwd,
     recipePath: options.recipePath,
     attempts: 0,
+    resolvedQuestions: [],
+    lastAssistantText: undefined,
+    lastTrace: [],
+    engineThreadId: undefined,
+    lastHandoffPath: undefined,
   };
 
-  let engine: Engine | null = null;
+  const engine = createRuntimeEngine(recipe.run.engine, recipe.run.model);
   try {
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       if (deadline !== null && Date.now() > deadline) {
@@ -232,7 +575,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         },
       });
 
-      const baseContext = createRecipeContext(state, options.melosDir);
+      const baseContext = createRecipeContext(state, options.melosDir, recipe);
       if (recipe.checkpoint) {
         const checkpointRef = await recipe.checkpoint.create(baseContext);
         state = { ...state, checkpointRef };
@@ -246,9 +589,11 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         }
       }
 
-      const contextSections: ContextSection[] = [];
+      const contextSections: ContextSection[] = [
+        ...buildResolvedQuestionsSection(state.resolvedQuestions ?? []),
+      ];
       for (const provider of recipe.context) {
-        const provided = await provider(createRecipeContext(state, options.melosDir));
+        const provided = await provider(createRecipeContext(state, options.melosDir, recipe));
         if (!provided) {
           continue;
         }
@@ -269,14 +614,29 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
 
       const promptText = typeof recipe.prompt === 'function'
         ? await recipe.prompt({
-          ...createRecipeContext(state, options.melosDir),
+          ...createRecipeContext(state, options.melosDir, recipe),
           contextSections,
         })
         : recipe.prompt;
       const renderedPrompt = defaultPromptRenderer(promptText, contextSections);
 
-      engine = createRuntimeEngine(recipe.run.engine, recipe.run.model);
-      const engineResult = await engine.execute(renderedPrompt, buildEngineOptions(recipe, cwd));
+      const trace: RuntimeTraceEntry[] = [];
+      const traceCallbacks = captureEngineTrace(trace);
+      const engineResult = await engine.execute(
+        renderedPrompt,
+        buildEngineOptions({
+          recipe,
+          cwd,
+          state,
+          ...traceCallbacks,
+        })
+      );
+      state = {
+        ...state,
+        engineThreadId: readActiveThreadId(engine) ?? state.engineThreadId,
+        lastAssistantText: engineResult.output,
+        lastTrace: trace,
+      };
       logger.emit({
         type: 'engine_finished',
         iteration,
@@ -311,7 +671,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
       }
 
       const evaluationContext: EvaluationContext = {
-        ...createRecipeContext(state, options.melosDir),
+        ...createRecipeContext(state, options.melosDir, recipe),
         assistantText: engineResult.output,
         engineResult,
       };
@@ -351,6 +711,47 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         lastObservation: observation,
       }, decision);
 
+      let resolvedQuestion: ResolvedQuestion | null = null;
+      let askFailureReason: string | undefined;
+      if (decision.kind === 'ask') {
+        const askOutcome = await resolveAskDecision({
+          options,
+          recipe,
+          logger,
+          state,
+          decision,
+          engine,
+          observation,
+          assistantText: engineResult.output,
+          trace,
+        });
+        resolvedQuestion = askOutcome.resolvedQuestion;
+        askFailureReason = askOutcome.failureReason;
+        if (resolvedQuestion) {
+          state = {
+            ...state,
+            resolvedQuestions: [...(state.resolvedQuestions ?? []), resolvedQuestion],
+          };
+        }
+      }
+
+      const handoffPath = writeIterationHandoff(options.melosDir, buildIterationHandoff({
+        iteration,
+        timestamp: new Date().toISOString(),
+        cwd,
+        checkpointRef: state.checkpointRef,
+        promptSummary: typeof promptText === 'string' ? promptText.trim() : renderedPrompt.slice(0, 200),
+        assistantText: engineResult.output,
+        observation,
+        decision,
+        trace,
+        resolvedQuestions: state.resolvedQuestions ?? [],
+      }));
+      state = {
+        ...state,
+        lastHandoffPath: handoffPath,
+      };
+
       if (decision.kind === 'rollback') {
         if (!recipe.checkpoint || !state.checkpointRef) {
           const summary = finalizeSummary({
@@ -375,7 +776,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           return summary;
         }
 
-        await recipe.checkpoint.rollback(createRecipeContext(state, options.melosDir), state.checkpointRef);
+        await recipe.checkpoint.rollback(createRecipeContext(state, options.melosDir, recipe), state.checkpointRef);
         logger.emit({
           type: 'rollback_applied',
           iteration,
@@ -389,22 +790,25 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
       }
 
       if (decision.kind === 'ask') {
+        if (resolvedQuestion) {
+          continue;
+        }
         const summary = finalizeSummary({
-          status: 'asked',
+          status: 'failed',
           success: false,
-          decision: 'ask',
+          decision: 'failed',
           iterations: iteration,
           cwd,
           recipePath: options.recipePath,
           startedAt,
-          summary: decision.summary ?? observation.summary,
-          reason: decision.reason,
+          summary: askFailureReason ?? decision.summary ?? observation.summary,
+          reason: decision.reason ?? askFailureReason,
           question: decision.question,
           output: engineResult.output,
           observation,
         });
         logger.emit({
-          type: 'exec_asked',
+          type: 'exec_failed',
           iteration,
           agent: 'system',
           payload: summary as unknown as Record<string, unknown>,
@@ -414,7 +818,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
 
       if (decision.kind === 'stop') {
         if (recipe.checkpoint && state.checkpointRef) {
-          await recipe.checkpoint.keep?.(createRecipeContext(state, options.melosDir), state.checkpointRef);
+          await recipe.checkpoint.keep?.(createRecipeContext(state, options.melosDir, recipe), state.checkpointRef);
         }
         const summary = finalizeSummary({
           status: 'completed',
@@ -458,8 +862,11 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
     });
     return summary;
   } finally {
-    if (engine && 'shutdown' in engine && typeof engine.shutdown === 'function') {
+    if ('shutdown' in engine && typeof engine.shutdown === 'function') {
       await engine.shutdown();
+    }
+    if (!options.keepHandoff) {
+      cleanupHandoffArtifacts(options.melosDir);
     }
   }
 }

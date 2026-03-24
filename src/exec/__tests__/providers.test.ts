@@ -7,7 +7,9 @@ import {
   command,
   file,
   gitDiffStat,
+  handoffHistory,
   optionalFile,
+  previousHandoff,
   previousObservation,
   state,
 } from '../providers.js';
@@ -91,5 +93,50 @@ describe('exec providers', () => {
 
     expect(asSection(stateSection)?.content).toContain('"attempts": 1');
     expect(asSection(observationSection)?.content).toContain('last run failed');
+  });
+
+  it('renders previousHandoff and handoffHistory blocks', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-provider-handoff-'));
+    const handoffDir = join(cwd, '.melos', 'handoff');
+    mkdirSync(handoffDir, { recursive: true });
+    writeFileSync(join(handoffDir, 'iteration-1.json'), JSON.stringify({
+      iteration: 1,
+      timestamp: '2026-03-24T00:00:00.000Z',
+      promptSummary: 'fix auth',
+      assistantText: 'updated auth flow',
+      observation: { ok: false, status: 'fail', summary: 'still failing', metrics: {} },
+      decision: { kind: 'continue', summary: 'try again' },
+      attempts: [],
+      failures: [],
+      insights: ['auth is two-step'],
+      nextSteps: ['check refresh token'],
+      blockers: [],
+      modifiedFiles: ['src/auth.ts'],
+      commands: ['pnpm test auth'],
+      trace: [],
+    }), 'utf-8');
+    writeFileSync(join(handoffDir, 'iteration-2.json'), JSON.stringify({
+      iteration: 2,
+      timestamp: '2026-03-24T00:01:00.000Z',
+      promptSummary: 'fix auth again',
+      assistantText: 'added null check',
+      observation: { ok: true, status: 'pass', summary: 'fixed', metrics: {} },
+      decision: { kind: 'stop', summary: 'done' },
+      attempts: [],
+      failures: [],
+      insights: ['null refresh token was the issue'],
+      nextSteps: [],
+      blockers: [],
+      modifiedFiles: ['src/auth.ts'],
+      commands: ['pnpm test auth'],
+      trace: [],
+    }), 'utf-8');
+
+    const latestSection = await previousHandoff()(createContext(cwd));
+    const historySection = await handoffHistory({ count: 2 })(createContext(cwd));
+
+    expect(asSection(latestSection)?.content).toContain('"iteration": 2');
+    expect(asSection(historySection)?.content).toContain('"iteration": 1');
+    expect(asSection(historySection)?.content).toContain('"iteration": 2');
   });
 });

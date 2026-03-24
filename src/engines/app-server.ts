@@ -590,16 +590,19 @@ export class AppServerEngine extends Engine {
 
   private readonly handleServerRequest = async ({
     method,
+    params,
   }: {
     method: string;
     params?: unknown;
   }): Promise<unknown> => {
     if (method === 'item/commandExecution/requestApproval') {
+      this.onEventSink?.(method, params ?? {});
       return {
         decision: 'accept',
       } satisfies CommandExecutionApprovalResponse;
     }
     if (method === 'item/fileChange/requestApproval') {
+      this.onEventSink?.(method, params ?? {});
       return {
         decision: 'accept',
       } satisfies FileChangeApprovalResponse;

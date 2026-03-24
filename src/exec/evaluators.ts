@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
 
-import { normalizeObservation, type Evaluator, type Observation, type ObservationInput } from './recipe.js';
+import { AppServerEngine } from '../engines/app-server.js';
+import { ClaudeEngine } from '../engines/claude.js';
+import type { Engine, EngineOptions } from '../engines/base.js';
+import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
+import { defaultPromptRenderer, normalizeObservation, type ContextProvider, type Evaluator, type Observation, type ObservationInput, type RecipeRunConfig } from './recipe.js';
 
 export interface CommandExecutionResult {
   command: string;
@@ -236,4 +240,220 @@ export function customEvaluator(
 
 export function asObservation(input: ObservationInput): Observation {
   return normalizeObservation(input);
+}
+
+type LlmEngine = 'claude' | 'codex' | 'auto';
+
+export interface LlmEvaluateOptions {
+  criteria: string[];
+  context?: ContextProvider[];
+  engine?: LlmEngine;
+  model?: string;
+  effort?: EngineOptions['effort'] | EngineOptions['reasoningEffort'];
+  timeoutMs?: number;
+}
+
+interface LlmCriterionResult {
+  criterion: string;
+  verdict: 'yes' | 'no';
+  rationale?: string;
+}
+
+function createLlmEngine(engine: LlmEngine, runConfig?: RecipeRunConfig, model?: string): Engine {
+  const resolvedModel = model ?? runConfig?.model;
+  const engineName = engine === 'auto'
+    ? resolveModelEngine(resolvedModel)
+    : engine;
+  return engineName === 'claude'
+    ? new ClaudeEngine()
+    : new AppServerEngine();
+}
+
+function resolveLlmEngineName(engine: LlmEngine, runConfig?: RecipeRunConfig, model?: string): 'claude' | 'codex' {
+  if (engine !== 'auto') {
+    return engine;
+  }
+  return resolveModelEngine(model ?? runConfig?.model);
+}
+
+function buildLlmEngineOptions(
+  engine: 'claude' | 'codex',
+  options: LlmEvaluateOptions,
+  runConfig?: RecipeRunConfig,
+  cwd?: string
+): EngineOptions {
+  const model = options.model ?? runConfig?.model;
+  const runEffort = options.effort ?? runConfig?.effort;
+  const resolvedModel = model
+    ? resolveRuntimeModel(model)
+    : undefined;
+
+  const engineOptions: EngineOptions = {
+    cwd: cwd ?? runConfig?.cwd,
+    timeout: options.timeoutMs,
+  };
+  if (resolvedModel) {
+    engineOptions.model = resolvedModel;
+  }
+  if (runEffort) {
+    if (engine === 'claude' || isClaudeFamily(model)) {
+      engineOptions.effort = runEffort as EngineOptions['effort'];
+    } else {
+      engineOptions.reasoningEffort = runEffort as EngineOptions['reasoningEffort'];
+    }
+  }
+  return engineOptions;
+}
+
+function buildLlmEvaluatePrompt(input: {
+  assistantText: string;
+  criteria: string[];
+  sections: Array<{ title: string; content: string }>;
+}): string {
+  const criteriaBlock = input.criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n');
+  return defaultPromptRenderer(
+    [
+      'Evaluate the candidate answer against every criterion.',
+      'Return strict JSON with this exact shape:',
+      '{"criteria":[{"criterion":"...","verdict":"yes|no","rationale":"..."}]}',
+      'Use only "yes" or "no" for verdict.',
+      'Return "yes" only if the criterion is fully satisfied.',
+    ].join('\n'),
+    [
+      {
+        title: 'candidate answer',
+        content: input.assistantText.trim() || '(empty assistant output)',
+      },
+      {
+        title: 'criteria',
+        content: criteriaBlock,
+      },
+      ...input.sections,
+    ]
+  );
+}
+
+function normalizeLlmCriteria(
+  parsed: unknown,
+  criteria: string[]
+): LlmCriterionResult[] | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  const items = (parsed as { criteria?: unknown }).criteria;
+  if (!Array.isArray(items)) {
+    return null;
+  }
+
+  const normalized = items
+    .flatMap((item) => {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+        return [];
+      }
+      const criterion = typeof (item as { criterion?: unknown }).criterion === 'string'
+        ? (item as { criterion: string }).criterion
+        : null;
+      const verdict = typeof (item as { verdict?: unknown }).verdict === 'string'
+        ? (item as { verdict: string }).verdict.toLowerCase()
+        : null;
+      if (!criterion || (verdict !== 'yes' && verdict !== 'no')) {
+        return [];
+      }
+      return [{
+        criterion,
+        verdict,
+        rationale: typeof (item as { rationale?: unknown }).rationale === 'string'
+          ? (item as { rationale: string }).rationale
+          : undefined,
+      } satisfies LlmCriterionResult];
+    });
+
+  if (normalized.length !== criteria.length) {
+    return null;
+  }
+  return normalized;
+}
+
+export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
+  return async (ctx) => {
+    const sections = [];
+    for (const provider of options.context ?? []) {
+      const provided = await provider(ctx);
+      if (!provided) {
+        continue;
+      }
+      if (Array.isArray(provided)) {
+        sections.push(...provided.filter((section) => section.content.trim().length > 0));
+        continue;
+      }
+      if (provided.content.trim().length > 0) {
+        sections.push(provided);
+      }
+    }
+
+    const engineName = resolveLlmEngineName(options.engine ?? 'auto', ctx.runConfig, options.model);
+    const engine = createLlmEngine(options.engine ?? 'auto', ctx.runConfig, options.model);
+    const prompt = buildLlmEvaluatePrompt({
+      assistantText: ctx.assistantText,
+      criteria: options.criteria,
+      sections,
+    });
+    const result = await engine.execute(
+      prompt,
+      buildLlmEngineOptions(engineName, options, ctx.runConfig, ctx.cwd)
+    );
+
+    if (!result.success) {
+      return normalizeObservation({
+        ok: false,
+        status: 'error',
+        summary: 'llm evaluation failed',
+        details: result.error ?? result.output,
+        data: {
+          engine: engineName,
+          output: result.output,
+        },
+      });
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(result.output);
+    } catch (error) {
+      return normalizeObservation({
+        ok: false,
+        status: 'error',
+        summary: 'llm evaluation returned invalid JSON',
+        details: error instanceof Error ? error.message : String(error),
+        data: {
+          engine: engineName,
+          output: result.output,
+        },
+      });
+    }
+
+    const normalized = normalizeLlmCriteria(parsed, options.criteria);
+    if (!normalized) {
+      return normalizeObservation({
+        ok: false,
+        status: 'error',
+        summary: 'llm evaluation returned an invalid criteria payload',
+        data: {
+          engine: engineName,
+          output: result.output,
+        },
+      });
+    }
+
+    const ok = normalized.every((item) => item.verdict === 'yes');
+    return normalizeObservation({
+      ok,
+      status: ok ? 'pass' : 'fail',
+      summary: ok ? 'llm evaluation passed' : 'llm evaluation failed',
+      data: {
+        engine: engineName,
+        criteria: normalized,
+      },
+    });
+  };
 }

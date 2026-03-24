@@ -21,6 +21,56 @@ export interface Observation {
 
 export type ObservationInput = string | Partial<Observation>;
 
+export interface ResolvedQuestion {
+  iteration: number;
+  question: string;
+  answer: string;
+  source: 'agent' | 'user';
+  rationale?: string;
+}
+
+export type RuntimeTraceEntry =
+  | {
+    kind: 'agent_message';
+    timestamp: string;
+    text: string;
+  }
+  | {
+    kind: 'command_output';
+    timestamp: string;
+    text: string;
+  }
+  | {
+    kind: 'command';
+    timestamp: string;
+    command: string;
+    cwd?: string;
+    reason?: string;
+    source: 'app-server' | 'claude';
+  }
+  | {
+    kind: 'file_change';
+    timestamp: string;
+    path?: string;
+    source: 'app-server' | 'claude';
+    data?: unknown;
+  }
+  | {
+    kind: 'tool_result';
+    timestamp: string;
+    text: string;
+    source: 'claude';
+    isError?: boolean;
+    exitCode?: number;
+    durationMs?: number;
+  }
+  | {
+    kind: 'engine_event';
+    timestamp: string;
+    method: string;
+    data?: unknown;
+  };
+
 export interface RunnerState {
   iteration: number;
   startedAt: string;
@@ -30,6 +80,11 @@ export interface RunnerState {
   cwd: string;
   recipePath?: string;
   attempts: number;
+  resolvedQuestions?: ResolvedQuestion[];
+  lastAssistantText?: string;
+  lastTrace?: RuntimeTraceEntry[];
+  engineThreadId?: string;
+  lastHandoffPath?: string;
 }
 
 export interface RecipeContextBase {
@@ -38,6 +93,8 @@ export interface RecipeContextBase {
   recipePath?: string;
   state: RunnerState;
   previousObservation: Observation | null;
+  resolvedQuestions?: ResolvedQuestion[];
+  runConfig?: RecipeRunConfig;
 }
 
 export interface PromptContext extends RecipeContextBase {

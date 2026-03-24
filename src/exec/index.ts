@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { createInterface } from 'node:readline/promises';
 import { join, resolve } from 'node:path';
 
 import type { MissionEvent } from '../state/events.js';
@@ -16,6 +17,7 @@ export * from './policies.js';
 export * from './checkpoint.js';
 export * from './runner.js';
 export * from './simple.js';
+export * from './handoff.js';
 
 export type ExecOutputFormat = 'text' | 'json' | 'stream-json';
 
@@ -29,6 +31,9 @@ export interface ExecCommandOptions {
   stdin?: NodeJS.ReadableStream;
   stdout?: NodeJS.WritableStream;
   stderr?: NodeJS.WritableStream;
+  noAsk?: boolean;
+  alwaysAsk?: boolean;
+  keepHandoff?: boolean;
 }
 
 function assertExclusiveInput(options: ExecCommandOptions): void {
@@ -80,6 +85,45 @@ function formatTextSummary(summary: ExecRunSummary): string {
   return summary.summary;
 }
 
+function resolveAskMode(options: ExecCommandOptions): 'agent-first' | 'never-user' | 'always-user' {
+  if (options.noAsk && options.alwaysAsk) {
+    throw new Error('--no-ask と --always-ask は同時に指定できません');
+  }
+  if (options.noAsk) {
+    return 'never-user';
+  }
+  if (options.alwaysAsk) {
+    return 'always-user';
+  }
+  return 'agent-first';
+}
+
+function createAskUserPrompt(
+  stdin: NodeJS.ReadableStream,
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream
+): (input: { question: string }) => Promise<string | null> {
+  return async ({ question }) => {
+    const interactiveInput = stdin as NodeJS.ReadStream & { isTTY?: boolean };
+    const interactiveOutput = stdout as NodeJS.WriteStream & { isTTY?: boolean };
+    if (interactiveInput.isTTY !== true || interactiveOutput.isTTY !== true) {
+      return null;
+    }
+
+    stderr.write(`Question: ${question}\n> `);
+    const rl = createInterface({
+      input: stdin,
+      output: stderr,
+    });
+    try {
+      const answer = await rl.question('');
+      return answer.trim().length > 0 ? answer.trim() : null;
+    } finally {
+      rl.close();
+    }
+  };
+}
+
 export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary> {
   assertExclusiveInput(options);
 
@@ -90,6 +134,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
   mkdirSync(melosDir, { recursive: true });
 
   const outputFormat = options.outputFormat ?? 'text';
+  const askMode = resolveAskMode(options);
   const onEvent = outputFormat === 'stream-json'
     ? (event: MissionEvent) => {
       stdout.write(`${JSON.stringify(event)}\n`);
@@ -160,6 +205,13 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       cwd,
       melosDir,
       recipePath,
+      askMode,
+      askUser: createAskUserPrompt(
+        options.stdin ?? process.stdin,
+        stdout,
+        stderr
+      ),
+      keepHandoff: options.keepHandoff,
     });
 
     if (outputFormat === 'json') {

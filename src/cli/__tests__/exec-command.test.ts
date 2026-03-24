@@ -11,7 +11,9 @@ describe('cli exec command', () => {
     expect(options.has('--prompt')).toBe(true);
     expect(options.has('--output-format')).toBe(true);
     expect(options.has('--criteria')).toBe(false);
-    expect(options.has('--no-ask')).toBe(false);
+    expect(options.has('--no-ask')).toBe(true);
+    expect(options.has('--always-ask')).toBe(true);
+    expect(options.has('--keep-handoff')).toBe(true);
     expect(options.has('--steering')).toBe(false);
   });
 

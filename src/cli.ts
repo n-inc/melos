@@ -319,6 +319,9 @@ export function createProgram(): Command {
     .option('--cwd <dir>', '作業ディレクトリ')
     .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
     .option('--effort <level>', '推論 effort (simple prompt mode 用)')
+    .option('--no-ask', 'ユーザーには質問せず agent 解決のみを試みる')
+    .option('--always-ask', 'agent 解決をスキップして必ずユーザーに質問する')
+    .option('--keep-handoff', '実行後も .melos/handoff を削除せず保持する')
     .action(async (options: {
       recipe?: string;
       prompt?: string;
@@ -326,6 +329,9 @@ export function createProgram(): Command {
       cwd?: string;
       outputFormat: 'text' | 'json' | 'stream-json';
       effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+      noAsk?: boolean;
+      alwaysAsk?: boolean;
+      keepHandoff?: boolean;
     }) => {
       await handleCommandAction(async () => {
         const { exec } = await import('./exec/index.js');
@@ -336,6 +342,9 @@ export function createProgram(): Command {
           cwd: options.cwd ?? process.cwd(),
           effort: options.effort,
           outputFormat: options.outputFormat,
+          noAsk: options.noAsk,
+          alwaysAsk: options.alwaysAsk,
+          keepHandoff: options.keepHandoff,
         });
         if (!summary.success) process.exit(1);
       });
