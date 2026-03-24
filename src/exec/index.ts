@@ -3,7 +3,6 @@ import { createInterface } from 'node:readline/promises';
 import { join, resolve } from 'node:path';
 
 import type { MissionEvent } from '../state/events.js';
-import { CODEX_LATEST_ALIAS } from '../models/registry.js';
 import { loadRecipeModule, resolveRecipeSource } from './loader.js';
 import { runRecipe, eventLog, type ExecRunSummary } from './runner.js';
 import { createSimpleRecipe } from './simple.js';
@@ -18,6 +17,8 @@ export * from './checkpoint.js';
 export * from './runner.js';
 export * from './simple.js';
 export * from './handoff.js';
+
+const DEFAULT_EXEC_MODEL = 'gpt-5.4';
 
 export type ExecOutputFormat = 'text' | 'json' | 'stream-json';
 
@@ -184,7 +185,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
     } else {
       recipe = createSimpleRecipe({
         prompt: options.prompt ?? '',
-        model: options.model ?? CODEX_LATEST_ALIAS,
+        model: options.model ?? DEFAULT_EXEC_MODEL,
         cwd,
         effort: options.effort,
       });
