@@ -6,7 +6,7 @@ import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
-import { buildIterationHandoff, readHandoffHistory, writeIterationHandoff } from './handoff.js';
+import { buildIterationHandoff, resolveHandoffFingerprint, selectHandoffHistorySection, writeIterationHandoff } from './handoff.js';
 import {
   defaultPromptRenderer,
   normalizeObservation,
@@ -218,17 +218,6 @@ function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): C
   return [{
     title: 'resolved questions',
     content: JSON.stringify(resolvedQuestions, null, 2),
-  }];
-}
-
-function buildHandoffHistorySection(melosDir: string): ContextSection[] {
-  const history = readHandoffHistory(melosDir);
-  if (history.length === 0) {
-    return [];
-  }
-  return [{
-    title: 'handoff history',
-    content: JSON.stringify(history, null, 2),
   }];
 }
 
@@ -535,6 +524,11 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
   const deadline = recipe.limits?.timeoutMs
     ? Date.now() + recipe.limits.timeoutMs
     : null;
+  const handoffFingerprint = resolveHandoffFingerprint({
+    recipePath: options.recipePath,
+    prompt: !options.recipePath && typeof recipe.prompt === 'string' ? recipe.prompt : undefined,
+    promptSource: typeof recipe.prompt === 'function' ? recipe.prompt.toString() : undefined,
+  }) ?? 'unknown';
 
   let state: RunnerState = {
     iteration: 0,
@@ -550,6 +544,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
     lastTrace: [],
     engineThreadId: undefined,
     lastHandoffPath: undefined,
+    handoffFingerprint,
   };
 
   const engine = createRuntimeEngine(recipe.run.engine, recipe.run.model);
@@ -599,9 +594,8 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         }
       }
 
-      const contextSections: ContextSection[] = [
+      const staticContextSections: ContextSection[] = [
         ...buildResolvedQuestionsSection(state.resolvedQuestions ?? []),
-        ...buildHandoffHistorySection(options.melosDir),
       ];
       for (const provider of recipe.context) {
         const provided = await provider(createRecipeContext(state, options.melosDir, recipe));
@@ -609,26 +603,56 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           continue;
         }
         if (Array.isArray(provided)) {
-          contextSections.push(...provided.filter((section) => section.content.trim().length > 0));
+          staticContextSections.push(...provided.filter((section) => section.content.trim().length > 0));
           continue;
         }
         if (provided.content.trim().length > 0) {
-          contextSections.push(provided);
+          staticContextSections.push(provided);
         }
       }
+      const promptText = typeof recipe.prompt === 'function'
+        ? await recipe.prompt({
+          ...createRecipeContext(state, options.melosDir, recipe),
+          contextSections: staticContextSections,
+        })
+        : recipe.prompt;
+      const handoffDecision = selectHandoffHistorySection({
+        melosDir: options.melosDir,
+        fingerprint: handoffFingerprint,
+        prompt: promptText,
+        sections: staticContextSections,
+      });
+      const contextSections: ContextSection[] = handoffDecision.section
+        ? [...staticContextSections, handoffDecision.section]
+        : staticContextSections;
       logger.emit({
         type: 'context_built',
         iteration,
         agent: 'system',
-        payload: serializeSections(contextSections),
+        payload: {
+          ...serializeSections(contextSections),
+          handoffHistory: handoffDecision.mode === 'none'
+            ? undefined
+            : {
+              mode: handoffDecision.mode,
+              totalEntries: handoffDecision.totalEntries,
+              includedEntries: handoffDecision.includedEntries,
+              omittedEntries: handoffDecision.omittedEntries,
+            },
+        },
       });
-
-      const promptText = typeof recipe.prompt === 'function'
-        ? await recipe.prompt({
-          ...createRecipeContext(state, options.melosDir, recipe),
-          contextSections,
-        })
-        : recipe.prompt;
+      if (handoffDecision.mode === 'omitted') {
+        logger.emit({
+          type: 'warning_emitted',
+          iteration,
+          agent: 'system',
+          payload: {
+            warning: 'handoff history omitted due to prompt budget',
+            kind: 'exec_handoff_budget',
+            handoffFingerprint,
+          },
+        });
+      }
       const renderedPrompt = defaultPromptRenderer(promptText, contextSections);
 
       const trace: RuntimeTraceEntry[] = [];
@@ -746,7 +770,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         }
       }
 
-      const handoffPath = writeIterationHandoff(options.melosDir, buildIterationHandoff({
+      const handoffPath = writeIterationHandoff(options.melosDir, handoffFingerprint, buildIterationHandoff({
         iteration,
         timestamp: new Date().toISOString(),
         cwd,

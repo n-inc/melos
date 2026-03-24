@@ -24,6 +24,7 @@ function createContext(cwd: string, overrides: Partial<RunnerState> = {}) {
     cwd,
     recipePath: join(cwd, 'recipe.ts'),
     attempts: 1,
+    handoffFingerprint: 'test-handoff',
     ...overrides,
   };
 
@@ -82,7 +83,7 @@ describe('exec providers', () => {
 
   it('renders previousHandoff and handoffHistory blocks', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-provider-handoff-'));
-    const handoffDir = join(cwd, '.melos', 'handoff');
+    const handoffDir = join(cwd, '.melos', 'handoff', 'sha256-test-handoff');
     mkdirSync(handoffDir, { recursive: true });
     writeFileSync(join(handoffDir, 'iteration-1.json'), JSON.stringify({
       iteration: 1,
@@ -123,5 +124,34 @@ describe('exec providers', () => {
     expect(asSection(latestSection)?.content).toContain('"iteration": 2');
     expect(asSection(historySection)?.content).toContain('"iteration": 1');
     expect(asSection(historySection)?.content).toContain('"iteration": 2');
+  });
+
+  it('ignores legacy flat handoff files when the current namespace has no history', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-provider-handoff-flat-'));
+    const handoffDir = join(cwd, '.melos', 'handoff');
+    mkdirSync(handoffDir, { recursive: true });
+    writeFileSync(join(handoffDir, 'iteration-1.json'), JSON.stringify({
+      iteration: 1,
+      timestamp: '2026-03-24T00:00:00.000Z',
+      promptSummary: 'legacy',
+      assistantText: 'legacy',
+      observation: { ok: true, status: 'pass', summary: 'legacy', metrics: {} },
+      decision: { kind: 'stop', summary: 'legacy' },
+      attempts: [],
+      failures: [],
+      insights: [],
+      nextSteps: [],
+      blockers: [],
+      modifiedFiles: [],
+      commands: [],
+      trace: [],
+      resolvedQuestions: [],
+    }), 'utf-8');
+
+    const latestSection = await previousHandoff()(createContext(cwd));
+    const historySection = await handoffHistory()(createContext(cwd));
+
+    expect(latestSection).toBeNull();
+    expect(historySection).toBeNull();
   });
 });

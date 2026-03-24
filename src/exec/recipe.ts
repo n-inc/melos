@@ -85,6 +85,7 @@ export interface RunnerState {
   lastTrace?: RuntimeTraceEntry[];
   engineThreadId?: string;
   lastHandoffPath?: string;
+  handoffFingerprint?: string;
 }
 
 export interface RecipeContextBase {

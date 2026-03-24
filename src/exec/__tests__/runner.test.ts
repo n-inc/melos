@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jest } from '@jest/globals';
@@ -8,6 +8,7 @@ import { AppServerEngine } from '../../engines/app-server.js';
 import { Engine, type EngineOptions, type EngineResult } from '../../engines/base.js';
 import { gitCheckpoint } from '../checkpoint.js';
 import { metricExtractor, shellChecks } from '../evaluators.js';
+import { resolveHandoffFingerprint } from '../handoff.js';
 import { continueUntilPass, plateauMetric } from '../policies.js';
 import { createRecipe } from '../recipe.js';
 import { runRecipe, eventLog } from '../runner.js';
@@ -377,7 +378,9 @@ describe('exec runner', () => {
       melosDir: join(cwd, '.melos'),
     });
 
-    expect(existsSync(join(cwd, '.melos', 'handoff', 'iteration-1.json'))).toBe(true);
+    const fingerprint = resolveHandoffFingerprint({ prompt: 'Ship the fix' });
+    expect(fingerprint).not.toBeNull();
+    expect(existsSync(join(cwd, '.melos', 'handoff', `sha256-${fingerprint}`, 'iteration-1.json'))).toBe(true);
   });
 
   it('injects handoff history automatically from the second iteration onward', async () => {
@@ -405,6 +408,26 @@ describe('exec runner', () => {
       limits: { maxIterations: 3 },
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
+    const currentFingerprint = resolveHandoffFingerprint({ prompt: 'Iterate with history' });
+    const otherFingerprint = resolveHandoffFingerprint({ prompt: 'Other recipe' });
+    mkdirSync(join(cwd, '.melos', 'handoff', `sha256-${otherFingerprint}`), { recursive: true });
+    writeFileSync(join(cwd, '.melos', 'handoff', `sha256-${otherFingerprint}`, 'iteration-1.json'), JSON.stringify({
+      iteration: 1,
+      timestamp: '2026-03-24T00:00:00.000Z',
+      promptSummary: 'other namespace history',
+      assistantText: 'should never appear',
+      observation: { ok: true, status: 'pass', summary: 'other', metrics: {} },
+      decision: { kind: 'stop', summary: 'other' },
+      attempts: [],
+      failures: [],
+      insights: [],
+      nextSteps: [],
+      blockers: [],
+      modifiedFiles: [],
+      commands: [],
+      trace: [],
+      resolvedQuestions: [],
+    }), 'utf-8');
 
     const summary = await runRecipe({
       recipe,
@@ -414,8 +437,64 @@ describe('exec runner', () => {
 
     expect(summary.success).toBe(true);
     expect(executeSpy).toHaveBeenCalledTimes(2);
+    expect(currentFingerprint).not.toBeNull();
     expect(prompts[0]).not.toContain('## handoff history');
     expect(prompts[1]).toContain('## handoff history');
     expect(prompts[1]).toContain('"iteration": 1');
+    expect(prompts[1]).not.toContain('other namespace history');
+  });
+
+  it('omits handoff history and emits a warning when the prompt budget is exceeded', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-handoff-omit-warning-'));
+    const prompts: string[] = [];
+    const engine = new ScriptedEngine([
+      async () => ({ success: true, output: 'first attempt', exitCode: 0 }),
+      async () => ({ success: true, output: 'second attempt', exitCode: 0 }),
+    ]);
+    const executeSpy = jest.spyOn(engine, 'execute').mockImplementation(async (prompt, options) => {
+      prompts.push(prompt);
+      return await ScriptedEngine.prototype.execute.call(engine, prompt, options);
+    });
+
+    const recipe = createRecipe({
+      prompt: 'Iterate with history',
+      context: [],
+      run: { engine, cwd },
+      evaluate: ({ state }) => ({
+        ok: state.iteration >= 2,
+        status: state.iteration >= 2 ? 'pass' : 'fail',
+        summary: state.iteration === 1 ? 'x'.repeat(950_000) : 'done',
+      }),
+      policy: continueUntilPass(),
+      limits: { maxIterations: 2 },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRecipe({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    const events = readFileSync(join(cwd, '.melos', 'events.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; payload?: Record<string, unknown> });
+
+    expect(summary.success).toBe(true);
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+    expect(prompts[1]).not.toContain('## handoff history');
+    expect(events.some((event) => event.type === 'warning_emitted'
+      && event.payload?.warning === 'handoff history omitted due to prompt budget')).toBe(true);
+    expect(events.some((event) => {
+      const handoffHistory = event.payload?.handoffHistory;
+      return event.type === 'context_built'
+        && isRecord(handoffHistory)
+        && handoffHistory.mode === 'omitted';
+    })).toBe(true);
   });
 });
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
