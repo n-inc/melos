@@ -71,7 +71,7 @@ interface ExecCommandActionOptions {
   cwd?: string;
   outputFormat: 'text' | 'json' | 'stream-json';
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  noAsk?: boolean;
+  ask?: boolean;
   alwaysAsk?: boolean;
 }
 
@@ -352,7 +352,7 @@ export function buildExecCommandOptions(options: ExecCommandActionOptions): Exec
     cwd: options.cwd ?? process.cwd(),
     effort: options.effort,
     outputFormat: options.outputFormat,
-    noAsk: options.noAsk,
+    noAsk: options.ask === false,
     alwaysAsk: options.alwaysAsk,
   };
 }

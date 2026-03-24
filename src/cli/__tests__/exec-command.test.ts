@@ -29,7 +29,7 @@ describe('cli exec command', () => {
       prompt: 'hello',
       model: 'codex-latest',
       outputFormat: 'text',
-      noAsk: true,
+      ask: false,
     })).toEqual(expect.objectContaining({
       prompt: 'hello',
       noAsk: true,
