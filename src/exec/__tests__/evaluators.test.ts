@@ -5,7 +5,6 @@ import { jest } from '@jest/globals';
 
 import { AppServerEngine } from '../../engines/app-server.js';
 import { commandJson, llmEvaluate, metricExtractor, runShellCommand, shellChecks } from '../evaluators.js';
-import { file } from '../providers.js';
 import { normalizeObservation } from '../recipe.js';
 
 function createContext(cwd: string) {
@@ -177,7 +176,6 @@ describe('exec evaluators', () => {
 
   it('includes provider context in the llmEvaluate prompt', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-evaluator-llm-context-'));
-    writeFileSync(join(cwd, 'REQUIREMENTS.md'), 'must mention benchmark evidence\n', 'utf-8');
     const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute').mockResolvedValue({
       success: true,
       output: JSON.stringify({
@@ -190,7 +188,7 @@ describe('exec evaluators', () => {
 
     const evaluate = llmEvaluate({
       criteria: ['Mentions benchmark evidence'],
-      context: [file('REQUIREMENTS.md')],
+      context: [() => ({ title: 'requirements', content: 'must mention benchmark evidence' })],
       engine: 'codex',
     });
     await evaluate({

@@ -154,6 +154,47 @@ describe('AppServerEngine', () => {
     expect(turnStartRequest?.params).toMatchObject({ effort: 'high' });
   });
 
+  it('resolves latest aliases before starting a new thread', async () => {
+    const transport = new MockTransport();
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        return { thread: { id: 'thr_alias' } };
+      }
+      if (method === 'turn/start') {
+        setImmediate(async () => {
+          await transport.emitNotification('turn/completed', {
+            threadId: 'thr_alias',
+            turn: {
+              id: 'turn_alias',
+              status: 'completed',
+              error: null,
+            },
+          });
+        });
+        return { turn: { id: 'turn_alias' } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: () => createFakeChildProcess(),
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    const result = await engine.execute('test prompt', {
+      model: 'codex-latest',
+    });
+
+    expect(result.success).toBe(true);
+    const threadStartRequest = transport.requests.find((request) => request.method === 'thread/start');
+    const turnStartRequest = transport.requests.find((request) => request.method === 'turn/start');
+    expect(threadStartRequest?.params).toMatchObject({ model: 'gpt-5.4' });
+    expect(turnStartRequest?.params).toMatchObject({ model: 'gpt-5.4' });
+  });
+
   it('sends turn/interrupt on abort', async () => {
     const transport = new MockTransport();
     transport.requestHandler = async (method) => {

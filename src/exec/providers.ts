@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { basename, resolve, relative } from 'node:path';
 
 import { readHandoffHistory, readLatestHandoff } from './handoff.js';
@@ -10,19 +10,8 @@ interface ProviderOptions {
   title?: string;
 }
 
-interface FileProviderOptions extends ProviderOptions {
-  maxBytes?: number;
-}
-
 function resolveProviderPath(ctx: RecipeContextBase, targetPath: string): string {
   return resolve(ctx.cwd, targetPath);
-}
-
-function trimContent(content: string, maxBytes?: number): string {
-  if (!maxBytes || Buffer.byteLength(content, 'utf-8') <= maxBytes) {
-    return content;
-  }
-  return `${content.slice(0, maxBytes)}\n... [truncated]`;
 }
 
 function toSection(title: string, content: string): ContextSection | null {
@@ -31,25 +20,6 @@ function toSection(title: string, content: string): ContextSection | null {
     return null;
   }
   return { title, content: trimmed };
-}
-
-export function file(targetPath: string, options: FileProviderOptions = {}): ContextProvider {
-  return (ctx) => {
-    const absolutePath = resolveProviderPath(ctx, targetPath);
-    const content = readFileSync(absolutePath, 'utf-8');
-    return toSection(options.title ?? `file: ${relative(ctx.cwd, absolutePath) || basename(absolutePath)}`, trimContent(content, options.maxBytes));
-  };
-}
-
-export function optionalFile(targetPath: string, options: FileProviderOptions = {}): ContextProvider {
-  return (ctx) => {
-    const absolutePath = resolveProviderPath(ctx, targetPath);
-    if (!existsSync(absolutePath)) {
-      return null;
-    }
-    const content = readFileSync(absolutePath, 'utf-8');
-    return toSection(options.title ?? `file: ${relative(ctx.cwd, absolutePath) || basename(absolutePath)}`, trimContent(content, options.maxBytes));
-  };
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -144,16 +114,6 @@ export function gitLog(options: ProviderOptions & { count?: number } = {}): Cont
     } catch {
       return toSection(options.title ?? 'git log', 'git log failed');
     }
-  };
-}
-
-export function tail(targetPath: string, options: ProviderOptions & { lines?: number } = {}): ContextProvider {
-  return (ctx) => {
-    const absolutePath = resolveProviderPath(ctx, targetPath);
-    const content = readFileSync(absolutePath, 'utf-8');
-    const lines = content.split(/\r?\n/);
-    const picked = lines.slice(Math.max(0, lines.length - (options.lines ?? 40)));
-    return toSection(options.title ?? `tail: ${relative(ctx.cwd, absolutePath) || basename(absolutePath)}`, picked.join('\n'));
   };
 }
 

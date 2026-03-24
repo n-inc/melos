@@ -19,6 +19,8 @@ export * from './runner.js';
 export * from './simple.js';
 export * from './handoff.js';
 
+const DEFAULT_EXEC_MODEL = CODEX_LATEST_ALIAS;
+
 export type ExecOutputFormat = 'text' | 'json' | 'stream-json';
 
 export interface ExecCommandOptions {
@@ -184,7 +186,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
     } else {
       recipe = createSimpleRecipe({
         prompt: options.prompt ?? '',
-        model: options.model ?? CODEX_LATEST_ALIAS,
+        model: options.model ?? DEFAULT_EXEC_MODEL,
         cwd,
         effort: options.effort,
       });

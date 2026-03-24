@@ -5,10 +5,8 @@ import { join } from 'node:path';
 
 import {
   command,
-  file,
   gitDiffStat,
   handoffHistory,
-  optionalFile,
   previousHandoff,
   previousObservation,
   state,
@@ -46,19 +44,6 @@ function asSection(value: ContextSection | ContextSection[] | null | undefined):
 }
 
 describe('exec providers', () => {
-  it('renders file and optionalFile content', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-provider-file-'));
-    writeFileSync(join(cwd, 'notes.txt'), 'hello provider\n', 'utf-8');
-
-    const requiredSection = await file('notes.txt')(createContext(cwd));
-    const optionalSection = await optionalFile('notes.txt')(createContext(cwd));
-    const missingSection = await optionalFile('missing.txt')(createContext(cwd));
-
-    expect(asSection(requiredSection)?.content).toContain('hello provider');
-    expect(asSection(optionalSection)?.content).toContain('hello provider');
-    expect(missingSection).toBeNull();
-  });
-
   it('renders git diff stat and command output', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-provider-git-'));
     execSync('git init', { cwd, stdio: 'ignore' });

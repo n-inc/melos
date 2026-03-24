@@ -1,4 +1,5 @@
 import { buildExecCommandOptions, createProgram } from '../../cli.js';
+import { CODEX_LATEST_ALIAS } from '../../models/registry.js';
 
 describe('cli exec command', () => {
   it('registers recipe/prompt execution options', () => {
@@ -34,5 +35,13 @@ describe('cli exec command', () => {
       prompt: 'hello',
       noAsk: true,
     }));
+  });
+
+  it('defaults exec --model to codex-latest', () => {
+    const program = createProgram();
+    const execCommand = program.commands.find((command) => command.name() === 'exec');
+    const modelOption = execCommand?.options.find((option) => option.long === '--model');
+
+    expect(modelOption?.defaultValue).toBe(CODEX_LATEST_ALIAS);
   });
 });

@@ -129,16 +129,17 @@ export class AppServerEngine extends Engine {
       this.suppressTerminalOutput = suppressTerminalOutput;
       this.onEventSink = onEvent;
       await this.ensureRunning(enabledFeatures);
+      const runtimeModel = resolveRuntimeModel(model, DEFAULT_MODEL);
 
       const threadId = requestedThreadId
         ? await this.resumeThread(requestedThreadId, {
-        model: resolveRuntimeModel(model, DEFAULT_MODEL),
+            model: runtimeModel,
             cwd,
             approvalPolicy,
             sandboxPolicy,
           })
         : await this.startThread({
-            model,
+            model: runtimeModel,
             cwd,
             approvalPolicy,
             sandboxPolicy,
@@ -178,7 +179,7 @@ export class AppServerEngine extends Engine {
           input: [createTextInput(prompt)],
           cwd,
           approvalPolicy,
-          model,
+          model: runtimeModel,
           effort: reasoningEffort,
         },
         timeout
