@@ -132,13 +132,13 @@ export class AppServerEngine extends Engine {
 
       const threadId = requestedThreadId
         ? await this.resumeThread(requestedThreadId, {
-        model: resolveRuntimeModel(model, DEFAULT_MODEL),
+            model: resolveRuntimeModel(model, DEFAULT_MODEL),
             cwd,
             approvalPolicy,
             sandboxPolicy,
           })
         : await this.startThread({
-            model,
+            model: resolveRuntimeModel(model, DEFAULT_MODEL),
             cwd,
             approvalPolicy,
             sandboxPolicy,
