@@ -37,7 +37,10 @@ git diff --name-only HEAD~5..HEAD 2>/dev/null || git diff --name-only HEAD
 ```
 
 追加で確認すべき情報：
+- TASK.json（プロジェクトルートに存在する場合）
 - PROGRESS.md（プロジェクトルートに存在する場合）
+- HANDOFF.md（プロジェクトルートに存在する場合）
+- WORK_REPORT.json（プロジェクトルートまたは `.melos/` 配下に存在する場合）
 - 会話中で言及された重要なファイル
 - セッション中に行った決定事項
 

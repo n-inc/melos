@@ -18,3 +18,14 @@ Melos の Manager は、`TASK.json` を起点に Worker 実行を管理し、要
 12. `browser` を含む動作確認は実装作業から切り出す。ただし final `reviewType: "product"` は Codex + `js_repl` 前提で実行し、通常のブラウザ確認タスクのみ `task.model: "claude-latest"` を明示して実行する。
 
 詳細な挙動と出力フォーマットは `prompts/manager.md` を正とする。
+
+## Git Workflow Skills
+
+Git 運用の詳細は `.claude/skills/` 配下の skill を正とする。
+
+- コミット: `/git-commit`
+- 同期: `/git-sync`
+- PR 作成: `/git-new-pull-request`
+- 一括 ship: `/git-ship`
+- review/CI 修正: `/git-fix-review-ci-on-pull-request`
+- handoff 作成: `/handoff`
