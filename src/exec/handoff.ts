@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { Decision, Observation, ResolvedQuestion, RuntimeTraceEntry } from './recipe.js';
@@ -185,8 +185,4 @@ export function readHandoffHistory(
     }
   }
   return history;
-}
-
-export function cleanupHandoffArtifacts(melosDir: string): void {
-  rmSync(handoffDir(melosDir), { recursive: true, force: true });
 }

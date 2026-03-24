@@ -6,7 +6,7 @@ import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
-import { buildIterationHandoff, cleanupHandoffArtifacts, writeIterationHandoff } from './handoff.js';
+import { buildIterationHandoff, readHandoffHistory, writeIterationHandoff } from './handoff.js';
 import {
   defaultPromptRenderer,
   normalizeObservation,
@@ -49,7 +49,6 @@ export interface RunRecipeOptions {
     state: RunnerState;
     recipe: RecipeDefinition;
   }) => Promise<string | null>;
-  keepHandoff?: boolean;
 }
 
 export function eventLog(options: {
@@ -219,6 +218,17 @@ function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): C
   return [{
     title: 'resolved questions',
     content: JSON.stringify(resolvedQuestions, null, 2),
+  }];
+}
+
+function buildHandoffHistorySection(melosDir: string): ContextSection[] {
+  const history = readHandoffHistory(melosDir);
+  if (history.length === 0) {
+    return [];
+  }
+  return [{
+    title: 'handoff history',
+    content: JSON.stringify(history, null, 2),
   }];
 }
 
@@ -591,6 +601,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
 
       const contextSections: ContextSection[] = [
         ...buildResolvedQuestionsSection(state.resolvedQuestions ?? []),
+        ...buildHandoffHistorySection(options.melosDir),
       ];
       for (const provider of recipe.context) {
         const provided = await provider(createRecipeContext(state, options.melosDir, recipe));
@@ -864,9 +875,6 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
   } finally {
     if ('shutdown' in engine && typeof engine.shutdown === 'function') {
       await engine.shutdown();
-    }
-    if (!options.keepHandoff) {
-      cleanupHandoffArtifacts(options.melosDir);
     }
   }
 }

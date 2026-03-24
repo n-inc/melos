@@ -33,7 +33,6 @@ export interface ExecCommandOptions {
   stderr?: NodeJS.WritableStream;
   noAsk?: boolean;
   alwaysAsk?: boolean;
-  keepHandoff?: boolean;
 }
 
 function assertExclusiveInput(options: ExecCommandOptions): void {
@@ -211,7 +210,6 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
         stdout,
         stderr
       ),
-      keepHandoff: options.keepHandoff,
     });
 
     if (outputFormat === 'json') {

@@ -349,11 +349,10 @@ describe('exec runner', () => {
     expect(prompts[1]).toContain('Use the internal GraphQL API.');
   });
 
-  it('cleans up handoff artifacts by default and keeps them when requested', async () => {
-    const cleanupCwd = mkdtempSync(join(tmpdir(), 'melos-exec-handoff-clean-'));
-    const keepCwd = mkdtempSync(join(tmpdir(), 'melos-exec-handoff-keep-'));
+  it('keeps handoff artifacts by default', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-handoff-keep-default-'));
 
-    const createPassingRecipe = (cwd: string) => createRecipe({
+    const recipe = createRecipe({
       prompt: 'Ship the fix',
       context: [],
       run: {
@@ -373,18 +372,50 @@ describe('exec runner', () => {
     });
 
     await runRecipe({
-      recipe: createPassingRecipe(cleanupCwd),
-      cwd: cleanupCwd,
-      melosDir: join(cleanupCwd, '.melos'),
-    });
-    await runRecipe({
-      recipe: createPassingRecipe(keepCwd),
-      cwd: keepCwd,
-      melosDir: join(keepCwd, '.melos'),
-      keepHandoff: true,
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
     });
 
-    expect(existsSync(join(cleanupCwd, '.melos', 'handoff'))).toBe(false);
-    expect(existsSync(join(keepCwd, '.melos', 'handoff', 'iteration-1.json'))).toBe(true);
+    expect(existsSync(join(cwd, '.melos', 'handoff', 'iteration-1.json'))).toBe(true);
+  });
+
+  it('injects handoff history automatically from the second iteration onward', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-handoff-context-'));
+    const prompts: string[] = [];
+    const engine = new ScriptedEngine([
+      async () => ({ success: true, output: 'first attempt', exitCode: 0 }),
+      async () => ({ success: true, output: 'second attempt', exitCode: 0 }),
+    ]);
+    const executeSpy = jest.spyOn(engine, 'execute').mockImplementation(async (prompt, options) => {
+      prompts.push(prompt);
+      return await ScriptedEngine.prototype.execute.call(engine, prompt, options);
+    });
+
+    const recipe = createRecipe({
+      prompt: 'Iterate with history',
+      context: [],
+      run: { engine, cwd },
+      evaluate: ({ state }) => ({
+        ok: state.iteration >= 2,
+        status: state.iteration >= 2 ? 'pass' : 'fail',
+        summary: `iteration-${state.iteration}`,
+      }),
+      policy: continueUntilPass(),
+      limits: { maxIterations: 3 },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRecipe({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+    expect(prompts[0]).not.toContain('## handoff history');
+    expect(prompts[1]).toContain('## handoff history');
+    expect(prompts[1]).toContain('"iteration": 1');
   });
 });
