@@ -190,7 +190,9 @@ describe('AppServerEngine', () => {
 
     expect(result.success).toBe(true);
     const threadStartRequest = transport.requests.find((request) => request.method === 'thread/start');
+    const turnStartRequest = transport.requests.find((request) => request.method === 'turn/start');
     expect(threadStartRequest?.params).toMatchObject({ model: 'gpt-5.4' });
+    expect(turnStartRequest?.params).toMatchObject({ model: 'gpt-5.4' });
   });
 
   it('sends turn/interrupt on abort', async () => {
