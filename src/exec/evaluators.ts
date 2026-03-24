@@ -371,7 +371,38 @@ function normalizeLlmCriteria(
   if (normalized.length !== criteria.length) {
     return null;
   }
+
+  const expectedCounts = new Map<string, number>();
+  for (const criterion of criteria) {
+    expectedCounts.set(criterion, (expectedCounts.get(criterion) ?? 0) + 1);
+  }
+
+  const actualCounts = new Map<string, number>();
+  for (const item of normalized) {
+    if (!expectedCounts.has(item.criterion)) {
+      return null;
+    }
+    const nextCount = (actualCounts.get(item.criterion) ?? 0) + 1;
+    if (nextCount > (expectedCounts.get(item.criterion) ?? 0)) {
+      return null;
+    }
+    actualCounts.set(item.criterion, nextCount);
+  }
+
+  for (const [criterion, expectedCount] of expectedCounts) {
+    if ((actualCounts.get(criterion) ?? 0) !== expectedCount) {
+      return null;
+    }
+  }
+
   return normalized;
+}
+
+async function shutdownLlmEngine(engine: Engine): Promise<void> {
+  const maybeShutdown = (engine as Engine & { shutdown?: () => Promise<void> }).shutdown;
+  if (typeof maybeShutdown === 'function') {
+    await maybeShutdown.call(engine);
+  }
 }
 
 export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
@@ -398,10 +429,16 @@ export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
       criteria: options.criteria,
       sections,
     });
-    const result = await engine.execute(
-      prompt,
-      buildLlmEngineOptions(engineName, options, ctx.runConfig, ctx.cwd)
-    );
+    const result = await (async () => {
+      try {
+        return await engine.execute(
+          prompt,
+          buildLlmEngineOptions(engineName, options, ctx.runConfig, ctx.cwd)
+        );
+      } finally {
+        await shutdownLlmEngine(engine);
+      }
+    })();
 
     if (!result.success) {
       return normalizeObservation({

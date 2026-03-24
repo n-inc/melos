@@ -80,6 +80,7 @@ describe('exec evaluators', () => {
       }),
       exitCode: 0,
     });
+    const shutdownSpy = jest.spyOn(AppServerEngine.prototype, 'shutdown').mockResolvedValue();
 
     const evaluate = llmEvaluate({
       criteria: ['Has evidence', 'Has conclusion'],
@@ -99,8 +100,10 @@ describe('exec evaluators', () => {
         { criterion: 'Has conclusion', verdict: 'yes' },
       ],
     });
+    expect(shutdownSpy).toHaveBeenCalledTimes(1);
 
     executeSpy.mockRestore();
+    shutdownSpy.mockRestore();
   });
 
   it('marks llmEvaluate as failed when any criterion is no', async () => {
@@ -178,6 +181,35 @@ describe('exec evaluators', () => {
     });
 
     expect(executeSpy.mock.calls[0]?.[0]).toContain('must mention benchmark evidence');
+    executeSpy.mockRestore();
+  });
+
+  it('rejects llmEvaluate output when returned criteria do not match the requested set', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-evaluator-llm-invalid-criteria-'));
+    const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute').mockResolvedValue({
+      success: true,
+      output: JSON.stringify({
+        criteria: [
+          { criterion: 'Has evidence', verdict: 'yes', rationale: 'Included logs.' },
+          { criterion: 'Has evidence', verdict: 'yes', rationale: 'Duplicate criterion.' },
+        ],
+      }),
+      exitCode: 0,
+    });
+
+    const evaluate = llmEvaluate({
+      criteria: ['Has evidence', 'Has conclusion'],
+      engine: 'codex',
+    });
+    const observation = normalizeObservation(await evaluate({
+      ...createContext(cwd),
+      assistantText: 'Collected logs.',
+    }));
+
+    expect(observation.ok).toBe(false);
+    expect(observation.status).toBe('error');
+    expect(observation.summary).toBe('llm evaluation returned an invalid criteria payload');
+
     executeSpy.mockRestore();
   });
 });

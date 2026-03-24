@@ -35,6 +35,7 @@ import { formatLogStreamLines } from './ui/log-stream.js';
 import { canUseColor } from './ui/tui-ansi.js';
 import { createRuntimeUI, resolveRuntimeUIMode, type SessionInfo, type TerminalCapabilities } from './ui/tui.js';
 import { CODEX_LATEST_ALIAS, normalizeModelName } from './models/registry.js';
+import type { ExecCommandOptions } from './exec/index.js';
 
 export interface CLIOptions {
   input?: string;
@@ -62,6 +63,17 @@ export type KillCommandResult =
   | { status: 'killed'; pid: number }
   | { status: 'not_running' }
   | { status: 'stale'; pid: number };
+
+interface ExecCommandActionOptions {
+  recipe?: string;
+  prompt?: string;
+  model: string;
+  cwd?: string;
+  outputFormat: 'text' | 'json' | 'stream-json';
+  effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  noAsk?: boolean;
+  alwaysAsk?: boolean;
+}
 
 const ARCHIVE_ON_RUN_STATES = new Set<MissionState>(['completed', 'failed', 'aborted']);
 const AUTO_RESUME_ON_RUN_STATES = new Set<MissionState>(['paused', 'aborted']);
@@ -321,36 +333,28 @@ export function createProgram(): Command {
     .option('--effort <level>', '推論 effort (simple prompt mode 用)')
     .option('--no-ask', 'ユーザーには質問せず agent 解決のみを試みる')
     .option('--always-ask', 'agent 解決をスキップして必ずユーザーに質問する')
-    .option('--keep-handoff', '実行後も .melos/handoff を削除せず保持する')
-    .action(async (options: {
-      recipe?: string;
-      prompt?: string;
-      model: string;
-      cwd?: string;
-      outputFormat: 'text' | 'json' | 'stream-json';
-      effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-      noAsk?: boolean;
-      alwaysAsk?: boolean;
-      keepHandoff?: boolean;
-    }) => {
+    .action(async (options: ExecCommandActionOptions) => {
       await handleCommandAction(async () => {
         const { exec } = await import('./exec/index.js');
-        const summary = await exec({
-          recipe: options.recipe,
-          prompt: options.prompt,
-          model: options.model,
-          cwd: options.cwd ?? process.cwd(),
-          effort: options.effort,
-          outputFormat: options.outputFormat,
-          noAsk: options.noAsk,
-          alwaysAsk: options.alwaysAsk,
-          keepHandoff: options.keepHandoff,
-        });
+        const summary = await exec(buildExecCommandOptions(options));
         if (!summary.success) process.exit(1);
       });
     });
 
   return program;
+}
+
+export function buildExecCommandOptions(options: ExecCommandActionOptions): ExecCommandOptions {
+  return {
+    recipe: options.recipe,
+    prompt: options.prompt,
+    model: options.model,
+    cwd: options.cwd ?? process.cwd(),
+    effort: options.effort,
+    outputFormat: options.outputFormat,
+    noAsk: options.noAsk,
+    alwaysAsk: options.alwaysAsk,
+  };
 }
 
 export async function run(argv?: string[]): Promise<void> {
