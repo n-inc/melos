@@ -1,7 +1,7 @@
 ---
 name: git-ship
 description: Sync, commit, push, and create PR in one command
-skills: git-commit, git-sync
+skills: git-commit, git-sync, git-new-pull-request
 ---
 
 変更内容を確認し、以下の順序で処理を実行する：
