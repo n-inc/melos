@@ -4,6 +4,7 @@ import { basename, resolve, relative } from 'node:path';
 
 import { readHandoffHistory, readLatestHandoff } from './handoff.js';
 import type { ContextProvider, ContextSection, RecipeContextBase } from './recipe.js';
+import { resolveShellExecutable } from './shell.js';
 
 interface ProviderOptions {
   title?: string;
@@ -100,7 +101,7 @@ export function command(commandText: string, options: ProviderOptions = {}): Con
         cwd: ctx.cwd,
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: '/bin/zsh',
+        shell: resolveShellExecutable(),
       });
       return toSection(options.title ?? `command: ${commandText}`, stdout);
     } catch (error) {

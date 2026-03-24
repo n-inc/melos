@@ -68,6 +68,24 @@ describe('exec evaluators', () => {
     expect(result.exitCode).toBe(124);
   });
 
+  it('falls back to an available shell when SHELL is not present on the system', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-evaluator-shell-fallback-'));
+    const originalShell = process.env.SHELL;
+    process.env.SHELL = '/definitely-missing-shell';
+
+    try {
+      const result = await runShellCommand('printf "fallback works\\n"', { cwd });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('fallback works');
+    } finally {
+      if (originalShell === undefined) {
+        delete process.env.SHELL;
+      } else {
+        process.env.SHELL = originalShell;
+      }
+    }
+  });
+
   it('evaluates criteria with an LLM and returns pass only when all answers are yes', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-evaluator-llm-pass-'));
     const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute').mockResolvedValue({

@@ -5,6 +5,7 @@ import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
 import { defaultPromptRenderer, normalizeObservation, type ContextProvider, type Evaluator, type Observation, type ObservationInput, type RecipeRunConfig } from './recipe.js';
+import { resolveShellExecutable } from './shell.js';
 
 export interface CommandExecutionResult {
   command: string;
@@ -26,9 +27,10 @@ export async function runShellCommand(
   options: ShellCommandOptions
 ): Promise<CommandExecutionResult> {
   const startedAt = Date.now();
+  const shell = resolveShellExecutable();
 
   return new Promise((resolve) => {
-    const child = spawn('/bin/zsh', ['-lc', command], {
+    const child = spawn(shell, ['-lc', command], {
       cwd: options.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
@@ -51,6 +53,20 @@ export async function runShellCommand(
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf-8');
+    });
+    child.on('error', (error) => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      resolve({
+        command,
+        cwd: options.cwd,
+        stdout,
+        stderr: [stderr.trim(), error.message].filter((part) => part.length > 0).join('\n'),
+        exitCode: 1,
+        durationMs: Date.now() - startedAt,
+        timedOut,
+      });
     });
 
     child.on('close', (code) => {

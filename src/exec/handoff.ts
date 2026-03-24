@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 
 import type { Decision, Observation, ResolvedQuestion, RuntimeTraceEntry } from './recipe.js';
+import { resolveShellExecutable } from './shell.js';
 
 export interface IterationHandoff {
   iteration: number;
@@ -42,7 +43,7 @@ function safeExecLines(command: string, cwd: string): string[] {
       cwd,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      shell: '/bin/zsh',
+      shell: resolveShellExecutable(),
     }).trim();
     if (output.length === 0) {
       return [];
