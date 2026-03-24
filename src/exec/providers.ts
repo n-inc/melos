@@ -2,7 +2,9 @@ import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { basename, resolve, relative } from 'node:path';
 
+import { readHandoffHistory, readLatestHandoff } from './handoff.js';
 import type { ContextProvider, ContextSection, RecipeContextBase } from './recipe.js';
+import { resolveShellExecutable } from './shell.js';
 
 interface ProviderOptions {
   title?: string;
@@ -99,7 +101,7 @@ export function command(commandText: string, options: ProviderOptions = {}): Con
         cwd: ctx.cwd,
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: '/bin/zsh',
+        shell: resolveShellExecutable(),
       });
       return toSection(options.title ?? `command: ${commandText}`, stdout);
     } catch (error) {
@@ -165,6 +167,8 @@ export function state(options: ProviderOptions = {}): ContextProvider {
       bestMetrics: ctx.state.bestMetrics,
       cwd: ctx.state.cwd,
       recipePath: ctx.state.recipePath,
+      resolvedQuestions: ctx.resolvedQuestions,
+      lastHandoffPath: ctx.state.lastHandoffPath,
     }, null, 2)
   );
 }
@@ -175,6 +179,28 @@ export function previousObservation(options: ProviderOptions = {}): ContextProvi
       return null;
     }
     return toSection(options.title ?? 'previous observation', JSON.stringify(ctx.previousObservation, null, 2));
+  };
+}
+
+export function previousHandoff(options: ProviderOptions = {}): ContextProvider {
+  return (ctx) => {
+    const handoff = readLatestHandoff(ctx.melosDir);
+    if (!handoff) {
+      return null;
+    }
+    return toSection(options.title ?? 'previous handoff', JSON.stringify(handoff, null, 2));
+  };
+}
+
+export function handoffHistory(
+  options: ProviderOptions & { count?: number } = {}
+): ContextProvider {
+  return (ctx) => {
+    const history = readHandoffHistory(ctx.melosDir, { count: options.count });
+    if (history.length === 0) {
+      return null;
+    }
+    return toSection(options.title ?? 'handoff history', JSON.stringify(history, null, 2));
   };
 }
 
