@@ -11,6 +11,7 @@ export * from '../exec/providers.js';
 export * from '../exec/evaluators.js';
 export * from '../exec/policies.js';
 export * from '../exec/checkpoint.js';
+export * from '../exec/commit.js';
 export * from '../exec/runner.js';
 export * from '../exec/simple.js';
 export * from '../exec/handoff.js';

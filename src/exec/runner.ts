@@ -6,6 +6,7 @@ import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
+import { applyConfiguredCommit } from './commit.js';
 import { buildIterationHandoff, resolveHandoffFingerprint, selectHandoffHistorySection, writeIterationHandoff } from './handoff.js';
 import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
 import {
@@ -469,11 +470,14 @@ async function resolveAskWithAgent(input: {
     buildEngineOptions({
       recipe: input.recipe,
       cwd: input.cwd,
-      state: input.state,
+      state: {
+        ...input.state,
+        // Keep the main execution thread isolated from the auxiliary ask resolver turn.
+        engineThreadId: undefined,
+      },
       ...traceCallbacks,
     })
   );
-  input.state.engineThreadId = readActiveThreadId(input.engine) ?? input.state.engineThreadId;
   if (!result.success) {
     return null;
   }
@@ -890,6 +894,67 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         ...state,
         lastHandoffPath: handoffPath,
       };
+
+      if (recipe.commit) {
+        try {
+          const committed = await applyConfiguredCommit({
+            config: recipe.commit,
+            baseContext: createRecipeContext(state, options.melosDir, recipe),
+            decision,
+            observation,
+            assistantText: engineResult.output,
+          });
+          if (committed) {
+            logger.emit({
+              type: 'commit_created',
+              iteration,
+              agent: 'system',
+              payload: {
+                ref: committed.ref,
+                message: committed.message,
+                changedFiles: committed.changedFiles,
+                when: recipe.commit.when ?? 'never',
+              },
+            });
+          }
+        } catch (error) {
+          const summary = finalizeSummary({
+            status: 'failed',
+            success: false,
+            decision: 'failed',
+            iterations: iteration,
+            cwd,
+            recipePath: options.recipePath,
+            startedAt,
+            summary: 'failed to create git commit',
+            reason: error instanceof Error ? error.message : String(error),
+            output: engineResult.output,
+            observation,
+          });
+          const summarized = await attachFinalReport({
+            summary,
+            recipe,
+            cwd,
+            baseCwd,
+            melosDir: options.melosDir,
+            recipePath: options.recipePath,
+            iteration,
+            logger,
+            state,
+            reason: error instanceof Error ? error.message : String(error),
+            output: engineResult.output,
+            observation,
+            trace,
+          });
+          logger.emit({
+            type: 'run_failed',
+            iteration,
+            agent: 'system',
+            payload: summarized as unknown as Record<string, unknown>,
+          });
+          return summarized;
+        }
+      }
 
       if (decision.kind === 'rollback') {
         if (!recipe.checkpoint || !state.checkpointRef) {

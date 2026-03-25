@@ -16,6 +16,7 @@ export * from './providers.js';
 export * from './evaluators.js';
 export * from './policies.js';
 export * from './checkpoint.js';
+export * from './commit.js';
 export * from './runner.js';
 export * from './simple.js';
 export * from './handoff.js';
@@ -62,6 +63,10 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
     }
     if (event.type === 'rollback_applied') {
       stderr.write(`rollback: ${String(event.payload.ref ?? '')}\n`);
+      return;
+    }
+    if (event.type === 'commit_created') {
+      stderr.write(`commit: ${String(event.payload.ref ?? '')}\n`);
       return;
     }
     if (event.type === 'run_asked') {

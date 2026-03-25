@@ -163,6 +163,23 @@ export interface RecipeReportConfig {
   stdout?: boolean;
 }
 
+export interface CommitConfig {
+  when?: 'never' | 'stop' | 'accepted-iteration';
+  message?: string | ((ctx: {
+    cwd: string;
+    melosDir: string;
+    recipePath?: string;
+    state: RunnerState;
+    previousObservation: Observation | null;
+    resolvedQuestions?: ResolvedQuestion[];
+    runConfig?: RecipeRunConfig;
+    decision: Decision;
+    observation: Observation;
+    assistantText: string;
+    changedFiles: string[];
+  }) => MaybePromise<string>);
+}
+
 export interface FinalReportCheckEvidence {
   command: string;
   cwd?: string;
@@ -218,6 +235,7 @@ export interface RecipeDefinition {
   policy: Policy;
   limits?: RecipeLimits;
   report?: RecipeReportConfig;
+  commit?: CommitConfig;
   checkpoint?: CheckpointController;
   log?: RecipeLog;
 }
@@ -264,6 +282,7 @@ export interface RecipeConfig {
   plateau?: PlateauCondition;
   limit?: number;
   report?: RecipeReportConfig;
+  commit?: CommitConfig;
   checkpoint?: CheckpointController;
   log?: RecipeLog;
 }

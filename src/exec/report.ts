@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
@@ -20,18 +20,14 @@ import { defaultPromptRenderer } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
 
 const REPORT_RUNTIME_MODEL = resolveRuntimeModel(CLAUDE_LATEST_ALIAS, CLAUDE_LATEST_ALIAS);
-const REPORT_EFFORT: ClaudeEngineOptions['effort'] = 'max';
-const REPORT_TIMEOUT_MS = 180_000;
-const REPORT_TOOLS = ['Read', 'Grep', 'Glob', 'LS', 'Bash'];
+const REPORT_EFFORT: ClaudeEngineOptions['effort'] = 'medium';
+const REPORT_TIMEOUT_MS = 90_000;
+const REPORT_TOOLS = ['Read', 'Grep', 'Glob', 'LS'];
 const REPORT_ALLOWED_TOOLS = [
   'Read',
   'Grep',
   'Glob',
   'LS',
-  'Bash(git diff:*)',
-  'Bash(git show:*)',
-  'Bash(git log:*)',
-  'Bash(git status:*)',
 ];
 const REPORT_DISALLOWED_TOOLS = ['Edit', 'Write', 'MultiEdit'];
 const REPORT_JSON_SCHEMA = JSON.stringify({
@@ -256,42 +252,6 @@ function buildDiffStat(cwd: string): string | null {
   return output.length > 0 ? output : null;
 }
 
-function summarizeEventRecord(event: Record<string, unknown>): Record<string, unknown> {
-  const payload = isRecord(event.payload) ? event.payload : {};
-  return {
-    type: typeof event.type === 'string' ? event.type : 'unknown',
-    iteration: typeof event.iteration === 'number' ? event.iteration : undefined,
-    agent: typeof event.agent === 'string' ? event.agent : undefined,
-    payload: {
-      kind: typeof payload.kind === 'string' ? payload.kind : undefined,
-      summary: typeof payload.summary === 'string' ? payload.summary : undefined,
-      reason: typeof payload.reason === 'string' ? payload.reason : undefined,
-      warning: typeof payload.warning === 'string' ? payload.warning : undefined,
-      path: typeof payload.path === 'string' ? payload.path : undefined,
-      success: typeof payload.success === 'boolean' ? payload.success : undefined,
-    },
-  };
-}
-
-function readRecentEventsSummary(melosDir: string, limit: number = 20): Record<string, unknown>[] {
-  const eventsPath = join(melosDir, 'events.jsonl');
-  if (!existsSync(eventsPath)) {
-    return [];
-  }
-  const lines = readFileSync(eventsPath, 'utf-8')
-    .trim()
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0);
-  return lines.slice(-limit).flatMap((line) => {
-    try {
-      const parsed = JSON.parse(line);
-      return isRecord(parsed) ? [summarizeEventRecord(parsed)] : [];
-    } catch {
-      return [];
-    }
-  });
-}
-
 function compactHandoffEntry(entry: IterationHandoff): Record<string, unknown> {
   return {
     iteration: entry.iteration,
@@ -318,8 +278,8 @@ function buildCompactHandoffSummary(entries: IterationHandoff[]): {
   omittedEntries: number;
 } {
   const compact = entries.map(compactHandoffEntry);
-  let selected = compact.slice(-12);
-  while (selected.length > 1 && JSON.stringify(selected, null, 2).length > 48_000) {
+  let selected = compact.slice(-6);
+  while (selected.length > 1 && JSON.stringify(selected, null, 2).length > 24_000) {
     selected = selected.slice(1);
   }
   return {
@@ -357,7 +317,6 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
   const handoffSummary = buildCompactHandoffSummary(handoffEntries);
   const changedFiles = listChangedFiles(input.cwd);
   const diffStat = buildDiffStat(input.cwd);
-  const recentEvents = readRecentEventsSummary(input.melosDir);
   const evidence = buildEvidence(input.observation);
 
   return defaultPromptRenderer(
@@ -365,7 +324,8 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
       'Generate the final execution report as strict JSON.',
       'You are in a read-only reporting phase.',
       'Start from the compact summaries below.',
-      'If the summaries are insufficient, inspect the listed artifacts with the allowed read-only tools.',
+      'Keep the report concise and high-signal.',
+      'If the summaries are insufficient, inspect the listed artifacts with the allowed read-only file tools only.',
       'Do not modify files, do not apply edits, and do not run write commands.',
       'Return only JSON that matches the provided schema.',
       'Use `userConfirmationNeeded` only for decisions that must be reviewed by the executor before proceeding.',
@@ -380,10 +340,6 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
           summary: input.summary,
           reason: input.reason,
         }, null, 2),
-      },
-      {
-        title: 'final assistant output',
-        content: input.output?.trim() || '(empty assistant output)',
       },
       ...(input.observation
         ? [{
@@ -413,12 +369,6 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
         title: 'handoff summary',
         content: handoffSummary.content,
       },
-      ...(recentEvents.length > 0
-        ? [{
-          title: 'recent events summary',
-          content: JSON.stringify(recentEvents, null, 2),
-        }]
-        : []),
       ...(diffStat
         ? [{
           title: 'git diff stat',
@@ -429,12 +379,6 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
         title: 'available artifacts',
         content: JSON.stringify(buildAvailableArtifacts(input, changedFiles), null, 2),
       },
-      ...(input.trace && input.trace.length > 0
-        ? [{
-          title: 'latest trace excerpt',
-          content: JSON.stringify(input.trace.slice(-20), null, 2),
-        }]
-        : []),
     ]
   );
 }
@@ -445,7 +389,7 @@ function buildReportSystemPrompt(): string {
     'This is a one-shot Claude Opus reporting pass.',
     'Treat the workspace as strictly read-only.',
     'Prefer Read, Grep, Glob, and LS for inspection.',
-    'Use Bash only for read-only git commands when necessary.',
+    'Do not expand scope beyond what is needed for a concise final report.',
     'Never run commands that modify files, git state, or external systems.',
     'Never fabricate changes, rationale, or confirmations.',
   ].join('\n');

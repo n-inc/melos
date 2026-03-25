@@ -308,6 +308,7 @@ export function compileRecipeConfig(config: RecipeConfig): Omit<RecipeDefinition
     policy: buildLoopPolicy(config),
     limits: buildLimits(config),
     report: config.report,
+    commit: config.commit,
     checkpoint: config.checkpoint,
     log: config.log,
   };
