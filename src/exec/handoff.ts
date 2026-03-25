@@ -1,9 +1,12 @@
+import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { Decision, Observation, ResolvedQuestion, RuntimeTraceEntry } from './recipe.js';
+import { defaultPromptRenderer, type ContextSection, type Decision, type Observation, type ResolvedQuestion, type RuntimeTraceEntry } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
+
+export const SAFE_PROMPT_CEILING = 900_000;
 
 export interface IterationHandoff {
   iteration: number;
@@ -29,12 +32,53 @@ export interface IterationHandoff {
   resolvedQuestions: ResolvedQuestion[];
 }
 
-function handoffDir(melosDir: string): string {
+export interface HandoffSectionDecision {
+  mode: 'none' | 'full' | 'compact' | 'trimmed' | 'omitted';
+  section: ContextSection | null;
+  totalEntries: number;
+  includedEntries: number;
+  omittedEntries: number;
+}
+
+function handoffRootDir(melosDir: string): string {
   return join(melosDir, 'handoff');
 }
 
-function handoffPath(melosDir: string, iteration: number): string {
-  return join(handoffDir(melosDir), `iteration-${iteration}.json`);
+function namespaceDirName(fingerprint: string): string {
+  return `sha256-${fingerprint}`;
+}
+
+function handoffDir(melosDir: string, fingerprint: string): string {
+  return join(handoffRootDir(melosDir), namespaceDirName(fingerprint));
+}
+
+function handoffPath(melosDir: string, fingerprint: string, iteration: number): string {
+  return join(handoffDir(melosDir, fingerprint), `iteration-${iteration}.json`);
+}
+
+function sha256(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+export function resolveHandoffFingerprint(input: {
+  existingFingerprint?: string;
+  recipePath?: string;
+  prompt?: string;
+  promptSource?: string;
+}): string | null {
+  if (typeof input.existingFingerprint === 'string' && input.existingFingerprint.trim().length > 0) {
+    return input.existingFingerprint.trim();
+  }
+  if (typeof input.recipePath === 'string' && input.recipePath.trim().length > 0 && existsSync(input.recipePath)) {
+    return sha256(readFileSync(input.recipePath, 'utf-8'));
+  }
+  if (typeof input.prompt === 'string') {
+    return sha256(`simple:${input.prompt}`);
+  }
+  if (typeof input.promptSource === 'string' && input.promptSource.trim().length > 0) {
+    return sha256(`inline:${input.promptSource}`);
+  }
+  return null;
 }
 
 function safeExecLines(command: string, cwd: string): string[] {
@@ -146,24 +190,25 @@ export function buildIterationHandoff(input: {
   };
 }
 
-export function writeIterationHandoff(melosDir: string, handoff: IterationHandoff): string {
-  const dir = handoffDir(melosDir);
+export function writeIterationHandoff(melosDir: string, fingerprint: string, handoff: IterationHandoff): string {
+  const dir = handoffDir(melosDir, fingerprint);
   mkdirSync(dir, { recursive: true });
-  const path = handoffPath(melosDir, handoff.iteration);
+  const path = handoffPath(melosDir, fingerprint, handoff.iteration);
   writeFileSync(path, `${JSON.stringify(handoff, null, 2)}\n`, 'utf-8');
   return path;
 }
 
-export function readLatestHandoff(melosDir: string): IterationHandoff | null {
-  const history = readHandoffHistory(melosDir, { count: 1 });
+export function readLatestHandoff(melosDir: string, fingerprint: string): IterationHandoff | null {
+  const history = readHandoffHistory(melosDir, fingerprint, { count: 1 });
   return history[0] ?? null;
 }
 
 export function readHandoffHistory(
   melosDir: string,
+  fingerprint: string,
   options: { count?: number } = {}
 ): IterationHandoff[] {
-  const dir = handoffDir(melosDir);
+  const dir = handoffDir(melosDir, fingerprint);
   if (!existsSync(dir)) {
     return [];
   }
@@ -186,4 +231,116 @@ export function readHandoffHistory(
     }
   }
   return history;
+}
+
+function compactHandoffEntry(entry: IterationHandoff): Record<string, unknown> {
+  return {
+    iteration: entry.iteration,
+    timestamp: entry.timestamp,
+    promptSummary: entry.promptSummary,
+    observation: {
+      status: entry.observation.status,
+      summary: entry.observation.summary,
+    },
+    decision: {
+      kind: entry.decision.kind,
+      summary: entry.decision.summary,
+    },
+    modifiedFiles: entry.modifiedFiles.slice(0, 5),
+    nextSteps: entry.nextSteps,
+    blockers: entry.blockers,
+  };
+}
+
+function fitsPromptBudget(input: {
+  prompt: string;
+  sections: ContextSection[];
+  handoffSectionContent: string;
+  ceiling: number;
+}): boolean {
+  return defaultPromptRenderer(
+    input.prompt,
+    [...input.sections, { title: 'handoff history', content: input.handoffSectionContent }]
+  ).length <= input.ceiling;
+}
+
+export function selectHandoffHistorySection(input: {
+  melosDir: string;
+  fingerprint: string;
+  prompt: string;
+  sections: ContextSection[];
+  ceiling?: number;
+}): HandoffSectionDecision {
+  const history = readHandoffHistory(input.melosDir, input.fingerprint);
+  if (history.length === 0) {
+    return {
+      mode: 'none',
+      section: null,
+      totalEntries: 0,
+      includedEntries: 0,
+      omittedEntries: 0,
+    };
+  }
+
+  const ceiling = input.ceiling ?? SAFE_PROMPT_CEILING;
+  const fullContent = JSON.stringify(history, null, 2);
+  if (fitsPromptBudget({
+    prompt: input.prompt,
+    sections: input.sections,
+    handoffSectionContent: fullContent,
+    ceiling,
+  })) {
+    return {
+      mode: 'full',
+      section: { title: 'handoff history', content: fullContent },
+      totalEntries: history.length,
+      includedEntries: history.length,
+      omittedEntries: 0,
+    };
+  }
+
+  const compactEntries = history.map(compactHandoffEntry);
+  const compactContent = JSON.stringify(compactEntries, null, 2);
+  if (fitsPromptBudget({
+    prompt: input.prompt,
+    sections: input.sections,
+    handoffSectionContent: compactContent,
+    ceiling,
+  })) {
+    return {
+      mode: 'compact',
+      section: { title: 'handoff history', content: compactContent },
+      totalEntries: history.length,
+      includedEntries: history.length,
+      omittedEntries: 0,
+    };
+  }
+
+  for (let startIndex = 1; startIndex < compactEntries.length; startIndex++) {
+    const trimmedEntries = compactEntries.slice(startIndex);
+    const trimmedContent = JSON.stringify(trimmedEntries, null, 2);
+    if (!fitsPromptBudget({
+      prompt: input.prompt,
+      sections: input.sections,
+      handoffSectionContent: trimmedContent,
+      ceiling,
+    })) {
+      continue;
+    }
+    return {
+      mode: 'trimmed',
+      section: { title: 'handoff history', content: trimmedContent },
+      totalEntries: history.length,
+      includedEntries: trimmedEntries.length,
+      omittedEntries: startIndex,
+    };
+  }
+
+  return {
+    mode: 'omitted',
+    section: null,
+    totalEntries: history.length,
+    includedEntries: 0,
+    omittedEntries: history.length,
+  };
 }

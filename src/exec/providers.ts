@@ -2,7 +2,7 @@ import { execSync } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
 import { basename, resolve, relative } from 'node:path';
 
-import { readHandoffHistory, readLatestHandoff } from './handoff.js';
+import { readHandoffHistory, readLatestHandoff, resolveHandoffFingerprint } from './handoff.js';
 import type { ContextProvider, ContextSection, RecipeContextBase } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
 
@@ -144,7 +144,14 @@ export function previousObservation(options: ProviderOptions = {}): ContextProvi
 
 export function previousHandoff(options: ProviderOptions = {}): ContextProvider {
   return (ctx) => {
-    const handoff = readLatestHandoff(ctx.melosDir);
+    const fingerprint = resolveHandoffFingerprint({
+      existingFingerprint: ctx.state.handoffFingerprint,
+      recipePath: ctx.recipePath,
+    });
+    if (!fingerprint) {
+      return null;
+    }
+    const handoff = readLatestHandoff(ctx.melosDir, fingerprint);
     if (!handoff) {
       return null;
     }
@@ -156,7 +163,14 @@ export function handoffHistory(
   options: ProviderOptions & { count?: number } = {}
 ): ContextProvider {
   return (ctx) => {
-    const history = readHandoffHistory(ctx.melosDir, { count: options.count });
+    const fingerprint = resolveHandoffFingerprint({
+      existingFingerprint: ctx.state.handoffFingerprint,
+      recipePath: ctx.recipePath,
+    });
+    if (!fingerprint) {
+      return null;
+    }
+    const history = readHandoffHistory(ctx.melosDir, fingerprint, { count: options.count });
     if (history.length === 0) {
       return null;
     }
