@@ -234,6 +234,7 @@ export interface RecipeDefinition {
   evaluate: Evaluator;
   policy: Policy;
   limits?: RecipeLimits;
+  review?: ReviewConfig;
   report?: RecipeReportConfig;
   commit?: CommitConfig;
   checkpoint?: CheckpointController;

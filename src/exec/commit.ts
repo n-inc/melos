@@ -100,7 +100,8 @@ export async function applyConfiguredCommit(input: {
     changedFiles,
   });
 
-  runGit(input.baseContext.cwd, ['add', '-A', '--', '.', ':(exclude).melos']);
+  runGit(input.baseContext.cwd, ['add', '-A', '--', '.']);
+  runGit(input.baseContext.cwd, ['rm', '-r', '--cached', '--ignore-unmatch', '--', '.melos']);
   runGit(input.baseContext.cwd, ['commit', '--no-verify', '-m', message]);
   const ref = runGit(input.baseContext.cwd, ['rev-parse', 'HEAD']);
 

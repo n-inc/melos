@@ -591,6 +591,7 @@ describe('exec runner', () => {
 
   it('creates a single git commit on stop when configured', async () => {
     const cwd = createGitRepo('melos-exec-commit-stop-');
+    writeFileSync(join(cwd, '.gitignore'), '.melos/\n', 'utf-8');
     writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');
     writeFileSync(join(cwd, 'check.js'), `
       const { readFileSync } = require('node:fs');

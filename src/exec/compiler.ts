@@ -307,6 +307,7 @@ export function compileRecipeConfig(config: RecipeConfig): Omit<RecipeDefinition
     evaluate: buildDeclarativeEvaluator(config),
     policy: buildLoopPolicy(config),
     limits: buildLimits(config),
+    review: config.review,
     report: config.report,
     commit: config.commit,
     checkpoint: config.checkpoint,

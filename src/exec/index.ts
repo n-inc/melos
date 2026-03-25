@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import type { MissionEvent } from '../state/events.js';
 import { CODEX_LATEST_ALIAS } from '../models/registry.js';
 import { loadRouteModule, resolveRouteSource } from './loader.js';
-import { renderFinalReportText } from './report.js';
+import { renderFinalReportText, resolveReportPath } from './report.js';
 import { runRoute, eventLog, type ExecRunSummary } from './runner.js';
 import { createSimpleRoute } from './simple.js';
 import type { RouteDefinition } from './recipe.js';
@@ -27,6 +27,7 @@ const STALE_RUN_ARTIFACTS = [
   'review-result.json',
   'final-report.json',
 ] as const;
+const DEFAULT_REVIEW_ARTIFACT_PATH = '.melos/review-result.json';
 
 export type ExecOutputFormat = 'text' | 'json' | 'stream-json';
 
@@ -94,6 +95,25 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
 export function clearStaleRunArtifacts(melosDir: string): void {
   for (const fileName of STALE_RUN_ARTIFACTS) {
     rmSync(join(melosDir, fileName), { force: true });
+  }
+}
+
+function resolveReviewArtifactPath(cwd: string, recipe: RouteDefinition): string | undefined {
+  if (!recipe.review) {
+    return undefined;
+  }
+  const configured = recipe.review.path?.trim();
+  return resolve(cwd, configured && configured.length > 0 ? configured : DEFAULT_REVIEW_ARTIFACT_PATH);
+}
+
+export function clearConfiguredRunArtifacts(cwd: string, recipe: RouteDefinition): void {
+  const reviewPath = resolveReviewArtifactPath(cwd, recipe);
+  if (reviewPath) {
+    rmSync(reviewPath, { force: true });
+  }
+
+  if (recipe.report) {
+    rmSync(resolveReportPath(cwd, recipe.report), { force: true });
   }
 }
 
@@ -227,6 +247,8 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
         },
       });
     }
+
+    clearConfiguredRunArtifacts(cwd, recipe);
 
     const summary = await runRoute({
       recipe,
