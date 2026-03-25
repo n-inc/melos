@@ -65,7 +65,7 @@ export type KillCommandResult =
   | { status: 'stale'; pid: number };
 
 interface ExecCommandActionOptions {
-  recipe?: string;
+  route?: string;
   prompt?: string;
   model: string;
   cwd?: string;
@@ -324,8 +324,8 @@ export function createProgram(): Command {
 
   program
     .command('exec')
-    .description('recipe または prompt を実行する')
-    .option('--recipe <path>', '実行する recipe module (.ts または -)')
+    .description('route または prompt を実行する')
+    .option('--route <path>', '実行する route module (.ts または -)')
     .option('--prompt <text>', '1回だけ実行する prompt')
     .option('--model <model>', 'モデル', CODEX_LATEST_ALIAS)
     .option('--cwd <dir>', '作業ディレクトリ')
@@ -346,7 +346,7 @@ export function createProgram(): Command {
 
 export function buildExecCommandOptions(options: ExecCommandActionOptions): ExecCommandOptions {
   return {
-    recipe: options.recipe,
+    route: options.route,
     prompt: options.prompt,
     model: options.model,
     cwd: options.cwd ?? process.cwd(),

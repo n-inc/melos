@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { isAbsolute, resolve } from 'node:path';
 
 import { AppServerEngine } from '../engines/app-server.js';
 import { ClaudeEngine } from '../engines/claude.js';
@@ -86,7 +87,21 @@ export async function runShellCommand(
   });
 }
 
-type ShellCheck = string | { command: string; title?: string; timeoutMs?: number };
+export interface ShellCommandSpec {
+  command: string;
+  cwd?: string;
+  title?: string;
+  timeoutMs?: number;
+}
+
+type ShellCheck = string | ShellCommandSpec;
+
+function resolveCommandCwd(baseCwd: string, commandCwd?: string): string {
+  if (!commandCwd) {
+    return baseCwd;
+  }
+  return isAbsolute(commandCwd) ? commandCwd : resolve(baseCwd, commandCwd);
+}
 
 export function shellChecks(checks: ShellCheck[] | ShellCheck): Evaluator {
   const normalizedChecks = Array.isArray(checks) ? checks : [checks];
@@ -97,7 +112,7 @@ export function shellChecks(checks: ShellCheck[] | ShellCheck): Evaluator {
     for (const check of normalizedChecks) {
       const config = typeof check === 'string' ? { command: check } : check;
       const result = await runShellCommand(config.command, {
-        cwd: ctx.cwd,
+        cwd: resolveCommandCwd(ctx.cwd, config.cwd),
         timeoutMs: config.timeoutMs,
       });
       results.push(result);
@@ -123,6 +138,7 @@ export function shellChecks(checks: ShellCheck[] | ShellCheck): Evaluator {
 
 export interface CommandJsonOptions {
   command: string;
+  cwd?: string;
   timeoutMs?: number;
   summary?: string;
 }
@@ -130,7 +146,7 @@ export interface CommandJsonOptions {
 export function commandJson(options: CommandJsonOptions): Evaluator {
   return async (ctx) => {
     const result = await runShellCommand(options.command, {
-      cwd: ctx.cwd,
+      cwd: resolveCommandCwd(ctx.cwd, options.cwd),
       timeoutMs: options.timeoutMs,
     });
 
@@ -181,6 +197,7 @@ export interface MetricExtraction {
 
 export interface MetricExtractorOptions {
   command: string;
+  cwd?: string;
   timeoutMs?: number;
   extract?: (input: { result: CommandExecutionResult; parsedJson?: unknown }) => MetricExtraction | Record<string, number> | number | Promise<MetricExtraction | Record<string, number> | number>;
 }
@@ -207,7 +224,7 @@ function normalizeMetricExtraction(value: MetricExtraction | Record<string, numb
 export function metricExtractor(options: MetricExtractorOptions): Evaluator {
   return async (ctx) => {
     const result = await runShellCommand(options.command, {
-      cwd: ctx.cwd,
+      cwd: resolveCommandCwd(ctx.cwd, options.cwd),
       timeoutMs: options.timeoutMs,
     });
     if (result.exitCode !== 0) {

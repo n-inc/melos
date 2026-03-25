@@ -4,10 +4,11 @@ import { join, resolve } from 'node:path';
 
 import type { MissionEvent } from '../state/events.js';
 import { CODEX_LATEST_ALIAS } from '../models/registry.js';
-import { loadRecipeModule, resolveRecipeSource } from './loader.js';
-import { runRecipe, eventLog, type ExecRunSummary } from './runner.js';
-import { createSimpleRecipe } from './simple.js';
-import type { RecipeDefinition } from './recipe.js';
+import { loadRouteModule, resolveRouteSource } from './loader.js';
+import { renderFinalReportText } from './report.js';
+import { runRoute, eventLog, type ExecRunSummary } from './runner.js';
+import { createSimpleRoute } from './simple.js';
+import type { RouteDefinition } from './recipe.js';
 
 export * from './recipe.js';
 export * from './loader.js';
@@ -18,13 +19,14 @@ export * from './checkpoint.js';
 export * from './runner.js';
 export * from './simple.js';
 export * from './handoff.js';
+export * from './report.js';
 
 const DEFAULT_EXEC_MODEL = CODEX_LATEST_ALIAS;
 
 export type ExecOutputFormat = 'text' | 'json' | 'stream-json';
 
 export interface ExecCommandOptions {
-  recipe?: string;
+  route?: string;
   prompt?: string;
   model?: string;
   cwd?: string;
@@ -38,16 +40,16 @@ export interface ExecCommandOptions {
 }
 
 function assertExclusiveInput(options: ExecCommandOptions): void {
-  const inputCount = Number(Boolean(options.recipe)) + Number(Boolean(options.prompt));
+  const inputCount = Number(Boolean(options.route)) + Number(Boolean(options.prompt));
   if (inputCount !== 1) {
-    throw new Error('--recipe と --prompt のどちらか一方だけを指定してください');
+    throw new Error('--route と --prompt のどちらか一方だけを指定してください');
   }
 }
 
 function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent) => void {
   return (event) => {
-    if (event.type === 'recipe_loaded') {
-      stderr.write(`recipe loaded: ${String(event.payload.path ?? event.payload.mode ?? 'unknown')}\n`);
+    if (event.type === 'route_loaded') {
+      stderr.write(`route loaded: ${String(event.payload.path ?? event.payload.mode ?? 'unknown')}\n`);
       return;
     }
     if (event.type === 'iteration_started') {
@@ -66,6 +68,10 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
       stderr.write(`ask: ${String(event.payload.question ?? '')}\n`);
       return;
     }
+    if (event.type === 'report_generated') {
+      stderr.write(`report: ${String(event.payload.path ?? '')}\n`);
+      return;
+    }
     if (event.type === 'exec_failed') {
       stderr.write(`failed: ${String(event.payload.summary ?? '')}\n`);
       return;
@@ -79,6 +85,11 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
 function formatTextSummary(summary: ExecRunSummary): string {
   if (summary.status === 'asked') {
     return summary.question ?? summary.summary;
+  }
+  if (summary.report && summary.reportStdout !== false) {
+    return renderFinalReportText(summary.report, summary.reportPath, {
+      degraded: summary.reportDegraded,
+    });
   }
   if (typeof summary.output === 'string' && summary.output.trim().length > 0) {
     return summary.output.trim();
@@ -154,28 +165,28 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
     agent: 'system',
     payload: {
       cwd,
-      mode: options.recipe ? 'recipe' : 'prompt',
+      mode: options.route ? 'route' : 'prompt',
       outputFormat,
     },
   });
 
   let cleanup: (() => void) | undefined;
   try {
-    let recipe: RecipeDefinition;
+    let recipe: RouteDefinition;
     let recipePath: string | undefined;
 
-    if (options.recipe) {
-      const resolved = await resolveRecipeSource({
-        recipePath: options.recipe,
+    if (options.route) {
+      const resolved = await resolveRouteSource({
+        routePath: options.route,
         cwd,
         stdin: options.stdin,
       });
       cleanup = resolved.cleanup;
       recipePath = resolved.path;
-      recipe = await loadRecipeModule(resolved.path);
+      recipe = await loadRouteModule(resolved.path);
       recipe.log ??= log;
       log.emit({
-        type: 'recipe_loaded',
+        type: 'route_loaded',
         iteration: 0,
         agent: 'system',
         payload: {
@@ -184,7 +195,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
         },
       });
     } else {
-      recipe = createSimpleRecipe({
+      recipe = createSimpleRoute({
         prompt: options.prompt ?? '',
         model: options.model ?? DEFAULT_EXEC_MODEL,
         cwd,
@@ -192,7 +203,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       });
       recipe.log = log;
       log.emit({
-        type: 'recipe_loaded',
+        type: 'route_loaded',
         iteration: 0,
         agent: 'system',
         payload: {
@@ -201,7 +212,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       });
     }
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir,

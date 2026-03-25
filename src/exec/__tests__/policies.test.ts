@@ -23,6 +23,7 @@ function createContext() {
       exitCode: 0,
     },
     recipe: {
+      apiVersion: 2 as const,
       prompt: 'test',
       context: [],
       run: { engine: 'codex' as const },

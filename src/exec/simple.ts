@@ -1,6 +1,6 @@
 import { continueUntilPass, customPolicy, stopDecision } from './policies.js';
 import { customEvaluator } from './evaluators.js';
-import { createRecipe, type RecipeDefinition } from './recipe.js';
+import { createRuntimeRecipe, type RecipeDefinition } from './recipe.js';
 
 export interface SimpleRecipeOptions {
   prompt: string;
@@ -10,7 +10,7 @@ export interface SimpleRecipeOptions {
 }
 
 export function createSimpleRecipe(options: SimpleRecipeOptions): RecipeDefinition {
-  return createRecipe({
+  return createRuntimeRecipe({
     prompt: options.prompt,
     context: [],
     run: {
@@ -35,4 +35,5 @@ export function createSimpleRecipe(options: SimpleRecipeOptions): RecipeDefiniti
   });
 }
 
+export const createSimpleRoute = createSimpleRecipe;
 export { continueUntilPass };

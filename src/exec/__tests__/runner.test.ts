@@ -5,14 +5,15 @@ import { join } from 'node:path';
 import { jest } from '@jest/globals';
 
 import { AppServerEngine } from '../../engines/app-server.js';
+import { ClaudeEngine } from '../../engines/claude.js';
 import { Engine, type EngineOptions, type EngineResult } from '../../engines/base.js';
 import { gitCheckpoint } from '../checkpoint.js';
 import { metricExtractor, shellChecks } from '../evaluators.js';
 import { resolveHandoffFingerprint } from '../handoff.js';
 import { continueUntilPass, plateauMetric } from '../policies.js';
-import { createRecipe } from '../recipe.js';
-import { runRecipe, eventLog } from '../runner.js';
-import { createSimpleRecipe } from '../simple.js';
+import { createRoute, createRuntimeRoute } from '../recipe.js';
+import { runRoute, eventLog } from '../runner.js';
+import { createSimpleRoute } from '../simple.js';
 
 class ScriptedEngine extends Engine {
   readonly name = 'scripted';
@@ -66,7 +67,7 @@ describe('exec runner', () => {
       },
     ]);
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Fix the failing checks',
       context: [],
       run: { engine, cwd },
@@ -79,7 +80,7 @@ describe('exec runner', () => {
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -88,6 +89,367 @@ describe('exec runner', () => {
     expect(summary.success).toBe(true);
     expect(summary.iterations).toBe(1);
     expect(readFileSync(join(cwd, 'status.txt'), 'utf-8')).toBe('pass\n');
+  });
+
+  it('resolves relative run.cwd from the exec cwd even when the recipe path is temporary', async () => {
+    const cwd = createGitRepo('melos-exec-run-cwd-');
+    mkdirSync(join(cwd, 'api'));
+    writeFileSync(join(cwd, 'api', 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'api', 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed api fixture"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'pass\n', 'utf-8');
+        return { success: true, output: 'updated api', exitCode: 0 };
+      },
+    ]);
+
+    const recipe = createRuntimeRoute({
+      prompt: 'Fix the failing api check',
+      context: [],
+      run: { engine, cwd: 'api' },
+      evaluate: shellChecks(['node check.js']),
+      policy: continueUntilPass(),
+      limits: { maxIterations: 3 },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      recipePath: '/tmp/melos-generated.ts',
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(readFileSync(join(cwd, 'api', 'status.txt'), 'utf-8')).toBe('pass\n');
+  });
+
+  it('compiles declarative check recipes and loops until checks pass', async () => {
+    const cwd = createGitRepo('melos-exec-declarative-check-');
+    writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed declarative fixture"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'pass\n', 'utf-8');
+        return { success: true, output: 'fixed declarative check', exitCode: 0 };
+      },
+    ]);
+
+    const recipe = createRoute({
+      task: 'Fix the failing check',
+      context: [],
+      run: { engine, cwd },
+      check: ['node check.js'],
+      limit: 3,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(1);
+  });
+
+  it('compiles declarative measure recipes and stops when thresholds are reached', async () => {
+    const cwd = createGitRepo('melos-exec-declarative-until-');
+    writeFileSync(join(cwd, 'score.json'), JSON.stringify({ score: 0.1 }), 'utf-8');
+    execSync('git add score.json', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed declarative metric"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'score.json'), JSON.stringify({ score: 0.5 }), 'utf-8');
+        return { success: true, output: 'score=0.5', exitCode: 0 };
+      },
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'score.json'), JSON.stringify({ score: 0.95 }), 'utf-8');
+        return { success: true, output: 'score=0.95', exitCode: 0 };
+      },
+    ]);
+
+    const recipe = createRoute({
+      task: 'Improve the score',
+      context: [],
+      run: { engine, cwd },
+      measure: {
+        command: `node -e "process.stdout.write(require('fs').readFileSync('score.json', 'utf8'))"`,
+      },
+      until: { metric: 'score', atLeast: 0.9 },
+      limit: 3,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+  });
+
+  it('compiles declarative pass recipes and loops until natural-language criteria pass', async () => {
+    const cwd = createGitRepo('melos-exec-declarative-pass-');
+    const engine = new ScriptedEngine([
+      async () => ({ success: true, output: 'Implemented the change but no final verification yet.', exitCode: 0 }),
+      async () => ({ success: true, output: 'Implemented the change and verified the login flow succeeds.', exitCode: 0 }),
+    ]);
+    const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute')
+      .mockResolvedValueOnce({
+        success: true,
+        output: JSON.stringify({
+          criteria: [
+            { criterion: 'Mentions that the login flow succeeds', verdict: 'no', rationale: 'Missing explicit verification.' },
+          ],
+        }),
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        output: JSON.stringify({
+          criteria: [
+            { criterion: 'Mentions that the login flow succeeds', verdict: 'yes', rationale: 'Explicit verification is present.' },
+          ],
+        }),
+        exitCode: 0,
+      });
+    const shutdownSpy = jest.spyOn(AppServerEngine.prototype, 'shutdown').mockResolvedValue();
+
+    const recipe = createRoute({
+      task: 'Implement the login flow',
+      context: [],
+      run: { engine, cwd, model: 'codex-latest' },
+      pass: ['Mentions that the login flow succeeds'],
+      limit: 3,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+
+    executeSpy.mockRestore();
+    shutdownSpy.mockRestore();
+  });
+
+  it('generates and saves a final report when report is configured', async () => {
+    const cwd = createGitRepo('melos-exec-report-');
+    const engine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'Implemented the login flow and verified the happy path.',
+        exitCode: 0,
+      }),
+    ]);
+    const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt, options) => {
+      expect(prompt).toContain('Generate the final execution report as strict JSON.');
+      expect(prompt).toContain('"eventsPath"');
+      expect(prompt).toContain('"changedFiles"');
+      expect(prompt).toContain('handoff summary');
+      expect(options).toMatchObject({
+        cwd,
+        model: 'opus',
+        effort: 'max',
+        printMode: true,
+        skipPermissions: false,
+        permissionMode: 'dontAsk',
+        tools: ['Read', 'Grep', 'Glob', 'LS', 'Bash'],
+        disallowedTools: ['Edit', 'Write', 'MultiEdit'],
+        addDirectories: [cwd],
+        suppressTerminalOutput: true,
+      });
+      expect(options?.allowedTools).toEqual(expect.arrayContaining([
+        'Read',
+        'Grep',
+        'Glob',
+        'LS',
+        'Bash(git diff:*)',
+        'Bash(git show:*)',
+        'Bash(git log:*)',
+        'Bash(git status:*)',
+      ]));
+      expect(typeof options?.appendSystemPrompt).toBe('string');
+      expect(options?.appendSystemPrompt).toContain('read-only');
+      expect(typeof options?.jsonSchema).toBe('string');
+      return {
+        success: true,
+        output: JSON.stringify({
+          summary: 'Implemented and verified the login flow.',
+          changes: ['Added login flow handling.', 'Verified the happy path.'],
+          rationale: ['Kept the change focused on the requested scope.'],
+          finalState: 'The login flow now succeeds in the happy path.',
+          remainingIssues: [],
+          userConfirmationNeeded: ['Confirm whether edge-case validation should also be added.'],
+        }),
+        exitCode: 0,
+      };
+    });
+
+    const recipe = createRoute({
+      task: 'Implement the login flow',
+      context: [],
+      run: { engine, cwd, model: 'codex-latest' },
+      report: { stdout: true },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.reportPath).toBe(join(cwd, '.melos', 'final-report.json'));
+    expect(summary.report).toMatchObject({
+      summary: 'Implemented and verified the login flow.',
+      finalState: 'The login flow now succeeds in the happy path.',
+      remainingIssues: [],
+      userConfirmationNeeded: ['Confirm whether edge-case validation should also be added.'],
+    });
+    expect(summary.reportModel).toBe('opus');
+    expect(summary.reportDegraded).toBe(false);
+    expect(JSON.parse(readFileSync(join(cwd, '.melos', 'final-report.json'), 'utf-8'))).toMatchObject({
+      summary: 'Implemented and verified the login flow.',
+    });
+
+    executeSpy.mockRestore();
+  });
+
+  it('keeps a successful run completed when final report persistence fails', async () => {
+    const cwd = createGitRepo('melos-exec-report-write-failure-');
+    const engine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'Implemented the login flow and verified the happy path.',
+        exitCode: 0,
+      }),
+    ]);
+    const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockResolvedValue({
+      success: true,
+      output: JSON.stringify({
+        summary: 'Implemented and verified the login flow.',
+        changes: ['Added login flow handling.', 'Verified the happy path.'],
+        rationale: ['Kept the change focused on the requested scope.'],
+        finalState: 'The login flow now succeeds in the happy path.',
+        remainingIssues: [],
+        userConfirmationNeeded: [],
+      }),
+      exitCode: 0,
+    });
+
+    const recipe = createRoute({
+      task: 'Implement the login flow',
+      context: [],
+      run: { engine, cwd, model: 'codex-latest' },
+      report: { path: '/dev/null/final-report.json', stdout: true },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.status).toBe('completed');
+    expect(summary.report).toBeDefined();
+    expect(summary.reportDegraded).toBe(true);
+    expect(summary.reportWarning).toMatch(/failed to write final report/i);
+    expect(summary.reportPath).toBeUndefined();
+
+    executeSpy.mockRestore();
+  });
+
+  it('evaluates check and pass in the same iteration even when checks fail', async () => {
+    const cwd = createGitRepo('melos-exec-check-and-pass-');
+    writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed combined check/pass fixture"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'fail\n', 'utf-8');
+        return { success: true, output: 'Implemented the fix and claim the login flow succeeds.', exitCode: 0 };
+      },
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'pass\n', 'utf-8');
+        return { success: true, output: 'Implemented the fix and verified the login flow succeeds.', exitCode: 0 };
+      },
+    ]);
+    const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: JSON.stringify({
+          criteria: [
+            { criterion: 'Mentions that the login flow succeeds', verdict: 'yes', rationale: 'The answer explicitly says it succeeds.' },
+          ],
+        }),
+        exitCode: 0,
+      });
+    const shutdownSpy = jest.spyOn(AppServerEngine.prototype, 'shutdown').mockResolvedValue();
+
+    const recipe = createRoute({
+      task: 'Fix the login flow',
+      context: [],
+      run: { engine, cwd, model: 'codex-latest' },
+      check: ['node check.js'],
+      pass: ['Mentions that the login flow succeeds'],
+      limit: 3,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+    expect(summary.observation?.data).toMatchObject({
+      check: expect.anything(),
+      pass: expect.objectContaining({
+        criteria: [
+          expect.objectContaining({ criterion: 'Mentions that the login flow succeeds', verdict: 'yes' }),
+        ],
+      }),
+    });
+
+    executeSpy.mockRestore();
+    shutdownSpy.mockRestore();
   });
 
   it('keeps improvements, rolls back regressions, and stops on patience', async () => {
@@ -109,7 +471,7 @@ describe('exec runner', () => {
       },
     });
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Improve the metric',
       context: [],
       run: { engine, cwd },
@@ -128,7 +490,7 @@ describe('exec runner', () => {
       log,
     });
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -148,7 +510,7 @@ describe('exec runner', () => {
 
   it('runs simple prompt mode as a one-iteration recipe', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-simple-'));
-    const recipe = createSimpleRecipe({
+    const recipe = createSimpleRoute({
       prompt: 'Say hello',
       cwd,
     });
@@ -161,7 +523,7 @@ describe('exec runner', () => {
     ]);
     recipe.log = eventLog({ melosDir: join(cwd, '.melos') });
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -179,7 +541,7 @@ describe('exec runner', () => {
     const threadSpy = jest.spyOn(AppServerEngine.prototype, 'getActiveThreadId')
       .mockReturnValue('thr_exec_shared');
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Keep iterating until pass',
       context: [],
       run: { engine: 'codex', cwd },
@@ -193,7 +555,7 @@ describe('exec runner', () => {
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -229,7 +591,7 @@ describe('exec runner', () => {
       return await ScriptedEngine.prototype.execute.call(engine, prompt, options);
     });
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
       context: [],
       run: { engine, cwd },
@@ -253,7 +615,7 @@ describe('exec runner', () => {
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -274,7 +636,7 @@ describe('exec runner', () => {
       async () => ({ success: true, output: '{"resolved":false,"rationale":"not enough context"}', exitCode: 0 }),
     ]);
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
       context: [],
       run: { engine, cwd },
@@ -289,7 +651,7 @@ describe('exec runner', () => {
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -313,7 +675,7 @@ describe('exec runner', () => {
       return await ScriptedEngine.prototype.execute.call(engine, prompt, options);
     });
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
       context: [],
       run: { engine, cwd },
@@ -334,7 +696,7 @@ describe('exec runner', () => {
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -353,7 +715,7 @@ describe('exec runner', () => {
   it('keeps handoff artifacts by default', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-handoff-keep-default-'));
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
       context: [],
       run: {
@@ -372,7 +734,7 @@ describe('exec runner', () => {
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
 
-    await runRecipe({
+    await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -389,7 +751,7 @@ describe('exec runner', () => {
     mkdirSync(recipeDir, { recursive: true });
     writeFileSync(join(recipeDir, 'sample.ts'), 'export default {};\n', 'utf-8');
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
       context: [],
       run: {
@@ -408,7 +770,7 @@ describe('exec runner', () => {
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
 
-    await runRecipe({
+    await runRoute({
       recipe,
       cwd,
       recipePath: 'recipes/sample.ts',
@@ -433,7 +795,7 @@ describe('exec runner', () => {
       return await ScriptedEngine.prototype.execute.call(engine, prompt, options);
     });
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Iterate with history',
       context: [],
       run: { engine, cwd },
@@ -467,7 +829,7 @@ describe('exec runner', () => {
       resolvedQuestions: [],
     }), 'utf-8');
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -494,7 +856,7 @@ describe('exec runner', () => {
       return await ScriptedEngine.prototype.execute.call(engine, prompt, options);
     });
 
-    const recipe = createRecipe({
+    const recipe = createRuntimeRoute({
       prompt: 'Iterate with history',
       context: [],
       run: { engine, cwd },
@@ -508,7 +870,7 @@ describe('exec runner', () => {
       log: eventLog({ melosDir: join(cwd, '.melos') }),
     });
 
-    const summary = await runRecipe({
+    const summary = await runRoute({
       recipe,
       cwd,
       melosDir: join(cwd, '.melos'),

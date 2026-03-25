@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 import { AppServerEngine } from '../engines/app-server.js';
 import { ClaudeEngine } from '../engines/claude.js';
@@ -7,8 +7,10 @@ import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
 import { buildIterationHandoff, resolveHandoffFingerprint, selectHandoffHistorySection, writeIterationHandoff } from './handoff.js';
+import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
 import {
   defaultPromptRenderer,
+  type FinalReport,
   normalizeObservation,
   type ContextSection,
   type Decision,
@@ -31,6 +33,12 @@ export interface ExecRunSummary {
   reason?: string;
   question?: string;
   output?: string;
+  report?: FinalReport;
+  reportPath?: string;
+  reportModel?: string;
+  reportDegraded?: boolean;
+  reportWarning?: string;
+  reportStdout?: boolean;
   cwd: string;
   recipePath?: string;
   startedAt: string;
@@ -50,6 +58,8 @@ export interface RunRecipeOptions {
     recipe: RecipeDefinition;
   }) => Promise<string | null>;
 }
+
+export type RunRouteOptions = RunRecipeOptions;
 
 export function eventLog(options: {
   melosDir: string;
@@ -95,9 +105,6 @@ function resolveExecutionCwd(options: RunRecipeOptions): string {
   }
   if (recipeRunCwd.startsWith('/')) {
     return recipeRunCwd;
-  }
-  if (options.recipePath) {
-    return resolve(dirname(options.recipePath), recipeRunCwd);
   }
   return resolve(baseCwd, recipeRunCwd);
 }
@@ -208,6 +215,76 @@ function finalizeSummary(params: {
   return {
     ...params,
     finishedAt: new Date().toISOString(),
+  };
+}
+
+async function attachFinalReport(input: {
+  summary: ExecRunSummary;
+  recipe: RecipeDefinition;
+  cwd: string;
+  baseCwd: string;
+  melosDir: string;
+  recipePath?: string;
+  iteration: number;
+  logger: RecipeLog;
+  state: RunnerState;
+  reason?: string;
+  output?: string;
+  observation?: ReturnType<typeof normalizeObservation>;
+  trace?: RuntimeTraceEntry[];
+}): Promise<ExecRunSummary> {
+  if (!input.recipe.report) {
+    return input.summary;
+  }
+
+  const report = await generateFinalReport({
+    recipe: input.recipe,
+    cwd: input.cwd,
+    melosDir: input.melosDir,
+    recipePath: input.recipePath,
+    handoffFingerprint: input.state.handoffFingerprint,
+    lastHandoffPath: input.state.lastHandoffPath,
+    iterations: input.summary.iterations,
+    success: input.summary.success,
+    decision: input.summary.decision,
+    summary: input.summary.summary,
+    reason: input.reason ?? input.summary.reason,
+    output: input.output ?? input.summary.output,
+    observation: input.observation ?? input.summary.observation,
+    resolvedQuestions: input.state.resolvedQuestions,
+    trace: input.trace ?? input.state.lastTrace,
+  });
+  const reportPath = resolveReportPath(input.baseCwd, input.recipe.report);
+  let persistedReportPath: string | undefined = reportPath;
+  let writeWarning: string | undefined;
+  try {
+    writeFinalReport(reportPath, report.report);
+  } catch (error) {
+    persistedReportPath = undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    writeWarning = `failed to write final report: ${message}`;
+  }
+  const degraded = report.degraded || Boolean(writeWarning);
+  input.logger.emit({
+    type: 'report_generated',
+    iteration: input.iteration,
+    agent: 'system',
+    payload: {
+      path: reportPath,
+      summary: report.report.summary,
+      degraded,
+      model: report.model,
+      error: writeWarning ?? report.error,
+    },
+  });
+  return {
+    ...input.summary,
+    report: report.report,
+    reportPath: persistedReportPath,
+    reportModel: report.model,
+    reportDegraded: degraded,
+    reportWarning: writeWarning ?? report.error,
+    reportStdout: input.recipe.report?.stdout !== false,
   };
 }
 
@@ -514,6 +591,7 @@ function readString(source: Record<string, unknown>, key: string): string | null
 }
 
 export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSummary> {
+  const baseCwd = resolve(options.cwd ?? process.cwd());
   const cwd = resolveExecutionCwd(options);
   mkdirSync(options.melosDir, { recursive: true });
 
@@ -563,13 +641,24 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           startedAt,
           summary: 'exec timed out',
         });
+        const summarized = await attachFinalReport({
+          summary,
+          recipe,
+          cwd,
+          baseCwd,
+          melosDir: options.melosDir,
+          recipePath: options.recipePath,
+          iteration: iteration - 1,
+          logger,
+          state,
+        });
         logger.emit({
           type: 'exec_failed',
           iteration: iteration - 1,
           agent: 'system',
-          payload: summary as unknown as Record<string, unknown>,
+          payload: summarized as unknown as Record<string, unknown>,
         });
-        return summary;
+        return summarized;
       }
 
       state = { ...state, iteration };
@@ -698,13 +787,26 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           summary: engineResult.error ?? 'engine execution failed',
           output: engineResult.output,
         });
+        const summarized = await attachFinalReport({
+          summary,
+          recipe,
+          cwd,
+          baseCwd,
+          melosDir: options.melosDir,
+          recipePath: options.recipePath,
+          iteration,
+          logger,
+          state,
+          output: engineResult.output,
+          trace,
+        });
         logger.emit({
           type: 'exec_failed',
           iteration,
           agent: 'system',
-          payload: summary as unknown as Record<string, unknown>,
+          payload: summarized as unknown as Record<string, unknown>,
         });
-        return summary;
+        return summarized;
       }
 
       const evaluationContext: EvaluationContext = {
@@ -804,13 +906,28 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             output: engineResult.output,
             observation,
           });
+          const summarized = await attachFinalReport({
+            summary,
+            recipe,
+            cwd,
+            baseCwd,
+            melosDir: options.melosDir,
+            recipePath: options.recipePath,
+            iteration,
+            logger,
+            state,
+            reason: decision.reason,
+            output: engineResult.output,
+            observation,
+            trace,
+          });
           logger.emit({
             type: 'exec_failed',
             iteration,
             agent: 'system',
-            payload: summary as unknown as Record<string, unknown>,
+            payload: summarized as unknown as Record<string, unknown>,
           });
-          return summary;
+          return summarized;
         }
 
         await recipe.checkpoint.rollback(createRecipeContext(state, options.melosDir, recipe), state.checkpointRef);
@@ -844,13 +961,28 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           output: engineResult.output,
           observation,
         });
+        const summarized = await attachFinalReport({
+          summary,
+          recipe,
+          cwd,
+          baseCwd,
+          melosDir: options.melosDir,
+          recipePath: options.recipePath,
+          iteration,
+          logger,
+          state,
+          reason: decision.reason ?? askFailureReason,
+          output: engineResult.output,
+          observation,
+          trace,
+        });
         logger.emit({
           type: 'exec_failed',
           iteration,
           agent: 'system',
-          payload: summary as unknown as Record<string, unknown>,
+          payload: summarized as unknown as Record<string, unknown>,
         });
-        return summary;
+        return summarized;
       }
 
       if (decision.kind === 'stop') {
@@ -870,13 +1002,28 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           output: observation.output ?? engineResult.output,
           observation,
         });
+        const summarized = await attachFinalReport({
+          summary,
+          recipe,
+          cwd,
+          baseCwd,
+          melosDir: options.melosDir,
+          recipePath: options.recipePath,
+          iteration,
+          logger,
+          state,
+          reason: decision.reason,
+          output: observation.output ?? engineResult.output,
+          observation,
+          trace,
+        });
         logger.emit({
-          type: summary.success ? 'exec_completed' : 'exec_failed',
+          type: summarized.success ? 'exec_completed' : 'exec_failed',
           iteration,
           agent: 'system',
-          payload: summary as unknown as Record<string, unknown>,
+          payload: summarized as unknown as Record<string, unknown>,
         });
-        return summary;
+        return summarized;
       }
     }
 
@@ -891,16 +1038,32 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
       summary: `max iterations reached (${maxIterations})`,
       observation: state.lastObservation ?? undefined,
     });
+    const summarized = await attachFinalReport({
+      summary,
+      recipe,
+      cwd,
+      baseCwd,
+      melosDir: options.melosDir,
+      recipePath: options.recipePath,
+      iteration: maxIterations,
+      logger,
+      state,
+      observation: state.lastObservation ?? undefined,
+    });
     logger.emit({
       type: 'exec_failed',
       iteration: maxIterations,
       agent: 'system',
-      payload: summary as unknown as Record<string, unknown>,
+      payload: summarized as unknown as Record<string, unknown>,
     });
-    return summary;
+    return summarized;
   } finally {
     if ('shutdown' in engine && typeof engine.shutdown === 'function') {
       await engine.shutdown();
     }
   }
+}
+
+export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary> {
+  return runRecipe(options);
 }

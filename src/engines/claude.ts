@@ -44,6 +44,8 @@ function extractAssistantTextFromJsonl(jsonlOutput: string): string {
 export interface ClaudeEngineOptions extends EngineOptions {
   /** 権限スキップフラグ（デフォルト: true） */
   skipPermissions?: boolean;
+  /** Claude CLI permission mode */
+  permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';
   /** 出力モード: print(-p) or interactive */
   printMode?: boolean;
   /** モデル名（haiku, sonnet, opus など） */
@@ -60,6 +62,20 @@ export interface ClaudeEngineOptions extends EngineOptions {
   onEvent?: (method: string, params: unknown) => void;
   /** true の場合、端末への直接出力を抑止してコールバック経由に統一する */
   suppressTerminalOutput?: boolean;
+  /** 利用可能な built-in tools の一覧 */
+  tools?: string[];
+  /** Claude CLI allowed tools allowlist */
+  allowedTools?: string[];
+  /** Claude CLI disallowed tools denylist */
+  disallowedTools?: string[];
+  /** Claude CLI system prompt */
+  systemPrompt?: string;
+  /** Claude CLI appended system prompt */
+  appendSystemPrompt?: string;
+  /** Claude CLI JSON schema */
+  jsonSchema?: string;
+  /** Claude CLI additional directories */
+  addDirectories?: string[];
 }
 
 function toRecord(value: unknown): Record<string, unknown> | null {
@@ -199,6 +215,7 @@ export class ClaudeEngine extends Engine {
       cwd = process.cwd(),
       timeout,
       skipPermissions = true,
+      permissionMode,
       printMode = true,
       model,
       effort,
@@ -206,9 +223,17 @@ export class ClaudeEngine extends Engine {
       onStream,
       onEvent,
       suppressTerminalOutput = false,
+      tools,
+      allowedTools,
+      disallowedTools,
+      systemPrompt,
+      appendSystemPrompt,
+      jsonSchema,
+      addDirectories,
     } = options;
 
     const args: string[] = [];
+    const useSkipPermissions = permissionMode ? false : skipPermissions;
 
     if (printMode) {
       args.push('-p');
@@ -217,12 +242,44 @@ export class ClaudeEngine extends Engine {
       args.push('--output-format', 'stream-json');
     }
 
-    if (skipPermissions) {
+    if (useSkipPermissions) {
       args.push('--dangerously-skip-permissions');
+    }
+
+    if (permissionMode) {
+      args.push('--permission-mode', permissionMode);
     }
 
     if (model) {
       args.push('--model', model);
+    }
+
+    if (tools && tools.length > 0) {
+      args.push('--tools', tools.join(','));
+    }
+
+    if (allowedTools && allowedTools.length > 0) {
+      args.push('--allowed-tools', allowedTools.join(','));
+    }
+
+    if (disallowedTools && disallowedTools.length > 0) {
+      args.push('--disallowed-tools', disallowedTools.join(','));
+    }
+
+    if (systemPrompt) {
+      args.push('--system-prompt', systemPrompt);
+    }
+
+    if (appendSystemPrompt) {
+      args.push('--append-system-prompt', appendSystemPrompt);
+    }
+
+    if (jsonSchema) {
+      args.push('--json-schema', jsonSchema);
+    }
+
+    for (const directory of addDirectories ?? []) {
+      args.push('--add-dir', directory);
     }
 
     args.push(prompt);

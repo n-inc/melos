@@ -2,13 +2,13 @@ import { buildExecCommandOptions, createProgram } from '../../cli.js';
 import { CODEX_LATEST_ALIAS } from '../../models/registry.js';
 
 describe('cli exec command', () => {
-  it('registers recipe/prompt execution options', () => {
+  it('registers route/prompt execution options', () => {
     const program = createProgram();
     const execCommand = program.commands.find((command) => command.name() === 'exec');
     expect(execCommand).toBeDefined();
 
     const options = new Set(execCommand?.options.map((option) => option.long));
-    expect(options.has('--recipe')).toBe(true);
+    expect(options.has('--route')).toBe(true);
     expect(options.has('--prompt')).toBe(true);
     expect(options.has('--output-format')).toBe(true);
     expect(options.has('--criteria')).toBe(false);
@@ -34,6 +34,16 @@ describe('cli exec command', () => {
     })).toEqual(expect.objectContaining({
       prompt: 'hello',
       noAsk: true,
+    }));
+  });
+
+  it('maps --route to exec route', () => {
+    expect(buildExecCommandOptions({
+      route: '/tmp/sample.ts',
+      model: 'codex-latest',
+      outputFormat: 'text',
+    })).toEqual(expect.objectContaining({
+      route: '/tmp/sample.ts',
     }));
   });
 
