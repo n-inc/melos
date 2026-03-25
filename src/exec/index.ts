@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { join, resolve } from 'node:path';
 
@@ -23,6 +23,10 @@ export * from './handoff.js';
 export * from './report.js';
 
 const DEFAULT_EXEC_MODEL = CODEX_LATEST_ALIAS;
+const STALE_RUN_ARTIFACTS = [
+  'review-result.json',
+  'final-report.json',
+] as const;
 
 export type ExecOutputFormat = 'text' | 'json' | 'stream-json';
 
@@ -87,6 +91,12 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
   };
 }
 
+export function clearStaleRunArtifacts(melosDir: string): void {
+  for (const fileName of STALE_RUN_ARTIFACTS) {
+    rmSync(join(melosDir, fileName), { force: true });
+  }
+}
+
 function formatTextSummary(summary: ExecRunSummary): string {
   if (summary.status === 'asked') {
     return summary.question ?? summary.summary;
@@ -149,6 +159,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
   const cwd = resolve(options.cwd ?? process.cwd());
   const melosDir = join(cwd, '.melos');
   mkdirSync(melosDir, { recursive: true });
+  clearStaleRunArtifacts(melosDir);
 
   const outputFormat = options.outputFormat ?? 'text';
   const askMode = resolveAskMode(options);
