@@ -38,6 +38,48 @@ function extractAssistantTextFromJsonl(jsonlOutput: string): string {
   return texts.join('\n\n');
 }
 
+function extractAssistantTextFromJsonOutput(jsonOutput: string): string {
+  try {
+    const parsed = JSON.parse(jsonOutput) as unknown;
+    const events = Array.isArray(parsed) ? parsed : [parsed];
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = toRecord(events[index]);
+      if (!event || event.type !== 'result') {
+        continue;
+      }
+      if (event.structured_output !== undefined) {
+        return JSON.stringify(event.structured_output);
+      }
+      if (typeof event.result === 'string' && event.result.trim().length > 0) {
+        return event.result;
+      }
+    }
+
+    const texts: string[] = [];
+    for (const rawEvent of events) {
+      const event = toRecord(rawEvent);
+      const message = toRecord(event?.message);
+      const content = Array.isArray(message?.content) ? message.content : [];
+      for (const rawBlock of content) {
+        const block = toRecord(rawBlock);
+        if (!block) {
+          continue;
+        }
+        if (block.type === 'text' && typeof block.text === 'string') {
+          texts.push(block.text);
+        }
+        if (block.type === 'tool_use' && block.name === 'StructuredOutput' && block.input !== undefined) {
+          return JSON.stringify(block.input);
+        }
+      }
+    }
+
+    return texts.join('\n\n');
+  } catch {
+    return jsonOutput;
+  }
+}
+
 /**
  * Claude Code 固有のオプション
  */
@@ -48,6 +90,8 @@ export interface ClaudeEngineOptions extends EngineOptions {
   permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'dontAsk' | 'plan' | 'auto';
   /** 出力モード: print(-p) or interactive */
   printMode?: boolean;
+  /** Claude CLI print mode output format */
+  outputFormat?: 'stream-json' | 'json' | 'text';
   /** モデル名（haiku, sonnet, opus など） */
   model?: string;
   /** Claude effort レベル（Opus 4.6+: adaptive thinking 制御、デフォルト: max） */
@@ -217,6 +261,7 @@ export class ClaudeEngine extends Engine {
       skipPermissions = true,
       permissionMode,
       printMode = true,
+      outputFormat = 'stream-json',
       model,
       effort,
       thinkingBudget,
@@ -237,9 +282,13 @@ export class ClaudeEngine extends Engine {
 
     if (printMode) {
       args.push('-p');
-      // ストリーミングJSON形式で出力を取得（--verbose が必須）
-      args.push('--verbose');
-      args.push('--output-format', 'stream-json');
+      if (outputFormat === 'stream-json') {
+        // ストリーミングJSON形式で出力を取得（--verbose が必須）
+        args.push('--verbose');
+        args.push('--output-format', 'stream-json');
+      } else if (outputFormat === 'json') {
+        args.push('--output-format', 'json');
+      }
     }
 
     if (useSkipPermissions) {
@@ -304,7 +353,7 @@ export class ClaudeEngine extends Engine {
       let stdout = '';
       let stderr = '';
       let timeoutId: NodeJS.Timeout | undefined;
-      const jsonlBuffer = printMode ? new JsonlBuffer() : null;
+      const jsonlBuffer = printMode && outputFormat === 'stream-json' ? new JsonlBuffer() : null;
       const hasExternalStreamHandler = Boolean(onStream || onEvent);
       let callbackBuffer = '';
       const cleanup = () => {
@@ -394,7 +443,11 @@ export class ClaudeEngine extends Engine {
 
         // JSONL からアシスタント出力を抽出
         const extractedOutput = printMode
-          ? extractAssistantTextFromJsonl(stdout)
+          ? outputFormat === 'stream-json'
+            ? extractAssistantTextFromJsonl(stdout)
+            : outputFormat === 'json'
+              ? extractAssistantTextFromJsonOutput(stdout)
+              : stdout
           : stdout;
 
         if (exitCode === 0) {
