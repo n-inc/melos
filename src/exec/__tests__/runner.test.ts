@@ -358,7 +358,6 @@ describe('exec runner', () => {
     ]);
     const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt, options) => {
       expect(prompt).toContain('Generate the final execution report as strict JSON.');
-      expect(prompt).toContain('"eventsPath"');
       expect(prompt).toContain('"changedFiles"');
       expect(prompt).toContain('handoff summary');
       expect(options).toMatchObject({
@@ -368,14 +367,10 @@ describe('exec runner', () => {
         printMode: true,
         skipPermissions: false,
         permissionMode: 'dontAsk',
-        tools: ['Read', 'Grep', 'Glob', 'LS'],
-        disallowedTools: ['Edit', 'Write', 'MultiEdit'],
-        addDirectories: [cwd],
         suppressTerminalOutput: true,
       });
-      expect(options?.allowedTools).toEqual(['Read', 'Grep', 'Glob', 'LS']);
       expect(typeof options?.appendSystemPrompt).toBe('string');
-      expect(options?.appendSystemPrompt).toContain('read-only');
+      expect(options?.appendSystemPrompt).toContain('provided execution evidence');
       expect(typeof options?.jsonSchema).toBe('string');
       return {
         success: true,

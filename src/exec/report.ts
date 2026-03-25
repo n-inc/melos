@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
 import type { EngineResult } from '../engines/base.js';
@@ -21,15 +21,7 @@ import { resolveShellExecutable } from './shell.js';
 
 const REPORT_RUNTIME_MODEL = resolveRuntimeModel(CLAUDE_LATEST_ALIAS, CLAUDE_LATEST_ALIAS);
 const REPORT_EFFORT: ClaudeEngineOptions['effort'] = 'medium';
-const REPORT_TIMEOUT_MS = 90_000;
-const REPORT_TOOLS = ['Read', 'Grep', 'Glob', 'LS'];
-const REPORT_ALLOWED_TOOLS = [
-  'Read',
-  'Grep',
-  'Glob',
-  'LS',
-];
-const REPORT_DISALLOWED_TOOLS = ['Edit', 'Write', 'MultiEdit'];
+const REPORT_TIMEOUT_MS = 60_000;
 const REPORT_JSON_SCHEMA = JSON.stringify({
   type: 'object',
   additionalProperties: false,
@@ -278,8 +270,8 @@ function buildCompactHandoffSummary(entries: IterationHandoff[]): {
   omittedEntries: number;
 } {
   const compact = entries.map(compactHandoffEntry);
-  let selected = compact.slice(-6);
-  while (selected.length > 1 && JSON.stringify(selected, null, 2).length > 24_000) {
+  let selected = compact.slice(-3);
+  while (selected.length > 1 && JSON.stringify(selected, null, 2).length > 12_000) {
     selected = selected.slice(1);
   }
   return {
@@ -294,18 +286,10 @@ function buildCompactHandoffSummary(entries: IterationHandoff[]): {
   };
 }
 
-function buildAvailableArtifacts(input: GenerateFinalReportInput, changedFiles: string[]): Record<string, unknown> {
-  const eventsPath = join(input.melosDir, 'events.jsonl');
-  const handoffDir = input.handoffFingerprint
-    ? join(input.melosDir, 'handoff', `sha256-${input.handoffFingerprint}`)
-    : undefined;
+function buildReportInputs(input: GenerateFinalReportInput, changedFiles: string[]): Record<string, unknown> {
   return {
     cwd: input.cwd,
-    melosDir: input.melosDir,
     recipePath: input.recipePath,
-    eventsPath,
-    handoffDir,
-    lastHandoffPath: input.lastHandoffPath,
     changedFiles,
   };
 }
@@ -322,11 +306,10 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
   return defaultPromptRenderer(
     [
       'Generate the final execution report as strict JSON.',
-      'You are in a read-only reporting phase.',
-      'Start from the compact summaries below.',
+      'You are in a concise reporting phase.',
+      'Use only the summaries and evidence below.',
       'Keep the report concise and high-signal.',
-      'If the summaries are insufficient, inspect the listed artifacts with the allowed read-only file tools only.',
-      'Do not modify files, do not apply edits, and do not run write commands.',
+      'Do not do additional investigation.',
       'Return only JSON that matches the provided schema.',
       'Use `userConfirmationNeeded` only for decisions that must be reviewed by the executor before proceeding.',
     ].join('\n'),
@@ -376,8 +359,8 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
         }]
         : []),
       {
-        title: 'available artifacts',
-        content: JSON.stringify(buildAvailableArtifacts(input, changedFiles), null, 2),
+        title: 'report inputs',
+        content: JSON.stringify(buildReportInputs(input, changedFiles), null, 2),
       },
     ]
   );
@@ -387,10 +370,7 @@ function buildReportSystemPrompt(): string {
   return [
     'You are generating a final report for melos run.',
     'This is a one-shot Claude Opus reporting pass.',
-    'Treat the workspace as strictly read-only.',
-    'Prefer Read, Grep, Glob, and LS for inspection.',
-    'Do not expand scope beyond what is needed for a concise final report.',
-    'Never run commands that modify files, git state, or external systems.',
+    'Do not expand scope beyond the provided execution evidence.',
     'Never fabricate changes, rationale, or confirmations.',
   ].join('\n');
 }
@@ -404,12 +384,8 @@ function buildReportEngineOptions(cwd: string): ClaudeEngineOptions {
     printMode: true,
     skipPermissions: false,
     permissionMode: 'dontAsk',
-    tools: REPORT_TOOLS,
-    allowedTools: REPORT_ALLOWED_TOOLS,
-    disallowedTools: REPORT_DISALLOWED_TOOLS,
     appendSystemPrompt: buildReportSystemPrompt(),
     jsonSchema: REPORT_JSON_SCHEMA,
-    addDirectories: [cwd],
     suppressTerminalOutput: true,
   };
 }

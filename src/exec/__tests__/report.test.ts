@@ -65,7 +65,7 @@ describe('exec report', () => {
       expect(prompt).toContain('"changedFiles"');
       expect(prompt).toContain('staged-only.txt');
       expect(options?.effort).toBe('medium');
-      expect(options?.tools).toEqual(['Read', 'Grep', 'Glob', 'LS']);
+      expect(options?.tools).toBeUndefined();
       return {
         success: true,
         output: JSON.stringify({
