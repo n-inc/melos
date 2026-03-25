@@ -27,20 +27,25 @@ function runGit(cwd: string, args: string[]): string {
   }).trim();
 }
 
+function resolveGitRoot(cwd: string): string {
+  return runGit(cwd, ['rev-parse', '--show-toplevel']);
+}
+
 function isCommittablePath(path: string): boolean {
   return path.length > 0 && path !== '.melos' && !path.startsWith('.melos/');
 }
 
 function listChangedFiles(cwd: string): string[] {
-  const tracked = runGit(cwd, ['diff', '--name-only', '--'])
+  const gitRoot = resolveGitRoot(cwd);
+  const tracked = runGit(gitRoot, ['diff', '--name-only', '--'])
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  const staged = runGit(cwd, ['diff', '--cached', '--name-only', '--'])
+  const staged = runGit(gitRoot, ['diff', '--cached', '--name-only', '--'])
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  const untracked = runGit(cwd, ['ls-files', '--others', '--exclude-standard'])
+  const untracked = runGit(gitRoot, ['ls-files', '--others', '--exclude-standard'])
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
@@ -126,11 +131,12 @@ export async function applyConfiguredCommit(input: {
     assistantText: input.assistantText,
     changedFiles,
   });
+  const gitRoot = resolveGitRoot(input.baseContext.cwd);
 
-  runGit(input.baseContext.cwd, ['add', '-A', '--', '.']);
-  runGit(input.baseContext.cwd, ['rm', '-r', '--cached', '--ignore-unmatch', '--', '.melos']);
-  runGit(input.baseContext.cwd, ['commit', '--no-verify', '-m', message]);
-  const ref = runGit(input.baseContext.cwd, ['rev-parse', 'HEAD']);
+  runGit(gitRoot, ['add', '-A', '--', '.']);
+  runGit(gitRoot, ['rm', '-r', '--cached', '--ignore-unmatch', '--', '.melos']);
+  runGit(gitRoot, ['commit', '--no-verify', '-m', message]);
+  const ref = runGit(gitRoot, ['rev-parse', 'HEAD']);
 
   return {
     ref,

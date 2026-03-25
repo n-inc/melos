@@ -748,6 +748,60 @@ describe('exec runner', () => {
     executeSpy.mockRestore();
   });
 
+  it('stages repository-wide changes before auto-commit even when run.cwd points to a subdirectory', async () => {
+    const cwd = createGitRepo('melos-exec-commit-subdir-');
+    mkdirSync(join(cwd, 'app'));
+    mkdirSync(join(cwd, 'docs'));
+    writeFileSync(join(cwd, '.gitignore'), '.melos/\n', 'utf-8');
+    writeFileSync(join(cwd, 'app', 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'app', 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    writeFileSync(join(cwd, 'docs', 'notes.txt'), 'before\n', 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed subdir auto-commit fixture"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        const runCwd = String(options?.cwd);
+        writeFileSync(join(runCwd, 'status.txt'), 'pass\n', 'utf-8');
+        writeFileSync(join(runCwd, '..', 'docs', 'notes.txt'), 'after\n', 'utf-8');
+        return { success: true, output: 'fixed app and docs changes', exitCode: 0 };
+      },
+    ]);
+
+    const recipe = createRoute({
+      task: 'Fix the app check and commit all accepted changes',
+      context: [],
+      run: { engine, cwd: 'app' },
+      check: ['node check.js'],
+      commit: { when: 'stop' },
+      limit: 2,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    const changedInHead = execSync('git show --pretty=format: --name-only HEAD', { cwd, encoding: 'utf-8' })
+      .trim()
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0);
+    const nonMelosStatus = execSync("git status --short -- . ':(exclude).melos'", { cwd, encoding: 'utf-8' }).trim();
+
+    expect(summary.success).toBe(true);
+    expect(changedInHead).toEqual(expect.arrayContaining([
+      'app/status.txt',
+      'docs/notes.txt',
+    ]));
+    expect(nonMelosStatus).toBe('');
+  });
+
   it('commits accepted iterations and keeps rollback available for later iterations', async () => {
     const cwd = createGitRepo('melos-exec-commit-accepted-');
     writeFileSync(join(cwd, 'score.json'), JSON.stringify({ score: 0.1 }), 'utf-8');
