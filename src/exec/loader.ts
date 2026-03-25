@@ -5,13 +5,13 @@ import { pathToFileURL } from 'node:url';
 
 import { normalizeRuntimeRecipe, type RecipeDefinition, type RuntimeRecipeInput } from './recipe.js';
 
-export interface ResolvedRecipeSource {
+export interface ResolvedRouteSource {
   path: string;
   cleanup?: () => void;
   fromStdin: boolean;
 }
 
-export async function readRecipeStdin(input: NodeJS.ReadableStream = process.stdin): Promise<string> {
+export async function readRouteStdin(input: NodeJS.ReadableStream = process.stdin): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of input) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
@@ -19,32 +19,32 @@ export async function readRecipeStdin(input: NodeJS.ReadableStream = process.std
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-export function resolveRecipePath(recipePath: string, cwd: string): string {
-  if (recipePath === '-') {
+export function resolveRoutePath(routePath: string, cwd: string): string {
+  if (routePath === '-') {
     throw new Error('stdin route path must be resolved with resolveRouteSource()');
   }
 
-  const absolutePath = isAbsolute(recipePath) ? recipePath : resolve(cwd, recipePath);
+  const absolutePath = isAbsolute(routePath) ? routePath : resolve(cwd, routePath);
   if (extname(absolutePath) !== '.ts') {
-    throw new Error(`--route は .ts ファイルを指定してください: ${recipePath}`);
+    throw new Error(`--route は .ts ファイルを指定してください: ${routePath}`);
   }
   return absolutePath;
 }
 
-export async function resolveRecipeSource(options: {
-  recipePath: string;
+export async function resolveRouteSource(options: {
+  routePath: string;
   cwd: string;
   stdinText?: string;
   stdin?: NodeJS.ReadableStream;
-}): Promise<ResolvedRecipeSource> {
-  if (options.recipePath !== '-') {
+}): Promise<ResolvedRouteSource> {
+  if (options.routePath !== '-') {
     return {
-      path: resolveRecipePath(options.recipePath, options.cwd),
+      path: resolveRoutePath(options.routePath, options.cwd),
       fromStdin: false,
     };
   }
 
-  const sourceText = options.stdinText ?? await readRecipeStdin(options.stdin);
+  const sourceText = options.stdinText ?? await readRouteStdin(options.stdin);
   if (sourceText.trim().length === 0) {
     throw new Error('stdin から route を読み込めませんでした');
   }
@@ -61,8 +61,8 @@ export async function resolveRecipeSource(options: {
   };
 }
 
-export async function loadRecipeModule(recipePath: string): Promise<RecipeDefinition> {
-  const fileUrl = pathToFileURL(recipePath);
+export async function loadRouteModule(routePath: string): Promise<RecipeDefinition> {
+  const fileUrl = pathToFileURL(routePath);
   fileUrl.searchParams.set('t', String(Date.now()));
 
   let imported: unknown;
@@ -83,44 +83,12 @@ export async function loadRecipeModule(recipePath: string): Promise<RecipeDefini
   if (!('apiVersion' in recipe) || (recipe as { apiVersion?: unknown }).apiVersion !== 2) {
     throw new Error('route module は createRoute() で生成してください (apiVersion=2 required)');
   }
-  if (!('run' in recipe) || !('evaluate' in recipe) || !('policy' in recipe) || !('prompt' in recipe)) {
+  if (!('run' in recipe) || !('workflow' in recipe)) {
     throw new Error('route module の default export が runtime route shape を満たしていません');
   }
   return normalizeRuntimeRecipe(recipe as RuntimeRecipeInput);
 }
 
-export function readRecipeFile(recipePath: string): string {
-  return readFileSync(recipePath, 'utf-8');
-}
-
-export type ResolvedRouteSource = ResolvedRecipeSource;
-
-export async function readRouteStdin(input: NodeJS.ReadableStream = process.stdin): Promise<string> {
-  return readRecipeStdin(input);
-}
-
-export function resolveRoutePath(routePath: string, cwd: string): string {
-  return resolveRecipePath(routePath, cwd);
-}
-
-export async function resolveRouteSource(options: {
-  routePath: string;
-  cwd: string;
-  stdinText?: string;
-  stdin?: NodeJS.ReadableStream;
-}): Promise<ResolvedRouteSource> {
-  return resolveRecipeSource({
-    recipePath: options.routePath,
-    cwd: options.cwd,
-    stdinText: options.stdinText,
-    stdin: options.stdin,
-  });
-}
-
-export async function loadRouteModule(routePath: string): Promise<RecipeDefinition> {
-  return loadRecipeModule(routePath);
-}
-
 export function readRouteFile(routePath: string): string {
-  return readRecipeFile(routePath);
+  return readFileSync(routePath, 'utf-8');
 }

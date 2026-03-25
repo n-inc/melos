@@ -8,7 +8,7 @@ import { loadRouteModule, resolveRouteSource } from './loader.js';
 import { renderFinalReportText, resolveReportPath } from './report.js';
 import { runRoute, eventLog, type ExecRunSummary } from './runner.js';
 import { createSimpleRoute } from './simple.js';
-import type { RouteDefinition } from './recipe.js';
+import type { RecipeDefinition } from './recipe.js';
 
 export * from './recipe.js';
 export * from './loader.js';
@@ -26,7 +26,6 @@ const STALE_RUN_ARTIFACTS = [
   'review-result.json',
   'final-report.json',
 ] as const;
-const DEFAULT_REVIEW_ARTIFACT_PATH = '.melos/review-result.json';
 
 export type ExecOutputFormat = 'text' | 'json' | 'stream-json';
 
@@ -58,7 +57,7 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
       return;
     }
     if (event.type === 'iteration_started') {
-      stderr.write(`[iteration ${event.iteration}]\n`);
+      stderr.write(`[phase ${String(event.payload.phase ?? 'unknown')} #${String(event.payload.phaseExecution ?? event.iteration)}]\n`);
       return;
     }
     if (event.type === 'decision_made') {
@@ -81,6 +80,10 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
       stderr.write(`report: ${String(event.payload.path ?? '')}\n`);
       return;
     }
+    if (event.type === 'phase_transitioned') {
+      stderr.write(`transition: ${String(event.payload.transition ?? '')}\n`);
+      return;
+    }
     if (event.type === 'run_failed') {
       stderr.write(`failed: ${String(event.payload.summary ?? '')}\n`);
       return;
@@ -97,18 +100,24 @@ export function clearStaleRunArtifacts(melosDir: string): void {
   }
 }
 
-function resolveReviewArtifactPath(cwd: string, recipe: RouteDefinition): string | undefined {
-  if (!recipe.review) {
-    return undefined;
-  }
-  const configured = recipe.review.path?.trim();
-  return resolve(cwd, configured && configured.length > 0 ? configured : DEFAULT_REVIEW_ARTIFACT_PATH);
+function listProduceArtifactPaths(cwd: string, recipe: RecipeDefinition): string[] {
+  return Object.values(recipe.workflow.phases)
+    .flatMap((phase) => {
+      if (!phase.produce || typeof phase.produce.from !== 'object') {
+        return [];
+      }
+      const phaseCwd = phase.run?.cwd
+        ? resolve(cwd, phase.run.cwd)
+        : recipe.run.cwd
+          ? resolve(cwd, recipe.run.cwd)
+          : cwd;
+      return [resolve(phaseCwd, phase.produce.from.file)];
+    });
 }
 
-export function clearConfiguredRunArtifacts(cwd: string, recipe: RouteDefinition): void {
-  const reviewPath = resolveReviewArtifactPath(cwd, recipe);
-  if (reviewPath) {
-    rmSync(reviewPath, { force: true });
+export function clearConfiguredRunArtifacts(cwd: string, recipe: RecipeDefinition): void {
+  for (const path of listProduceArtifactPaths(cwd, recipe)) {
+    rmSync(path, { force: true });
   }
 
   rmSync(resolveReportPath(cwd, recipe.report), { force: true });
@@ -205,7 +214,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
 
   let cleanup: (() => void) | undefined;
   try {
-    let recipe: RouteDefinition;
+    let recipe: RecipeDefinition;
     let recipePath: string | undefined;
 
     if (options.route) {

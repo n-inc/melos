@@ -11,6 +11,7 @@ import type {
   FinalReport,
   FinalReportCheckEvidence,
   FinalReportPassEvidence,
+  FinalReportWorkflowEvidence,
   Observation,
   RecipeDefinition,
   RecipeReportConfig,
@@ -75,6 +76,7 @@ interface GenerateFinalReportInput {
   observation?: Observation;
   resolvedQuestions?: ResolvedQuestion[];
   trace?: RuntimeTraceEntry[];
+  workflow?: FinalReportWorkflowEvidence;
 }
 
 interface ReportNarrative {
@@ -167,11 +169,8 @@ function normalizePassEvidence(criteria: unknown): FinalReportPassEvidence[] | u
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function buildEvidence(observation?: Observation): FinalReport['evidence'] | undefined {
-  if (!observation) {
-    return undefined;
-  }
-  const data = observation.data;
+function buildEvidence(observation?: Observation, workflow?: FinalReportWorkflowEvidence): FinalReport['evidence'] | undefined {
+  const data = observation?.data;
   const checks = isRecord(data) && isRecord(data.check)
     ? normalizeCheckEvidence(data.check.checks)
     : isRecord(data)
@@ -182,17 +181,18 @@ function buildEvidence(observation?: Observation): FinalReport['evidence'] | und
     : isRecord(data)
       ? normalizePassEvidence(data.criteria)
       : undefined;
-  const metrics = Object.keys(observation.metrics).length > 0
+  const metrics = observation && Object.keys(observation.metrics).length > 0
     ? observation.metrics
     : undefined;
 
-  if (!checks && !pass && !metrics) {
+  if (!checks && !pass && !metrics && !workflow) {
     return undefined;
   }
   return {
     checks,
     metrics,
     pass,
+    workflow,
   };
 }
 
@@ -210,7 +210,7 @@ function createFallbackReport(input: GenerateFinalReportInput, degradedReason?: 
       ? []
       : [input.reason ?? input.summary],
     userConfirmationNeeded: [],
-    evidence: buildEvidence(input.observation),
+    evidence: buildEvidence(input.observation, input.workflow),
   };
 }
 
@@ -355,7 +355,7 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
   const handoffSummary = buildCompactHandoffSummary(handoffEntries);
   const changedFiles = listChangedFiles(input);
   const diffStat = buildDiffStat(input);
-  const evidence = buildEvidence(input.observation);
+  const evidence = buildEvidence(input.observation, input.workflow);
 
   return renderPromptWithSections(
     [
@@ -416,6 +416,12 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
         title: 'report inputs',
         content: JSON.stringify(buildReportInputs(input, changedFiles), null, 2),
       },
+      ...(input.workflow
+        ? [{
+          title: 'workflow',
+          content: JSON.stringify(input.workflow, null, 2),
+        }]
+        : []),
     ]
   );
 }
@@ -484,7 +490,7 @@ export async function generateFinalReport(input: GenerateFinalReportInput): Prom
     return {
       report: {
         ...narrative,
-        evidence: buildEvidence(input.observation),
+        evidence: buildEvidence(input.observation, input.workflow),
       },
       degraded: false,
       model: REPORT_RUNTIME_MODEL,
@@ -521,6 +527,10 @@ function renderEvidence(report: FinalReport): string[] {
   if (evidence.pass && evidence.pass.length > 0) {
     lines.push('Pass Criteria:');
     lines.push(...evidence.pass.map((item) => `- [${item.verdict}] ${item.criterion}`));
+  }
+  if (evidence.workflow) {
+    lines.push('Workflow Outputs:');
+    lines.push(JSON.stringify(evidence.workflow.outputs));
   }
   return lines;
 }

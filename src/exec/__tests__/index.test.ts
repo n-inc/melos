@@ -3,18 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { clearConfiguredRunArtifacts, clearStaleRunArtifacts } from '../index.js';
-import { createRoute, type RouteDefinition } from '../recipe.js';
+import { createRoute } from '../recipe.js';
 
 describe('exec index', () => {
-  it('rejects declarative routes that still use context', () => {
-    expect(() => createRoute({
-      task: 'Implement the task',
-      context: [],
-      run: { engine: 'auto' },
-    } as never)).toThrow(/context .*removed/i);
-  });
-
-  it('clears stale review and final report artifacts before a new run', () => {
+  it('clears stale workflow and final report artifacts before a new run', () => {
     const melosDir = join(mkdtempSync(join(tmpdir(), 'melos-exec-index-')), '.melos');
     mkdirSync(melosDir, { recursive: true });
     writeFileSync(join(melosDir, 'review-result.json'), '{"blockingCount":0}\n', 'utf-8');
@@ -28,7 +20,7 @@ describe('exec index', () => {
     expect(existsSync(join(melosDir, 'events.jsonl'))).toBe(true);
   });
 
-  it('clears configured review and report artifacts before a new run', () => {
+  it('clears configured file-produce artifacts and report artifacts before a new run', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-configured-'));
     const reviewPath = join(cwd, 'artifacts', 'review.json');
     const reportPath = join(cwd, 'reports', 'final.json');
@@ -37,16 +29,59 @@ describe('exec index', () => {
     writeFileSync(reviewPath, '{"blockingCount":0}\n', 'utf-8');
     writeFileSync(reportPath, '{"summary":"old"}\n', 'utf-8');
 
-    clearConfiguredRunArtifacts(cwd, {
-      review: { path: 'artifacts/review.json' },
+    clearConfiguredRunArtifacts(cwd, createRoute({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'review',
+        phases: {
+          review: {
+            task: 'Review the work',
+            pass: ['Review says the work is complete'],
+            produce: { from: { file: 'artifacts/review.json' } },
+            on: {
+              pass: 'stop',
+              fail: 'repeat',
+            },
+          },
+        },
+      },
       report: { path: 'reports/final.json' },
-    } as unknown as RouteDefinition);
+    }));
 
     expect(existsSync(reviewPath)).toBe(false);
     expect(existsSync(reportPath)).toBe(false);
   });
 
-  it('clears the default final report artifact before a new run even when report is omitted', () => {
+  it('clears file-produce artifacts relative to the phase run cwd', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-configured-phase-cwd-'));
+    const phaseDir = join(cwd, 'review-phase');
+    const artifactPath = join(phaseDir, 'artifacts', 'review.json');
+    mkdirSync(join(phaseDir, 'artifacts'), { recursive: true });
+    writeFileSync(artifactPath, '{"blockingCount":0}\n', 'utf-8');
+
+    clearConfiguredRunArtifacts(cwd, createRoute({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'review',
+        phases: {
+          review: {
+            task: 'Review the work',
+            run: { cwd: 'review-phase' },
+            pass: ['Review says the work is complete'],
+            produce: { from: { file: 'artifacts/review.json' } },
+            on: {
+              pass: 'stop',
+              fail: 'repeat',
+            },
+          },
+        },
+      },
+    }));
+
+    expect(existsSync(artifactPath)).toBe(false);
+  });
+
+  it('clears the default final report artifact before a new run when report is omitted', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-default-report-'));
     const melosDir = join(cwd, '.melos');
     mkdirSync(melosDir, { recursive: true });
@@ -54,8 +89,16 @@ describe('exec index', () => {
     writeFileSync(reportPath, '{"summary":"old"}\n', 'utf-8');
 
     clearConfiguredRunArtifacts(cwd, createRoute({
-      task: 'Implement the task',
       run: { engine: 'auto' },
+      workflow: {
+        start: 'research',
+        phases: {
+          research: {
+            task: 'Research the topic',
+            next: 'stop',
+          },
+        },
+      },
     }));
 
     expect(existsSync(reportPath)).toBe(false);

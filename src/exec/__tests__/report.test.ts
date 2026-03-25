@@ -28,6 +28,11 @@ describe('exec report', () => {
       evidence: {
         checks: [{ command: 'pnpm test', exitCode: 0, ok: true }],
         pass: [{ criterion: 'Does the final response explain the change?', verdict: 'yes' }],
+        workflow: {
+          outputs: {
+            research: { sources: ['a', 'b'] },
+          },
+        },
       },
     }, '/repo/.melos/final-report.json');
 
@@ -35,6 +40,7 @@ describe('exec report', () => {
     expect(text).toContain('Changes:');
     expect(text).toContain('Final State: The login flow now succeeds.');
     expect(text).toContain('User Confirmation Needed:');
+    expect(text).toContain('Workflow Outputs:');
     expect(text).toContain('Report Path: /repo/.melos/final-report.json');
   });
 
@@ -51,26 +57,23 @@ describe('exec report', () => {
     expect(text).toContain('Warning: report was generated from fallback data.');
   });
 
-  it('includes staged-only files in the report artifact list', async () => {
-    const cwd = createGitRepo('melos-exec-report-staged-');
+  it('includes workflow outputs in the generated report evidence', async () => {
+    const cwd = createGitRepo('melos-exec-report-workflow-');
     mkdirSync(join(cwd, '.melos'));
     writeFileSync(join(cwd, 'tracked.txt'), 'base\n', 'utf-8');
     execSync('git add tracked.txt', { cwd, stdio: 'ignore' });
     execSync('git commit -m "test: seed tracked file"', { cwd, stdio: 'ignore' });
 
-    writeFileSync(join(cwd, 'staged-only.txt'), 'content\n', 'utf-8');
-    execSync('git add staged-only.txt', { cwd, stdio: 'ignore' });
-
     const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt, options) => {
-      expect(prompt).toContain('"changedFiles"');
-      expect(prompt).toContain('staged-only.txt');
+      expect(prompt).toContain('"workflow"');
+      expect(prompt).toContain('"outputs"');
+      expect(prompt).toContain('"research"');
       expect(options?.effort).toBe('medium');
-      expect(options?.tools).toBeUndefined();
       return {
         success: true,
         output: JSON.stringify({
           summary: 'Report summary.',
-          changes: ['Included staged file.'],
+          changes: ['Included workflow outputs.'],
           rationale: ['Needed for final inspection.'],
           finalState: 'Report generated.',
           remainingIssues: [],
@@ -82,8 +85,16 @@ describe('exec report', () => {
 
     const report = await generateFinalReport({
       recipe: createRoute({
-        task: 'Summarize the staged change',
         run: { engine: 'auto' },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: 'Summarize the staged change',
+              next: 'stop',
+            },
+          },
+        },
       }),
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -92,9 +103,23 @@ describe('exec report', () => {
       decision: 'stop',
       summary: 'completed',
       output: 'done',
+      workflow: {
+        outputs: {
+          research: { sources: ['https://example.com'] },
+        },
+        phaseCounts: { research: 1 },
+        history: [{ phase: 'research', summary: 'completed', decision: 'stop' }],
+      },
     });
 
     expect(report.degraded).toBe(false);
+    expect(report.report.evidence?.workflow).toEqual({
+      outputs: {
+        research: { sources: ['https://example.com'] },
+      },
+      phaseCounts: { research: 1 },
+      history: [{ phase: 'research', summary: 'completed', decision: 'stop' }],
+    });
     executeSpy.mockRestore();
   });
 });

@@ -21,7 +21,7 @@ describe('exec loader', () => {
     const resolved = await resolveRouteSource({
       routePath: '-',
       cwd,
-      stdinText: 'export default { task: "x" };\n',
+      stdinText: 'export default { workflow: { start: "x", phases: {} } };\n',
     });
 
     expect(resolved.fromStdin).toBe(true);
@@ -45,7 +45,6 @@ describe('exec loader', () => {
     writeFileSync(routePath, `
       export default {
         prompt: 'hello',
-        context: [],
         run: { engine: 'codex' },
         evaluate: () => ({ ok: true, summary: 'ok' }),
         policy: () => ({ kind: 'stop', success: true }),
@@ -55,67 +54,54 @@ describe('exec loader', () => {
     await expect(loadRouteModule(routePath)).rejects.toThrow(/apiVersion|createRoute/);
   });
 
-  itIfBun('imports a declarative ts route module through Bun-compatible dynamic import', async () => {
+  itIfBun('imports a workflow ts route module through Bun-compatible dynamic import', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-bun-'));
     const routePath = join(cwd, 'route.ts');
     writeFileSync(routePath, `
       import { createRoute } from ${JSON.stringify(join(process.cwd(), 'src/exec/index.ts'))};
       export default createRoute({
-        task: 'hello',
         run: { engine: 'codex' },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: 'hello',
+              next: 'stop',
+            },
+          },
+        },
       });
     `, 'utf-8');
 
     const result = spawnSync('bun', ['-e', `
       const { loadRouteModule } = await import(${JSON.stringify(join(process.cwd(), 'src/exec/loader.ts'))});
       const route = await loadRouteModule(${JSON.stringify(routePath)});
-      process.stdout.write(route.prompt + "\\n");
+      process.stdout.write(route.workflow.start + "\\n");
     `], {
       encoding: 'utf-8',
       cwd: process.cwd(),
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('hello');
+    expect(result.stdout.trim()).toBe('research');
   });
 
-  itIfBun('rejects declarative ts route modules that still use context', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-context-removed-'));
-    const routePath = join(cwd, 'route.ts');
-    writeFileSync(routePath, `
-      import { createRoute } from ${JSON.stringify(join(process.cwd(), 'src/exec/index.ts'))};
-      export default createRoute({
-        task: 'hello',
-        context: [],
-        run: { engine: 'codex' },
-      });
-    `, 'utf-8');
-
-    const result = spawnSync('bun', ['-e', `
-      const { loadRouteModule } = await import(${JSON.stringify(join(process.cwd(), 'src/exec/loader.ts'))});
-      try {
-        await loadRouteModule(${JSON.stringify(routePath)});
-        process.exit(1);
-      } catch (error) {
-        process.stdout.write(String(error instanceof Error ? error.message : error));
-      }
-    `], {
-      encoding: 'utf-8',
-      cwd: process.cwd(),
-    });
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toMatch(/context .*removed/i);
-  });
-
-  itIfBun('fills in route defaults for minimal declarative route modules', async () => {
+  itIfBun('fills in route defaults for minimal workflow route modules', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-defaults-'));
     const routePath = join(cwd, 'route.ts');
     writeFileSync(routePath, `
       import { createRoute } from ${JSON.stringify(join(process.cwd(), 'src/exec/index.ts'))};
       export default createRoute({
-        task: 'hello',
         run: { engine: 'codex' },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: 'hello',
+              next: 'stop',
+            },
+          },
+        },
       });
     `, 'utf-8');
 
@@ -124,6 +110,7 @@ describe('exec loader', () => {
       const route = await loadRouteModule(${JSON.stringify(routePath)});
       process.stdout.write(JSON.stringify({
         report: route.report,
+        context: route.workflow.phases.research.context,
       }));
     `], {
       encoding: 'utf-8',
@@ -136,6 +123,7 @@ describe('exec loader', () => {
         path: '.melos/final-report.json',
         stdout: true,
       },
+      context: [],
     });
   });
 });

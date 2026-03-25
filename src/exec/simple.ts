@@ -1,38 +1,32 @@
-import { continueUntilPass, customPolicy, stopDecision } from './policies.js';
-import { customEvaluator } from './evaluators.js';
-import { createRuntimeRecipe, type RecipeDefinition } from './recipe.js';
+import { createRoute, type RecipeDefinition } from './recipe.js';
 
-export interface SimpleRecipeOptions {
+export interface SimpleRouteOptions {
   prompt: string;
   model?: string;
   cwd?: string;
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 }
 
-export function createSimpleRecipe(options: SimpleRecipeOptions): RecipeDefinition {
-  return createRuntimeRecipe({
-    prompt: options.prompt,
+export function createSimpleRoute(options: SimpleRouteOptions): RecipeDefinition {
+  return createRoute({
     run: {
       engine: 'auto',
       model: options.model,
       cwd: options.cwd,
       effort: options.effort,
     },
-    evaluate: customEvaluator(({ assistantText }) => ({
-      ok: true,
-      status: 'pass',
-      summary: assistantText.trim() || 'prompt executed',
-      output: assistantText,
-    })),
-    policy: customPolicy(({ observation }) => stopDecision({
-      success: true,
-      summary: observation.summary,
-    })),
+    workflow: {
+      start: 'prompt',
+      phases: {
+        prompt: {
+          task: options.prompt,
+          next: 'stop',
+        },
+      },
+    },
     limits: {
       maxIterations: 1,
     },
+    report: { stdout: false },
   });
 }
-
-export const createSimpleRoute = createSimpleRecipe;
-export { continueUntilPass };

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 export type MissionEventType =
   | 'run_started' | 'route_loaded' | 'iteration_started' | 'context_built' | 'engine_finished'
   | 'evaluation_finished' | 'decision_made' | 'checkpoint_created' | 'commit_created'
-  | 'rollback_applied' | 'report_generated' | 'warning_emitted'
+  | 'rollback_applied' | 'report_generated' | 'warning_emitted' | 'phase_transitioned'
   | 'run_asked' | 'user_answer' | 'run_completed' | 'run_failed';
 
 export interface MissionEventBase {

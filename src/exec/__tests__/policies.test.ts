@@ -7,6 +7,7 @@ function createContext() {
     recipePath: `${process.cwd()}/recipe.ts`,
     state: {
       iteration: 2,
+      phaseExecution: 2,
       startedAt: new Date().toISOString(),
       lastObservation: null,
       bestMetrics: { score: 0.8 },
@@ -14,6 +15,10 @@ function createContext() {
       cwd: process.cwd(),
       recipePath: `${process.cwd()}/recipe.ts`,
       attempts: 1,
+      phaseCounts: {},
+      outputs: {},
+      history: [],
+      phaseStates: {},
     },
     previousObservation: null,
     assistantText: '',
@@ -24,10 +29,11 @@ function createContext() {
     },
     recipe: {
       apiVersion: 2 as const,
-      prompt: 'test',
       run: { engine: 'codex' as const },
-      evaluate: async () => ({ ok: true, summary: 'ok' }),
-      policy: async () => ({ kind: 'stop' as const }),
+      workflow: {
+        start: 'phase',
+        phases: {},
+      },
       limits: { patience: 2 },
     },
   };

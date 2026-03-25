@@ -5,6 +5,7 @@ dist/
 coverage/
 
 .melos/
+routes/
 
 # Mission runtime artifacts (do not commit)
 HANDOFF.md

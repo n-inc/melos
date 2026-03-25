@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
 
 import { AppServerEngine } from '../engines/app-server.js';
 import { ClaudeEngine } from '../engines/claude.js';
@@ -8,21 +8,25 @@ import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
 import { applyConfiguredCommit, assertCommitWorkspaceClean, isCommitEnabled } from './commit.js';
-import { buildIterationHandoff, resolveHandoffFingerprint, selectHandoffHistorySection, writeIterationHandoff } from './handoff.js';
-import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
+import { buildIterationHandoff, resolveHandoffFingerprint, writeIterationHandoff } from './handoff.js';
 import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
+import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
 import {
-  type FinalReport,
+  describeWorkflowTransition,
   normalizeObservation,
   type Decision,
   type EvaluationContext,
+  type FinalReport,
   type RecipeContextBase,
   type RecipeDefinition,
   type RecipeLog,
+  type RecipeRunConfig,
   type ResolvedQuestion,
   type RunnerState,
-  type RuntimeTraceEntry,
   type RuntimeEngine,
+  type RuntimeTraceEntry,
+  type WorkflowPhaseDefinition,
+  type WorkflowTransition,
 } from './recipe.js';
 
 export interface ExecRunSummary {
@@ -47,7 +51,7 @@ export interface ExecRunSummary {
   observation?: ReturnType<typeof normalizeObservation>;
 }
 
-export interface RunRecipeOptions {
+export interface RunRouteOptions {
   recipe: RecipeDefinition;
   cwd?: string;
   melosDir: string;
@@ -59,8 +63,6 @@ export interface RunRecipeOptions {
     recipe: RecipeDefinition;
   }) => Promise<string | null>;
 }
-
-export type RunRouteOptions = RunRecipeOptions;
 
 export function eventLog(options: {
   melosDir: string;
@@ -98,22 +100,27 @@ function createRuntimeEngine(engine: RuntimeEngine, model?: string): Engine {
     : new AppServerEngine();
 }
 
-function resolveExecutionCwd(options: RunRecipeOptions): string {
-  const baseCwd = resolve(options.cwd ?? process.cwd());
-  const recipeRunCwd = options.recipe.run.cwd;
-  if (!recipeRunCwd) {
-    return baseCwd;
+function resolveRunCwd(baseCwd: string, runCwd?: string): string {
+  if (!runCwd) {
+    return resolve(baseCwd);
   }
-  if (recipeRunCwd.startsWith('/')) {
-    return recipeRunCwd;
+  if (isAbsolute(runCwd)) {
+    return runCwd;
   }
-  return resolve(baseCwd, recipeRunCwd);
+  return resolve(baseCwd, runCwd);
+}
+
+function mergeRunConfig(baseRun: RecipeRunConfig, override?: Partial<RecipeRunConfig>): RecipeRunConfig {
+  return {
+    ...baseRun,
+    ...override,
+    engine: override?.engine ?? baseRun.engine,
+  };
 }
 
 function buildEngineOptions(input: {
-  recipe: RecipeDefinition;
+  runConfig: RecipeRunConfig;
   cwd: string;
-  state: RunnerState;
   onStream?: (chunk: string) => void;
   onCommandOutput?: (chunk: string) => void;
   onEvent?: (method: string, params: unknown) => void;
@@ -122,12 +129,10 @@ function buildEngineOptions(input: {
   onCommandOutput?: (chunk: string) => void;
   onEvent?: (method: string, params: unknown) => void;
   suppressTerminalOutput: boolean;
-  threadId?: string;
 } {
-  const model = input.recipe.run.model;
-  const timeout = input.recipe.run.timeoutMs;
-  const engineType = typeof input.recipe.run.engine === 'string'
-    ? input.recipe.run.engine
+  const model = input.runConfig.model;
+  const engineType = typeof input.runConfig.engine === 'string'
+    ? input.runConfig.engine
     : resolveModelEngine(model);
   const isClaude = engineType === 'claude' || (engineType === 'auto' && isClaudeFamily(model));
 
@@ -136,10 +141,9 @@ function buildEngineOptions(input: {
     onCommandOutput?: (chunk: string) => void;
     onEvent?: (method: string, params: unknown) => void;
     suppressTerminalOutput: boolean;
-    threadId?: string;
   } = {
     cwd: input.cwd,
-    timeout,
+    timeout: input.runConfig.timeoutMs,
     suppressTerminalOutput: true,
     onStream: input.onStream,
     onCommandOutput: input.onCommandOutput,
@@ -149,17 +153,12 @@ function buildEngineOptions(input: {
   if (model) {
     options.model = resolveRuntimeModel(model);
   }
-
-  if (input.recipe.run.effort) {
+  if (input.runConfig.effort) {
     if (isClaude) {
-      options.effort = input.recipe.run.effort as EngineOptions['effort'];
+      options.effort = input.runConfig.effort as EngineOptions['effort'];
     } else {
-      options.reasoningEffort = input.recipe.run.effort as EngineOptions['reasoningEffort'];
+      options.reasoningEffort = input.runConfig.effort as EngineOptions['reasoningEffort'];
     }
-  }
-
-  if (!isClaude && input.state.engineThreadId) {
-    options.threadId = input.state.engineThreadId;
   }
 
   return options;
@@ -172,21 +171,53 @@ function serializeSections(sections: PromptSection[]): Record<string, unknown> {
   };
 }
 
-function applyDecisionStateUpdate(state: RunnerState, decision: Decision): RunnerState {
-  if (!decision.stateUpdate) {
-    return state;
+function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): PromptSection[] {
+  if (resolvedQuestions.length === 0) {
+    return [];
   }
+  return [{
+    title: 'Resolved Questions',
+    content: JSON.stringify(resolvedQuestions, null, 2),
+  }];
+}
+
+function buildWorkflowSection(state: RunnerState, phaseName: string): PromptSection[] {
+  if (Object.keys(state.outputs).length === 0 && state.history.length === 0) {
+    return [];
+  }
+  return [{
+    title: 'Workflow State',
+    content: JSON.stringify({
+      currentPhase: phaseName,
+      outputs: state.outputs,
+      phaseCounts: state.phaseCounts,
+      history: state.history,
+    }, null, 2),
+  }];
+}
+
+function applyDecisionStateUpdate(state: RunnerState, phaseName: string, decision: Decision): RunnerState {
+  const existing = state.phaseStates[phaseName] ?? { attempts: 0, bestMetrics: {} };
+  const nextPhaseState = {
+    attempts: decision.stateUpdate?.attempts ?? existing.attempts,
+    bestMetrics: decision.stateUpdate?.bestMetrics ?? existing.bestMetrics,
+  };
   return {
     ...state,
-    attempts: decision.stateUpdate.attempts ?? state.attempts,
-    bestMetrics: decision.stateUpdate.bestMetrics ?? state.bestMetrics,
+    attempts: nextPhaseState.attempts,
+    bestMetrics: nextPhaseState.bestMetrics,
+    phaseStates: {
+      ...state.phaseStates,
+      [phaseName]: nextPhaseState,
+    },
   };
 }
 
 function createRecipeContext(
   state: RunnerState,
   melosDir: string,
-  recipe: RecipeDefinition
+  recipe: RecipeDefinition,
+  runConfig: RecipeRunConfig
 ): RecipeContextBase {
   return {
     cwd: state.cwd,
@@ -195,7 +226,15 @@ function createRecipeContext(
     state,
     previousObservation: state.lastObservation,
     resolvedQuestions: state.resolvedQuestions ?? [],
-    runConfig: recipe.run,
+    runConfig,
+    workflow: state.currentPhase
+      ? {
+        phase: state.currentPhase,
+        outputs: state.outputs,
+        phaseCounts: state.phaseCounts,
+        history: state.history,
+      }
+      : undefined,
   };
 }
 
@@ -238,6 +277,10 @@ async function attachFinalReport(input: {
   observation?: ReturnType<typeof normalizeObservation>;
   trace?: RuntimeTraceEntry[];
 }): Promise<ExecRunSummary> {
+  if (!input.recipe.report) {
+    return input.summary;
+  }
+
   const report = await generateFinalReport({
     recipe: input.recipe,
     cwd: input.cwd,
@@ -255,6 +298,11 @@ async function attachFinalReport(input: {
     observation: input.observation ?? input.summary.observation,
     resolvedQuestions: input.state.resolvedQuestions,
     trace: input.trace ?? input.state.lastTrace,
+    workflow: {
+      outputs: input.state.outputs,
+      phaseCounts: input.state.phaseCounts,
+      history: input.state.history,
+    },
   });
   const reportPath = resolveReportPath(input.baseCwd, input.recipe.report);
   let persistedReportPath: string | undefined = reportPath;
@@ -290,18 +338,16 @@ async function attachFinalReport(input: {
   };
 }
 
-function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): PromptSection[] {
-  if (resolvedQuestions.length === 0) {
-    return [];
-  }
-  return [{
-    title: 'resolved questions',
-    content: JSON.stringify(resolvedQuestions, null, 2),
-  }];
-}
-
 function pushTraceEntry(trace: RuntimeTraceEntry[], entry: RuntimeTraceEntry): void {
   trace.push(entry);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readString(source: Record<string, unknown>, key: string): string | null {
+  return typeof source[key] === 'string' ? String(source[key]) : null;
 }
 
 function captureEngineTrace(trace: RuntimeTraceEntry[]): {
@@ -423,23 +469,23 @@ function buildAskResolverPrompt(input: {
     ].join('\n'),
     [
       {
-        title: 'question',
+        title: 'Question',
         content: input.question,
       },
       {
-        title: 'latest observation',
+        title: 'Latest Observation',
         content: JSON.stringify({
           summary: input.observationSummary,
           details: input.observationDetails,
         }, null, 2),
       },
       {
-        title: 'latest assistant output',
+        title: 'Latest Assistant Output',
         content: input.assistantText.trim() || '(empty assistant output)',
       },
       ...(input.resolvedQuestions.length > 0
         ? [{
-          title: 'resolved questions',
+          title: 'Resolved Questions',
           content: JSON.stringify(input.resolvedQuestions, null, 2),
         }]
         : []),
@@ -449,9 +495,8 @@ function buildAskResolverPrompt(input: {
 
 async function resolveAskWithAgent(input: {
   engine: Engine;
-  recipe: RecipeDefinition;
+  runConfig: RecipeRunConfig;
   cwd: string;
-  melosDir: string;
   state: RunnerState;
   question: string;
   observationSummary: string;
@@ -469,13 +514,8 @@ async function resolveAskWithAgent(input: {
       resolvedQuestions: input.state.resolvedQuestions ?? [],
     }),
     buildEngineOptions({
-      recipe: input.recipe,
+      runConfig: input.runConfig,
       cwd: input.cwd,
-      state: {
-        ...input.state,
-        // Keep the main execution thread isolated from the auxiliary ask resolver turn.
-        engineThreadId: undefined,
-      },
       ...traceCallbacks,
     })
   );
@@ -505,8 +545,8 @@ async function resolveAskWithAgent(input: {
 }
 
 async function resolveAskDecision(input: {
-  options: RunRecipeOptions;
-  recipe: RecipeDefinition;
+  options: RunRouteOptions;
+  runConfig: RecipeRunConfig;
   logger: RecipeLog;
   state: RunnerState;
   decision: Extract<Decision, { kind: 'ask' }>;
@@ -520,9 +560,8 @@ async function resolveAskDecision(input: {
   if (askMode !== 'always-user') {
     const resolvedQuestion = await resolveAskWithAgent({
       engine: input.engine,
-      recipe: input.recipe,
+      runConfig: input.runConfig,
       cwd: input.state.cwd,
-      melosDir: input.options.melosDir,
       state: input.state,
       question: input.decision.question,
       observationSummary: input.observation.summary,
@@ -550,12 +589,14 @@ async function resolveAskDecision(input: {
     payload: {
       question: input.decision.question,
       mode: askMode,
+      phase: input.state.currentPhase,
+      phaseExecution: input.state.phaseExecution,
     },
   });
   const answer = await input.options.askUser({
     question: input.decision.question,
     state: input.state,
-    recipe: input.recipe,
+    recipe: input.options.recipe,
   });
   if (!answer || answer.trim().length === 0) {
     return { resolvedQuestion: null, failureReason: `Could not resolve question: ${input.decision.question}` };
@@ -567,6 +608,8 @@ async function resolveAskDecision(input: {
     payload: {
       question: input.decision.question,
       answer,
+      phase: input.state.currentPhase,
+      phaseExecution: input.state.phaseExecution,
     },
   });
   return {
@@ -577,14 +620,6 @@ async function resolveAskDecision(input: {
       source: 'user',
     },
   };
-}
-
-function readActiveThreadId(engine: Engine): string | undefined {
-  if ('getActiveThreadId' in engine && typeof engine.getActiveThreadId === 'function') {
-    const threadId = engine.getActiveThreadId();
-    return typeof threadId === 'string' && threadId.length > 0 ? threadId : undefined;
-  }
-  return undefined;
 }
 
 function readHeadRef(cwd: string): string | undefined {
@@ -613,21 +648,105 @@ function buildFinalReportCommitRange(range: {
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+function readWorkflowProduce(input: {
+  phaseName: string;
+  phase: WorkflowPhaseDefinition;
+  assistantText: string;
+  cwd: string;
+}): { ok: true; value: unknown } | { ok: false; message: string } {
+  if (!input.phase.produce) {
+    return { ok: true, value: undefined };
+  }
+
+  if (input.phase.produce.from === 'assistant-json') {
+    try {
+      return {
+        ok: true,
+        value: JSON.parse(input.assistantText),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `phase "${input.phaseName}" assistant-json output is invalid: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  const filePath = input.phase.produce.from.file;
+  const resolvedPath = isAbsolute(filePath) ? filePath : resolve(input.cwd, filePath);
+  try {
+    return {
+      ok: true,
+      value: JSON.parse(readFileSync(resolvedPath, 'utf-8')),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: `phase "${input.phaseName}" file produce is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 }
 
-function readString(source: Record<string, unknown>, key: string): string | null {
-  return typeof source[key] === 'string' ? String(source[key]) : null;
+function actionDecisionFromTransition(transition: WorkflowTransition, summary: string): Decision {
+  if (transition === 'stop') {
+    return {
+      kind: 'stop',
+      success: true,
+      summary,
+    };
+  }
+  return {
+    kind: 'continue',
+    success: true,
+    summary,
+  };
 }
 
-export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSummary> {
+function resolvePhaseTransition(input: {
+  phaseName: string;
+  phase: WorkflowPhaseDefinition;
+  observation: ReturnType<typeof normalizeObservation>;
+  decision: Decision;
+}): WorkflowTransition {
+  if (!input.phase.evaluate) {
+    if (!input.phase.next) {
+      throw new Error(`workflow phase "${input.phaseName}" requires next when no evaluators are configured`);
+    }
+    return input.phase.next;
+  }
+
+  if (!input.phase.on) {
+    throw new Error(`workflow phase "${input.phaseName}" requires on when evaluators are configured`);
+  }
+
+  if (input.decision.kind === 'ask') {
+    if (!input.phase.on.ask) {
+      throw new Error(`workflow phase "${input.phaseName}" requires on.ask when ask is returned`);
+    }
+    return input.phase.on.ask;
+  }
+  if (input.decision.kind === 'stop' && (input.decision.success === false || input.observation.ok === false)) {
+    return 'stop';
+  }
+  if (input.decision.kind === 'rollback') {
+    if (!input.phase.on.rollback) {
+      throw new Error(`workflow phase "${input.phaseName}" requires on.rollback when rollback is returned`);
+    }
+    return input.phase.on.rollback;
+  }
+  if (input.decision.kind === 'continue') {
+    return input.phase.on.fail;
+  }
+  return (input.decision.success ?? input.observation.ok) ? input.phase.on.pass : input.phase.on.fail;
+}
+
+export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary> {
   const baseCwd = resolve(options.cwd ?? process.cwd());
-  const cwd = resolveExecutionCwd(options);
-  mkdirSync(options.melosDir, { recursive: true });
+  const melosDir = options.melosDir;
+  mkdirSync(melosDir, { recursive: true });
 
   const recipe = options.recipe;
-  const logger = recipe.log ?? eventLog({ melosDir: options.melosDir });
+  const logger = recipe.log ?? eventLog({ melosDir });
   const startedAt = new Date().toISOString();
   const maxIterations = Math.max(1, recipe.limits?.maxIterations ?? 10);
   const deadline = recipe.limits?.timeoutMs
@@ -637,17 +756,20 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
     recipePath: options.recipePath
       ? resolve(options.cwd ?? process.cwd(), options.recipePath)
       : undefined,
-    prompt: typeof recipe.prompt === 'string' ? recipe.prompt : undefined,
-    promptSource: typeof recipe.prompt === 'function' ? recipe.prompt.toString() : undefined,
+    prompt: JSON.stringify({
+      start: recipe.workflow.start,
+      phases: Object.keys(recipe.workflow.phases),
+    }),
   }) ?? 'unknown';
 
   let state: RunnerState = {
     iteration: 0,
+    phaseExecution: 0,
     startedAt,
     lastObservation: null,
     bestMetrics: {},
     checkpointRef: undefined,
-    cwd,
+    cwd: resolveRunCwd(baseCwd, recipe.run.cwd),
     recipePath: options.recipePath,
     attempts: 0,
     resolvedQuestions: [],
@@ -656,19 +778,26 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
     engineThreadId: undefined,
     lastHandoffPath: undefined,
     handoffFingerprint,
+    currentPhase: recipe.workflow.start,
+    phaseCounts: {},
+    outputs: {},
+    history: [],
+    lastTransition: undefined,
+    phaseStates: {},
   };
 
-  const engine = createRuntimeEngine(recipe.run.engine, recipe.run.model);
+  const engines = new Set<Engine>();
   const reportCommitRange = isCommitEnabled(recipe.commit)
     ? {
-      baseRef: readHeadRef(cwd),
+      baseRef: readHeadRef(state.cwd),
       headRef: undefined as string | undefined,
     }
     : null;
+
   try {
     if (isCommitEnabled(recipe.commit)) {
       try {
-        assertCommitWorkspaceClean(cwd);
+        assertCommitWorkspaceClean(state.cwd);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         const summary = finalizeSummary({
@@ -676,7 +805,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           success: false,
           decision: 'failed',
           iterations: 0,
-          cwd,
+          cwd: state.cwd,
           recipePath: options.recipePath,
           startedAt,
           summary: 'auto-commit requires a clean git worktree',
@@ -685,9 +814,9 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         const summarized = await attachFinalReport({
           summary,
           recipe,
-          cwd,
+          cwd: state.cwd,
           baseCwd,
-          melosDir: options.melosDir,
+          melosDir,
           recipePath: options.recipePath,
           commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration: 0,
@@ -705,14 +834,14 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
       }
     }
 
-    for (let iteration = 1; iteration <= maxIterations; iteration++) {
+    for (let phaseExecution = 1; phaseExecution <= maxIterations; phaseExecution += 1) {
       if (deadline !== null && Date.now() > deadline) {
         const summary = finalizeSummary({
           status: 'failed',
           success: false,
           decision: 'failed',
-          iterations: iteration - 1,
-          cwd,
+          iterations: phaseExecution - 1,
+          cwd: state.cwd,
           recipePath: options.recipePath,
           startedAt,
           summary: 'exec timed out',
@@ -720,119 +849,153 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         const summarized = await attachFinalReport({
           summary,
           recipe,
-          cwd,
+          cwd: state.cwd,
           baseCwd,
-          melosDir: options.melosDir,
+          melosDir,
           recipePath: options.recipePath,
           commitRange: buildFinalReportCommitRange(reportCommitRange),
-          iteration: iteration - 1,
+          iteration: phaseExecution - 1,
           logger,
           state,
         });
         logger.emit({
           type: 'run_failed',
-          iteration: iteration - 1,
+          iteration: phaseExecution - 1,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
         });
         return summarized;
       }
 
-      state = { ...state, iteration };
+      const phaseName = state.currentPhase ?? recipe.workflow.start;
+      const phase = recipe.workflow.phases[phaseName];
+      if (!phase) {
+        const summary = finalizeSummary({
+          status: 'failed',
+          success: false,
+          decision: 'failed',
+          iterations: phaseExecution - 1,
+          cwd: state.cwd,
+          recipePath: options.recipePath,
+          startedAt,
+          summary: `unknown phase "${phaseName}"`,
+        });
+        return attachFinalReport({
+          summary,
+          recipe,
+          cwd: state.cwd,
+          baseCwd,
+          melosDir,
+          recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
+          iteration: phaseExecution - 1,
+          logger,
+          state,
+        });
+      }
+
+      const mergedRun = mergeRunConfig(recipe.run, phase.run);
+      const executionCwd = resolveRunCwd(baseCwd, mergedRun.cwd);
+      const phaseState = state.phaseStates[phaseName] ?? { attempts: 0, bestMetrics: {} };
+      state = {
+        ...state,
+        iteration: phaseExecution,
+        phaseExecution,
+        currentPhase: phaseName,
+        cwd: executionCwd,
+        attempts: phaseState.attempts,
+        bestMetrics: phaseState.bestMetrics,
+        phaseCounts: {
+          ...state.phaseCounts,
+          [phaseName]: (state.phaseCounts[phaseName] ?? 0) + 1,
+        },
+      };
       logger.emit({
         type: 'iteration_started',
-        iteration,
+        iteration: phaseExecution,
         agent: 'system',
         payload: {
           recipePath: options.recipePath,
+          phase: phaseName,
+          phaseExecution,
         },
       });
 
-      const baseContext = createRecipeContext(state, options.melosDir, recipe);
+      const baseContext = createRecipeContext(state, melosDir, recipe, mergedRun);
       if (recipe.checkpoint) {
         const checkpointRef = await recipe.checkpoint.create(baseContext);
         state = { ...state, checkpointRef };
         if (checkpointRef) {
           logger.emit({
             type: 'checkpoint_created',
-            iteration,
+            iteration: phaseExecution,
             agent: 'system',
-            payload: { ref: checkpointRef },
+            payload: { ref: checkpointRef, phase: phaseName, phaseExecution },
           });
         }
       }
 
-      const staticContextSections: PromptSection[] = [
+      const sections: PromptSection[] = [
+        ...buildWorkflowSection(state, phaseName),
         ...buildResolvedQuestionsSection(state.resolvedQuestions ?? []),
       ];
-      const promptText = typeof recipe.prompt === 'function'
-        ? await recipe.prompt(createRecipeContext(state, options.melosDir, recipe))
-        : recipe.prompt;
-      const handoffDecision = selectHandoffHistorySection({
-        melosDir: options.melosDir,
-        fingerprint: handoffFingerprint,
-        prompt: promptText,
-        sections: staticContextSections,
-      });
-      const contextSections: PromptSection[] = handoffDecision.section
-        ? [...staticContextSections, handoffDecision.section]
-        : staticContextSections;
+      for (const provider of phase.context) {
+        const provided = await provider(createRecipeContext(state, melosDir, recipe, mergedRun));
+        if (!provided) {
+          continue;
+        }
+        if (Array.isArray(provided)) {
+          sections.push(...provided.filter((section) => section.content.trim().length > 0));
+          continue;
+        }
+        if (provided.content.trim().length > 0) {
+          sections.push(provided);
+        }
+      }
+
+      const promptText = typeof phase.task === 'function'
+        ? await phase.task(createRecipeContext(state, melosDir, recipe, mergedRun))
+        : phase.task;
+      const renderedPrompt = renderPromptWithSections(promptText, sections);
       logger.emit({
         type: 'context_built',
-        iteration,
+        iteration: phaseExecution,
         agent: 'system',
         payload: {
-          ...serializeSections(contextSections),
-          handoffHistory: handoffDecision.mode === 'none'
-            ? undefined
-            : {
-              mode: handoffDecision.mode,
-              totalEntries: handoffDecision.totalEntries,
-              includedEntries: handoffDecision.includedEntries,
-              omittedEntries: handoffDecision.omittedEntries,
-            },
+          ...serializeSections(sections),
+          phase: phaseName,
+          phaseExecution,
         },
       });
-      if (handoffDecision.mode === 'omitted') {
-        logger.emit({
-          type: 'warning_emitted',
-          iteration,
-          agent: 'system',
-          payload: {
-            warning: 'handoff history omitted due to prompt budget',
-            kind: 'exec_handoff_budget',
-            handoffFingerprint,
-          },
-        });
-      }
-      const renderedPrompt = renderPromptWithSections(promptText, contextSections);
 
       const trace: RuntimeTraceEntry[] = [];
       const traceCallbacks = captureEngineTrace(trace);
+      const engine = createRuntimeEngine(mergedRun.engine, mergedRun.model);
+      engines.add(engine);
       const engineResult = await engine.execute(
         renderedPrompt,
         buildEngineOptions({
-          recipe,
-          cwd,
-          state,
+          runConfig: mergedRun,
+          cwd: executionCwd,
           ...traceCallbacks,
         })
       );
       state = {
         ...state,
-        engineThreadId: readActiveThreadId(engine) ?? state.engineThreadId,
         lastAssistantText: engineResult.output,
         lastTrace: trace,
       };
       logger.emit({
         type: 'engine_finished',
-        iteration,
+        iteration: phaseExecution,
         agent: 'system',
         payload: {
           success: engineResult.success,
           exitCode: engineResult.exitCode,
           outputLength: engineResult.output.length,
           error: engineResult.error,
+          phase: phaseName,
+          phaseExecution,
         },
       });
 
@@ -841,8 +1004,8 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           status: 'failed',
           success: false,
           decision: 'failed',
-          iterations: iteration,
-          cwd,
+          iterations: phaseExecution,
+          cwd: executionCwd,
           recipePath: options.recipePath,
           startedAt,
           summary: engineResult.error ?? 'engine execution failed',
@@ -851,12 +1014,12 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         const summarized = await attachFinalReport({
           summary,
           recipe,
-          cwd,
+          cwd: executionCwd,
           baseCwd,
-          melosDir: options.melosDir,
+          melosDir,
           recipePath: options.recipePath,
           commitRange: buildFinalReportCommitRange(reportCommitRange),
-          iteration,
+          iteration: phaseExecution,
           logger,
           state,
           output: engineResult.output,
@@ -864,39 +1027,103 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         });
         logger.emit({
           type: 'run_failed',
-          iteration,
+          iteration: phaseExecution,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
         });
         return summarized;
       }
 
+      const produced = readWorkflowProduce({
+        phaseName,
+        phase,
+        assistantText: engineResult.output,
+        cwd: executionCwd,
+      });
+      if (!produced.ok) {
+        const summary = finalizeSummary({
+          status: 'failed',
+          success: false,
+          decision: 'failed',
+          iterations: phaseExecution,
+          cwd: executionCwd,
+          recipePath: options.recipePath,
+          startedAt,
+          summary: produced.message,
+          output: engineResult.output,
+        });
+        const summarized = await attachFinalReport({
+          summary,
+          recipe,
+          cwd: executionCwd,
+          baseCwd,
+          melosDir,
+          recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
+          iteration: phaseExecution,
+          logger,
+          state,
+          output: engineResult.output,
+          trace,
+        });
+        logger.emit({
+          type: 'run_failed',
+          iteration: phaseExecution,
+          agent: 'system',
+          payload: summarized as unknown as Record<string, unknown>,
+        });
+        return summarized;
+      }
+      if (produced.value !== undefined) {
+        state = {
+          ...state,
+          outputs: {
+            ...state.outputs,
+            [phaseName]: produced.value,
+          },
+        };
+      }
+
       const evaluationContext: EvaluationContext = {
-        ...createRecipeContext(state, options.melosDir, recipe),
+        ...createRecipeContext(state, melosDir, recipe, mergedRun),
         assistantText: engineResult.output,
         engineResult,
       };
-      const observation = normalizeObservation(await recipe.evaluate(evaluationContext));
-      logger.emit({
-        type: 'evaluation_finished',
-        iteration,
-        agent: 'system',
-        payload: {
-          ok: observation.ok,
-          status: observation.status,
-          summary: observation.summary,
-          metrics: observation.metrics,
-        },
-      });
 
-      const decision = await recipe.policy({
-        ...evaluationContext,
-        observation,
-        recipe,
+      let observation = normalizeObservation({
+        ok: true,
+        status: 'pass',
+        summary: promptText.trim() || phaseName,
+        output: engineResult.output,
       });
+      let decision: Decision = actionDecisionFromTransition(phase.next ?? 'stop', observation.summary);
+
+      if (phase.evaluate && phase.policy) {
+        observation = normalizeObservation(await phase.evaluate(evaluationContext));
+        logger.emit({
+          type: 'evaluation_finished',
+          iteration: phaseExecution,
+          agent: 'system',
+          payload: {
+            ok: observation.ok,
+            status: observation.status,
+            summary: observation.summary,
+            metrics: observation.metrics,
+            phase: phaseName,
+            phaseExecution,
+          },
+        });
+
+        decision = await phase.policy({
+          ...evaluationContext,
+          observation,
+          recipe,
+        });
+      }
+
       logger.emit({
         type: 'decision_made',
-        iteration,
+        iteration: phaseExecution,
         agent: 'system',
         payload: {
           kind: decision.kind,
@@ -904,20 +1131,22 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           reason: decision.reason,
           success: decision.success,
           question: 'question' in decision ? decision.question : undefined,
+          phase: phaseName,
+          phaseExecution,
         },
       });
 
       state = applyDecisionStateUpdate({
         ...state,
         lastObservation: observation,
-      }, decision);
+      }, phaseName, decision);
 
       let resolvedQuestion: ResolvedQuestion | null = null;
       let askFailureReason: string | undefined;
       if (decision.kind === 'ask') {
         const askOutcome = await resolveAskDecision({
           options,
-          recipe,
+          runConfig: mergedRun,
           logger,
           state,
           decision,
@@ -936,12 +1165,12 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         }
       }
 
-      const handoffPath = writeIterationHandoff(options.melosDir, handoffFingerprint, buildIterationHandoff({
-        iteration,
+      const handoffPath = writeIterationHandoff(melosDir, handoffFingerprint, buildIterationHandoff({
+        iteration: phaseExecution,
         timestamp: new Date().toISOString(),
-        cwd,
+        cwd: executionCwd,
         checkpointRef: state.checkpointRef,
-        promptSummary: typeof promptText === 'string' ? promptText.trim() : renderedPrompt.slice(0, 200),
+        promptSummary: promptText.trim() || phaseName,
         assistantText: engineResult.output,
         observation,
         decision,
@@ -957,7 +1186,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         try {
           const committed = await applyConfiguredCommit({
             config: recipe.commit,
-            baseContext: createRecipeContext(state, options.melosDir, recipe),
+            baseContext: createRecipeContext(state, melosDir, recipe, mergedRun),
             decision,
             observation,
             assistantText: engineResult.output,
@@ -968,13 +1197,15 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             }
             logger.emit({
               type: 'commit_created',
-              iteration,
+              iteration: phaseExecution,
               agent: 'system',
               payload: {
                 ref: committed.ref,
                 message: committed.message,
                 changedFiles: committed.changedFiles,
                 when: recipe.commit.when ?? 'never',
+                phase: phaseName,
+                phaseExecution,
               },
             });
           }
@@ -983,8 +1214,8 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             status: 'failed',
             success: false,
             decision: 'failed',
-            iterations: iteration,
-            cwd,
+            iterations: phaseExecution,
+            cwd: executionCwd,
             recipePath: options.recipePath,
             startedAt,
             summary: 'failed to create git commit',
@@ -995,12 +1226,12 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           const summarized = await attachFinalReport({
             summary,
             recipe,
-            cwd,
+            cwd: executionCwd,
             baseCwd,
-            melosDir: options.melosDir,
+            melosDir,
             recipePath: options.recipePath,
             commitRange: buildFinalReportCommitRange(reportCommitRange),
-            iteration,
+            iteration: phaseExecution,
             logger,
             state,
             reason: error instanceof Error ? error.message : String(error),
@@ -1010,7 +1241,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           });
           logger.emit({
             type: 'run_failed',
-            iteration,
+            iteration: phaseExecution,
             agent: 'system',
             payload: summarized as unknown as Record<string, unknown>,
           });
@@ -1018,69 +1249,13 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         }
       }
 
-      if (decision.kind === 'rollback') {
-        if (!recipe.checkpoint || !state.checkpointRef) {
-          const summary = finalizeSummary({
-            status: 'failed',
-            success: false,
-            decision: 'failed',
-            iterations: iteration,
-            cwd,
-            recipePath: options.recipePath,
-            startedAt,
-            summary: 'rollback decision was returned without a checkpoint',
-            reason: decision.reason,
-            output: engineResult.output,
-            observation,
-          });
-          const summarized = await attachFinalReport({
-            summary,
-            recipe,
-            cwd,
-            baseCwd,
-            melosDir: options.melosDir,
-            recipePath: options.recipePath,
-            commitRange: buildFinalReportCommitRange(reportCommitRange),
-            iteration,
-            logger,
-            state,
-            reason: decision.reason,
-            output: engineResult.output,
-            observation,
-            trace,
-          });
-          logger.emit({
-            type: 'run_failed',
-            iteration,
-            agent: 'system',
-            payload: summarized as unknown as Record<string, unknown>,
-          });
-          return summarized;
-        }
-
-        await recipe.checkpoint.rollback(createRecipeContext(state, options.melosDir, recipe), state.checkpointRef);
-        logger.emit({
-          type: 'rollback_applied',
-          iteration,
-          agent: 'system',
-          payload: {
-            ref: state.checkpointRef,
-            reason: decision.reason ?? decision.summary ?? observation.summary,
-          },
-        });
-        continue;
-      }
-
-      if (decision.kind === 'ask') {
-        if (resolvedQuestion) {
-          continue;
-        }
+      if (decision.kind === 'ask' && !resolvedQuestion) {
         const summary = finalizeSummary({
           status: 'failed',
           success: false,
           decision: 'failed',
-          iterations: iteration,
-          cwd,
+          iterations: phaseExecution,
+          cwd: executionCwd,
           recipePath: options.recipePath,
           startedAt,
           summary: askFailureReason ?? decision.summary ?? observation.summary,
@@ -1092,12 +1267,12 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         const summarized = await attachFinalReport({
           summary,
           recipe,
-          cwd,
+          cwd: executionCwd,
           baseCwd,
-          melosDir: options.melosDir,
+          melosDir,
           recipePath: options.recipePath,
           commitRange: buildFinalReportCommitRange(reportCommitRange),
-          iteration,
+          iteration: phaseExecution,
           logger,
           state,
           reason: decision.reason ?? askFailureReason,
@@ -1107,23 +1282,161 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         });
         logger.emit({
           type: 'run_failed',
-          iteration,
+          iteration: phaseExecution,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
         });
         return summarized;
       }
 
-      if (decision.kind === 'stop') {
+      let transition: WorkflowTransition;
+      try {
+        transition = resolvePhaseTransition({
+          phaseName,
+          phase,
+          observation,
+          decision,
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const summary = finalizeSummary({
+          status: 'failed',
+          success: false,
+          decision: 'failed',
+          iterations: phaseExecution,
+          cwd: executionCwd,
+          recipePath: options.recipePath,
+          startedAt,
+          summary: reason,
+          output: engineResult.output,
+          observation,
+        });
+        const summarized = await attachFinalReport({
+          summary,
+          recipe,
+          cwd: executionCwd,
+          baseCwd,
+          melosDir,
+          recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
+          iteration: phaseExecution,
+          logger,
+          state,
+          reason,
+          output: engineResult.output,
+          observation,
+          trace,
+        });
+        logger.emit({
+          type: 'run_failed',
+          iteration: phaseExecution,
+          agent: 'system',
+          payload: summarized as unknown as Record<string, unknown>,
+        });
+        return summarized;
+      }
+
+      if (decision.kind === 'rollback') {
+        if (!recipe.checkpoint || !state.checkpointRef) {
+          const summary = finalizeSummary({
+            status: 'failed',
+            success: false,
+            decision: 'failed',
+            iterations: phaseExecution,
+            cwd: executionCwd,
+            recipePath: options.recipePath,
+            startedAt,
+            summary: 'rollback decision was returned without a checkpoint',
+            reason: decision.reason,
+            output: engineResult.output,
+            observation,
+          });
+          const summarized = await attachFinalReport({
+            summary,
+            recipe,
+            cwd: executionCwd,
+            baseCwd,
+            melosDir,
+            recipePath: options.recipePath,
+            commitRange: buildFinalReportCommitRange(reportCommitRange),
+            iteration: phaseExecution,
+            logger,
+            state,
+            reason: decision.reason,
+            output: engineResult.output,
+            observation,
+            trace,
+          });
+          logger.emit({
+            type: 'run_failed',
+            iteration: phaseExecution,
+            agent: 'system',
+            payload: summarized as unknown as Record<string, unknown>,
+          });
+          return summarized;
+        }
+
+        await recipe.checkpoint.rollback(createRecipeContext(state, melosDir, recipe, mergedRun), state.checkpointRef);
+        logger.emit({
+          type: 'rollback_applied',
+          iteration: phaseExecution,
+          agent: 'system',
+          payload: {
+            ref: state.checkpointRef,
+            reason: decision.reason ?? decision.summary ?? observation.summary,
+            phase: phaseName,
+            phaseExecution,
+          },
+        });
+      }
+
+      const transitionLabel = describeWorkflowTransition(transition);
+      const nextPhase = transition === 'repeat'
+        ? phaseName
+        : transition === 'stop'
+          ? undefined
+          : transition.goto;
+      state = {
+        ...state,
+        history: [
+          ...state.history,
+          {
+            phase: phaseName,
+            summary: decision.summary ?? observation.summary,
+            decision: transitionLabel,
+          },
+        ],
+        lastTransition: {
+          from: phaseName,
+          to: nextPhase,
+          decision: transitionLabel,
+        },
+      };
+      logger.emit({
+        type: 'phase_transitioned',
+        iteration: phaseExecution,
+        agent: 'system',
+        payload: {
+          from: phaseName,
+          to: nextPhase,
+          decisionKind: decision.kind,
+          transition: transitionLabel,
+          reason: decision.reason,
+          phase: phaseName,
+          phaseExecution,
+        },
+      });
+
+      if (transition === 'stop') {
         if (recipe.checkpoint && state.checkpointRef) {
-          await recipe.checkpoint.keep?.(createRecipeContext(state, options.melosDir, recipe), state.checkpointRef);
+          await recipe.checkpoint.keep?.(createRecipeContext(state, melosDir, recipe, mergedRun), state.checkpointRef);
         }
         const summary = finalizeSummary({
           status: 'completed',
-          success: decision.success ?? observation.ok,
-          decision: 'stop',
-          iterations: iteration,
-          cwd,
+          success: decision.kind === 'stop' ? (decision.success ?? observation.ok) : true,
+          decision: decision.kind,
+          iterations: phaseExecution,
+          cwd: executionCwd,
           recipePath: options.recipePath,
           startedAt,
           summary: decision.summary ?? observation.summary,
@@ -1134,12 +1447,12 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         const summarized = await attachFinalReport({
           summary,
           recipe,
-          cwd,
+          cwd: executionCwd,
           baseCwd,
-          melosDir: options.melosDir,
+          melosDir,
           recipePath: options.recipePath,
           commitRange: buildFinalReportCommitRange(reportCommitRange),
-          iteration,
+          iteration: phaseExecution,
           logger,
           state,
           reason: decision.reason,
@@ -1149,12 +1462,17 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         });
         logger.emit({
           type: summarized.success ? 'run_completed' : 'run_failed',
-          iteration,
+          iteration: phaseExecution,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
         });
         return summarized;
       }
+
+      state = {
+        ...state,
+        currentPhase: nextPhase ?? phaseName,
+      };
     }
 
     const summary = finalizeSummary({
@@ -1162,7 +1480,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
       success: false,
       decision: 'failed',
       iterations: maxIterations,
-      cwd,
+      cwd: state.cwd,
       recipePath: options.recipePath,
       startedAt,
       summary: `max iterations reached (${maxIterations})`,
@@ -1171,9 +1489,9 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
     const summarized = await attachFinalReport({
       summary,
       recipe,
-      cwd,
+      cwd: state.cwd,
       baseCwd,
-      melosDir: options.melosDir,
+      melosDir,
       recipePath: options.recipePath,
       commitRange: buildFinalReportCommitRange(reportCommitRange),
       iteration: maxIterations,
@@ -1189,12 +1507,10 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
     });
     return summarized;
   } finally {
-    if ('shutdown' in engine && typeof engine.shutdown === 'function') {
-      await engine.shutdown();
+    for (const engine of engines) {
+      if ('shutdown' in engine && typeof engine.shutdown === 'function') {
+        await engine.shutdown();
+      }
     }
   }
-}
-
-export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary> {
-  return runRecipe(options);
 }
