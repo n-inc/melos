@@ -266,6 +266,7 @@ function buildLimits(config: RecipeConfig): RecipeDefinition['limits'] {
   const hasLoopCondition = Boolean(
     (config.check && config.check.length > 0)
     || (config.pass && config.pass.length > 0)
+    || config.review
     || config.until
     || config.plateau
   );
