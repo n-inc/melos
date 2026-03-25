@@ -364,7 +364,7 @@ describe('exec runner', () => {
         cwd,
         model: 'opus',
         effort: 'medium',
-        printMode: true,
+        printMode: false,
         skipPermissions: false,
         permissionMode: 'dontAsk',
         suppressTerminalOutput: true,

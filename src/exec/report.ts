@@ -381,7 +381,7 @@ function buildReportEngineOptions(cwd: string): ClaudeEngineOptions {
     model: REPORT_RUNTIME_MODEL,
     effort: REPORT_EFFORT,
     timeout: REPORT_TIMEOUT_MS,
-    printMode: true,
+    printMode: false,
     skipPermissions: false,
     permissionMode: 'dontAsk',
     appendSystemPrompt: buildReportSystemPrompt(),
