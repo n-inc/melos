@@ -76,4 +76,39 @@ describe('ClaudeEngine', () => {
     expect(result.success).toBe(true);
     expect(readArgs()).toContain('--dangerously-skip-permissions');
   });
+
+  it('extracts structured output when print mode uses json output', async () => {
+    let capturedArgs: string[] = [];
+    spawnMock.mockImplementation((...spawnArgs: unknown[]) => {
+      capturedArgs = Array.isArray(spawnArgs[1]) ? [...spawnArgs[1] as string[]] : [];
+      const child = new EventEmitter() as EventEmitter & {
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+        pid: number;
+        kill: () => void;
+      };
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.pid = 12345;
+      child.kill = () => undefined;
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from(JSON.stringify([
+          { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'StructuredOutput', input: { pong: true } }] } },
+          { type: 'result', structured_output: { pong: true }, result: '' },
+        ])));
+        child.emit('close', 0);
+      });
+      return child;
+    });
+
+    const engine = new ClaudeEngine();
+    const result = await engine.execute('hello', { printMode: true, outputFormat: 'json' });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('{"pong":true}');
+    expect(capturedArgs).toContain('-p');
+    expect(capturedArgs).toContain('--output-format');
+    expect(capturedArgs).toContain('json');
+    expect(capturedArgs).not.toContain('--verbose');
+  });
 });

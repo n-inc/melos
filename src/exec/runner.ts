@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -6,6 +7,7 @@ import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
+import { applyConfiguredCommit, assertCommitWorkspaceClean, isCommitEnabled } from './commit.js';
 import { buildIterationHandoff, resolveHandoffFingerprint, selectHandoffHistorySection, writeIterationHandoff } from './handoff.js';
 import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
 import {
@@ -225,6 +227,10 @@ async function attachFinalReport(input: {
   baseCwd: string;
   melosDir: string;
   recipePath?: string;
+  commitRange?: {
+    baseRef: string;
+    headRef: string;
+  };
   iteration: number;
   logger: RecipeLog;
   state: RunnerState;
@@ -242,6 +248,7 @@ async function attachFinalReport(input: {
     cwd: input.cwd,
     melosDir: input.melosDir,
     recipePath: input.recipePath,
+    commitRange: input.commitRange,
     handoffFingerprint: input.state.handoffFingerprint,
     lastHandoffPath: input.state.lastHandoffPath,
     iterations: input.summary.iterations,
@@ -413,7 +420,7 @@ function buildAskResolverPrompt(input: {
 }): string {
   return defaultPromptRenderer(
     [
-      'You are resolving a blocking question for melos exec.',
+      'You are resolving a blocking question for melos run.',
       'Return strict JSON only.',
       'Use this exact shape:',
       '{"resolved":true|false,"answer":"...","rationale":"..."}',
@@ -469,11 +476,14 @@ async function resolveAskWithAgent(input: {
     buildEngineOptions({
       recipe: input.recipe,
       cwd: input.cwd,
-      state: input.state,
+      state: {
+        ...input.state,
+        // Keep the main execution thread isolated from the auxiliary ask resolver turn.
+        engineThreadId: undefined,
+      },
       ...traceCallbacks,
     })
   );
-  input.state.engineThreadId = readActiveThreadId(input.engine) ?? input.state.engineThreadId;
   if (!result.success) {
     return null;
   }
@@ -539,7 +549,7 @@ async function resolveAskDecision(input: {
   }
 
   input.logger.emit({
-    type: 'exec_asked',
+    type: 'run_asked',
     iteration: input.state.iteration,
     agent: 'system',
     payload: {
@@ -580,6 +590,32 @@ function readActiveThreadId(engine: Engine): string | undefined {
     return typeof threadId === 'string' && threadId.length > 0 ? threadId : undefined;
   }
   return undefined;
+}
+
+function readHeadRef(cwd: string): string | undefined {
+  try {
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return ref.length > 0 ? ref : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildFinalReportCommitRange(range: {
+  baseRef?: string;
+  headRef?: string;
+} | null): { baseRef: string; headRef: string } | undefined {
+  if (!range?.baseRef || !range.headRef || range.baseRef === range.headRef) {
+    return undefined;
+  }
+  return {
+    baseRef: range.baseRef,
+    headRef: range.headRef,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -628,7 +664,52 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
   };
 
   const engine = createRuntimeEngine(recipe.run.engine, recipe.run.model);
+  const reportCommitRange = isCommitEnabled(recipe.commit)
+    ? {
+      baseRef: readHeadRef(cwd),
+      headRef: undefined as string | undefined,
+    }
+    : null;
   try {
+    if (isCommitEnabled(recipe.commit)) {
+      try {
+        assertCommitWorkspaceClean(cwd);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const summary = finalizeSummary({
+          status: 'failed',
+          success: false,
+          decision: 'failed',
+          iterations: 0,
+          cwd,
+          recipePath: options.recipePath,
+          startedAt,
+          summary: 'auto-commit requires a clean git worktree',
+          reason,
+        });
+        const summarized = await attachFinalReport({
+          summary,
+          recipe,
+          cwd,
+          baseCwd,
+          melosDir: options.melosDir,
+          recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
+          iteration: 0,
+          logger,
+          state,
+          reason,
+        });
+        logger.emit({
+          type: 'run_failed',
+          iteration: 0,
+          agent: 'system',
+          payload: summarized as unknown as Record<string, unknown>,
+        });
+        return summarized;
+      }
+    }
+
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       if (deadline !== null && Date.now() > deadline) {
         const summary = finalizeSummary({
@@ -648,12 +729,13 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration: iteration - 1,
           logger,
           state,
         });
         logger.emit({
-          type: 'exec_failed',
+          type: 'run_failed',
           iteration: iteration - 1,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
@@ -794,6 +876,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration,
           logger,
           state,
@@ -801,7 +884,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           trace,
         });
         logger.emit({
-          type: 'exec_failed',
+          type: 'run_failed',
           iteration,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
@@ -891,6 +974,71 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         lastHandoffPath: handoffPath,
       };
 
+      if (recipe.commit) {
+        try {
+          const committed = await applyConfiguredCommit({
+            config: recipe.commit,
+            baseContext: createRecipeContext(state, options.melosDir, recipe),
+            decision,
+            observation,
+            assistantText: engineResult.output,
+          });
+          if (committed) {
+            if (reportCommitRange) {
+              reportCommitRange.headRef = committed.ref;
+            }
+            logger.emit({
+              type: 'commit_created',
+              iteration,
+              agent: 'system',
+              payload: {
+                ref: committed.ref,
+                message: committed.message,
+                changedFiles: committed.changedFiles,
+                when: recipe.commit.when ?? 'never',
+              },
+            });
+          }
+        } catch (error) {
+          const summary = finalizeSummary({
+            status: 'failed',
+            success: false,
+            decision: 'failed',
+            iterations: iteration,
+            cwd,
+            recipePath: options.recipePath,
+            startedAt,
+            summary: 'failed to create git commit',
+            reason: error instanceof Error ? error.message : String(error),
+            output: engineResult.output,
+            observation,
+          });
+          const summarized = await attachFinalReport({
+            summary,
+            recipe,
+            cwd,
+            baseCwd,
+            melosDir: options.melosDir,
+            recipePath: options.recipePath,
+            commitRange: buildFinalReportCommitRange(reportCommitRange),
+            iteration,
+            logger,
+            state,
+            reason: error instanceof Error ? error.message : String(error),
+            output: engineResult.output,
+            observation,
+            trace,
+          });
+          logger.emit({
+            type: 'run_failed',
+            iteration,
+            agent: 'system',
+            payload: summarized as unknown as Record<string, unknown>,
+          });
+          return summarized;
+        }
+      }
+
       if (decision.kind === 'rollback') {
         if (!recipe.checkpoint || !state.checkpointRef) {
           const summary = finalizeSummary({
@@ -913,6 +1061,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             baseCwd,
             melosDir: options.melosDir,
             recipePath: options.recipePath,
+            commitRange: buildFinalReportCommitRange(reportCommitRange),
             iteration,
             logger,
             state,
@@ -922,7 +1071,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             trace,
           });
           logger.emit({
-            type: 'exec_failed',
+            type: 'run_failed',
             iteration,
             agent: 'system',
             payload: summarized as unknown as Record<string, unknown>,
@@ -968,6 +1117,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration,
           logger,
           state,
@@ -977,7 +1127,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           trace,
         });
         logger.emit({
-          type: 'exec_failed',
+          type: 'run_failed',
           iteration,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
@@ -1009,6 +1159,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration,
           logger,
           state,
@@ -1018,7 +1169,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           trace,
         });
         logger.emit({
-          type: summarized.success ? 'exec_completed' : 'exec_failed',
+          type: summarized.success ? 'run_completed' : 'run_failed',
           iteration,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
@@ -1045,13 +1196,14 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
       baseCwd,
       melosDir: options.melosDir,
       recipePath: options.recipePath,
+      commitRange: buildFinalReportCommitRange(reportCommitRange),
       iteration: maxIterations,
       logger,
       state,
       observation: state.lastObservation ?? undefined,
     });
     logger.emit({
-      type: 'exec_failed',
+      type: 'run_failed',
       iteration: maxIterations,
       agent: 'system',
       payload: summarized as unknown as Record<string, unknown>,

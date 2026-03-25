@@ -1,13 +1,13 @@
-import { buildExecCommandOptions, createProgram } from '../../cli.js';
+import { buildRunCommandOptions, createProgram } from '../../cli.js';
 import { CODEX_LATEST_ALIAS } from '../../models/registry.js';
 
-describe('cli exec command', () => {
+describe('cli run command', () => {
   it('registers route/prompt execution options', () => {
     const program = createProgram();
-    const execCommand = program.commands.find((command) => command.name() === 'exec');
-    expect(execCommand).toBeDefined();
+    const runCommand = program.commands.find((command) => command.name() === 'run');
+    expect(runCommand).toBeDefined();
 
-    const options = new Set(execCommand?.options.map((option) => option.long));
+    const options = new Set(runCommand?.options.map((option) => option.long));
     expect(options.has('--route')).toBe(true);
     expect(options.has('--prompt')).toBe(true);
     expect(options.has('--output-format')).toBe(true);
@@ -20,13 +20,13 @@ describe('cli exec command', () => {
 
   it('limits output format choices', () => {
     const program = createProgram();
-    const execCommand = program.commands.find((command) => command.name() === 'exec');
-    const outputFormatOption = execCommand?.options.find((option) => option.long === '--output-format');
+    const runCommand = program.commands.find((command) => command.name() === 'run');
+    const outputFormatOption = runCommand?.options.find((option) => option.long === '--output-format');
     expect(outputFormatOption?.argChoices).toEqual(['text', 'json', 'stream-json']);
   });
 
-  it('maps --no-ask to exec noAsk', () => {
-    expect(buildExecCommandOptions({
+  it('maps --no-ask to run noAsk', () => {
+    expect(buildRunCommandOptions({
       prompt: 'hello',
       model: 'codex-latest',
       outputFormat: 'text',
@@ -37,8 +37,8 @@ describe('cli exec command', () => {
     }));
   });
 
-  it('maps --route to exec route', () => {
-    expect(buildExecCommandOptions({
+  it('maps --route to run route', () => {
+    expect(buildRunCommandOptions({
       route: '/tmp/sample.ts',
       model: 'codex-latest',
       outputFormat: 'text',
@@ -47,10 +47,10 @@ describe('cli exec command', () => {
     }));
   });
 
-  it('defaults exec --model to codex-latest', () => {
+  it('defaults run --model to codex-latest', () => {
     const program = createProgram();
-    const execCommand = program.commands.find((command) => command.name() === 'exec');
-    const modelOption = execCommand?.options.find((option) => option.long === '--model');
+    const runCommand = program.commands.find((command) => command.name() === 'run');
+    const modelOption = runCommand?.options.find((option) => option.long === '--model');
 
     expect(modelOption?.defaultValue).toBe(CODEX_LATEST_ALIAS);
   });

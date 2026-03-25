@@ -19,7 +19,7 @@ pre-push:
         for file in {push_files}; do
           file="$(printf '%s' "$file" | tr -d '\r\n')"
           case "$file" in
-            TASK.json|*/TASK.json|PROGRESS.md|*/PROGRESS.md|HANDOFF.md|*/HANDOFF.md|WORK_REPORT.json|*/WORK_REPORT.json|.smoke-test/*)
+            PROGRESS.md|*/PROGRESS.md|HANDOFF.md|*/HANDOFF.md|WORK_REPORT.json|*/WORK_REPORT.json|.smoke-test/*)
               echo "Error: Session files must not be pushed: $file"
               exit 1
               ;;

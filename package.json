@@ -1,7 +1,7 @@
 {
   "name": "@n-inc/melos",
   "version": "0.11.0",
-  "description": "Autonomous agent loop system",
+  "description": "Route runner for agentic execution loops",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -21,10 +21,7 @@
     "hooks:install": "npx --yes lefthook install",
     "setup:agent-workflow": "npm run bootstrap:skills && npm run hooks:install",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "test:tui": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/ui/__tests__/tui.test.ts src/ui/__tests__/tui-contract.test.ts src/ui/__tests__/tui-runtime-screen.test.ts src/ui/__tests__/tui-views.test.ts src/ui/__tests__/tui-keymap.test.ts --runInBand",
-    "test:tui:visual": "node --experimental-vm-modules node_modules/jest/bin/jest.js src/ui/__tests__/tui-visual.test.ts --runInBand",
-    "build": "tsc",
-    "preflight:task": "node scripts/preflight-task-format.mjs"
+    "build": "tsc"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"

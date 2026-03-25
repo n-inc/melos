@@ -61,9 +61,11 @@ describe('exec report', () => {
     writeFileSync(join(cwd, 'staged-only.txt'), 'content\n', 'utf-8');
     execSync('git add staged-only.txt', { cwd, stdio: 'ignore' });
 
-    const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt) => {
+    const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt, options) => {
       expect(prompt).toContain('"changedFiles"');
       expect(prompt).toContain('staged-only.txt');
+      expect(options?.effort).toBe('medium');
+      expect(options?.tools).toBeUndefined();
       return {
         success: true,
         output: JSON.stringify({

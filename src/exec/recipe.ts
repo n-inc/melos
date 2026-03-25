@@ -163,6 +163,23 @@ export interface RecipeReportConfig {
   stdout?: boolean;
 }
 
+export interface CommitConfig {
+  when?: 'never' | 'stop' | 'accepted-iteration';
+  message?: string | ((ctx: {
+    cwd: string;
+    melosDir: string;
+    recipePath?: string;
+    state: RunnerState;
+    previousObservation: Observation | null;
+    resolvedQuestions?: ResolvedQuestion[];
+    runConfig?: RecipeRunConfig;
+    decision: Decision;
+    observation: Observation;
+    assistantText: string;
+    changedFiles: string[];
+  }) => MaybePromise<string>);
+}
+
 export interface FinalReportCheckEvidence {
   command: string;
   cwd?: string;
@@ -217,7 +234,9 @@ export interface RecipeDefinition {
   evaluate: Evaluator;
   policy: Policy;
   limits?: RecipeLimits;
+  review?: ReviewConfig;
   report?: RecipeReportConfig;
+  commit?: CommitConfig;
   checkpoint?: CheckpointController;
   log?: RecipeLog;
 }
@@ -248,17 +267,23 @@ export interface MeasureConfig {
   }) => MetricExtraction | Record<string, number> | number | Promise<MetricExtraction | Record<string, number> | number>;
 }
 
+export interface ReviewConfig {
+  path?: string;
+}
+
 export interface RecipeConfig {
   task: string | ((ctx: PromptContext) => MaybePromise<string>);
   context?: ContextProvider[];
   run: RecipeRunConfig;
   check?: Array<string | ShellCommandSpec>;
   pass?: string[];
+  review?: ReviewConfig;
   measure?: MeasureConfig;
   until?: ThresholdCondition | ThresholdCondition[];
   plateau?: PlateauCondition;
   limit?: number;
   report?: RecipeReportConfig;
+  commit?: CommitConfig;
   checkpoint?: CheckpointController;
   log?: RecipeLog;
 }

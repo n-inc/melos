@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
 import type { EngineResult } from '../engines/base.js';
@@ -20,20 +20,8 @@ import { defaultPromptRenderer } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
 
 const REPORT_RUNTIME_MODEL = resolveRuntimeModel(CLAUDE_LATEST_ALIAS, CLAUDE_LATEST_ALIAS);
-const REPORT_EFFORT: ClaudeEngineOptions['effort'] = 'max';
-const REPORT_TIMEOUT_MS = 180_000;
-const REPORT_TOOLS = ['Read', 'Grep', 'Glob', 'LS', 'Bash'];
-const REPORT_ALLOWED_TOOLS = [
-  'Read',
-  'Grep',
-  'Glob',
-  'LS',
-  'Bash(git diff:*)',
-  'Bash(git show:*)',
-  'Bash(git log:*)',
-  'Bash(git status:*)',
-];
-const REPORT_DISALLOWED_TOOLS = ['Edit', 'Write', 'MultiEdit'];
+const REPORT_EFFORT: ClaudeEngineOptions['effort'] = 'medium';
+const REPORT_TIMEOUT_MS = 60_000;
 const REPORT_JSON_SCHEMA = JSON.stringify({
   type: 'object',
   additionalProperties: false,
@@ -72,6 +60,10 @@ interface GenerateFinalReportInput {
   cwd: string;
   melosDir: string;
   recipePath?: string;
+  commitRange?: {
+    baseRef: string;
+    headRef: string;
+  };
   handoffFingerprint?: string;
   lastHandoffPath?: string;
   iterations: number;
@@ -235,7 +227,7 @@ function safeExecOutput(command: string, cwd: string): string {
   }
 }
 
-function listChangedFiles(cwd: string): string[] {
+function listWorktreeChangedFiles(cwd: string): string[] {
   const tracked = safeExecOutput('git diff --name-only --', cwd)
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -251,45 +243,58 @@ function listChangedFiles(cwd: string): string[] {
   return Array.from(new Set([...tracked, ...staged, ...untracked]));
 }
 
-function buildDiffStat(cwd: string): string | null {
+function listCommittedRangeFiles(
+  cwd: string,
+  commitRange?: GenerateFinalReportInput['commitRange']
+): string[] {
+  if (!commitRange || commitRange.baseRef === commitRange.headRef) {
+    return [];
+  }
+  return safeExecOutput(`git diff --name-only ${commitRange.baseRef}..${commitRange.headRef} --`, cwd)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function listChangedFiles(input: GenerateFinalReportInput): string[] {
+  return Array.from(new Set([
+    ...listCommittedRangeFiles(input.cwd, input.commitRange),
+    ...listWorktreeChangedFiles(input.cwd),
+  ]));
+}
+
+function buildWorktreeDiffStat(cwd: string): string | null {
   const output = safeExecOutput('git diff --stat --', cwd);
   return output.length > 0 ? output : null;
 }
 
-function summarizeEventRecord(event: Record<string, unknown>): Record<string, unknown> {
-  const payload = isRecord(event.payload) ? event.payload : {};
-  return {
-    type: typeof event.type === 'string' ? event.type : 'unknown',
-    iteration: typeof event.iteration === 'number' ? event.iteration : undefined,
-    agent: typeof event.agent === 'string' ? event.agent : undefined,
-    payload: {
-      kind: typeof payload.kind === 'string' ? payload.kind : undefined,
-      summary: typeof payload.summary === 'string' ? payload.summary : undefined,
-      reason: typeof payload.reason === 'string' ? payload.reason : undefined,
-      warning: typeof payload.warning === 'string' ? payload.warning : undefined,
-      path: typeof payload.path === 'string' ? payload.path : undefined,
-      success: typeof payload.success === 'boolean' ? payload.success : undefined,
-    },
-  };
+function buildCommittedRangeDiffStat(
+  cwd: string,
+  commitRange?: GenerateFinalReportInput['commitRange']
+): string | null {
+  if (!commitRange || commitRange.baseRef === commitRange.headRef) {
+    return null;
+  }
+  const output = safeExecOutput(`git diff --stat ${commitRange.baseRef}..${commitRange.headRef} --`, cwd);
+  return output.length > 0 ? output : null;
 }
 
-function readRecentEventsSummary(melosDir: string, limit: number = 20): Record<string, unknown>[] {
-  const eventsPath = join(melosDir, 'events.jsonl');
-  if (!existsSync(eventsPath)) {
-    return [];
+function buildDiffStat(input: GenerateFinalReportInput): string | null {
+  const sections: string[] = [];
+  const committed = buildCommittedRangeDiffStat(input.cwd, input.commitRange);
+  if (committed) {
+    sections.push([
+      `Committed changes (${input.commitRange?.baseRef.slice(0, 7)}..${input.commitRange?.headRef.slice(0, 7)}):`,
+      committed,
+    ].join('\n'));
   }
-  const lines = readFileSync(eventsPath, 'utf-8')
-    .trim()
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0);
-  return lines.slice(-limit).flatMap((line) => {
-    try {
-      const parsed = JSON.parse(line);
-      return isRecord(parsed) ? [summarizeEventRecord(parsed)] : [];
-    } catch {
-      return [];
-    }
-  });
+
+  const worktree = buildWorktreeDiffStat(input.cwd);
+  if (worktree) {
+    sections.push(['Working tree changes:', worktree].join('\n'));
+  }
+
+  return sections.length > 0 ? sections.join('\n\n') : null;
 }
 
 function compactHandoffEntry(entry: IterationHandoff): Record<string, unknown> {
@@ -318,8 +323,8 @@ function buildCompactHandoffSummary(entries: IterationHandoff[]): {
   omittedEntries: number;
 } {
   const compact = entries.map(compactHandoffEntry);
-  let selected = compact.slice(-12);
-  while (selected.length > 1 && JSON.stringify(selected, null, 2).length > 48_000) {
+  let selected = compact.slice(-3);
+  while (selected.length > 1 && JSON.stringify(selected, null, 2).length > 12_000) {
     selected = selected.slice(1);
   }
   return {
@@ -334,18 +339,11 @@ function buildCompactHandoffSummary(entries: IterationHandoff[]): {
   };
 }
 
-function buildAvailableArtifacts(input: GenerateFinalReportInput, changedFiles: string[]): Record<string, unknown> {
-  const eventsPath = join(input.melosDir, 'events.jsonl');
-  const handoffDir = input.handoffFingerprint
-    ? join(input.melosDir, 'handoff', `sha256-${input.handoffFingerprint}`)
-    : undefined;
+function buildReportInputs(input: GenerateFinalReportInput, changedFiles: string[]): Record<string, unknown> {
   return {
     cwd: input.cwd,
-    melosDir: input.melosDir,
     recipePath: input.recipePath,
-    eventsPath,
-    handoffDir,
-    lastHandoffPath: input.lastHandoffPath,
+    commitRange: input.commitRange,
     changedFiles,
   };
 }
@@ -355,18 +353,17 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
     ? readHandoffHistory(input.melosDir, input.handoffFingerprint)
     : [];
   const handoffSummary = buildCompactHandoffSummary(handoffEntries);
-  const changedFiles = listChangedFiles(input.cwd);
-  const diffStat = buildDiffStat(input.cwd);
-  const recentEvents = readRecentEventsSummary(input.melosDir);
+  const changedFiles = listChangedFiles(input);
+  const diffStat = buildDiffStat(input);
   const evidence = buildEvidence(input.observation);
 
   return defaultPromptRenderer(
     [
       'Generate the final execution report as strict JSON.',
-      'You are in a read-only reporting phase.',
-      'Start from the compact summaries below.',
-      'If the summaries are insufficient, inspect the listed artifacts with the allowed read-only tools.',
-      'Do not modify files, do not apply edits, and do not run write commands.',
+      'You are in a concise reporting phase.',
+      'Use only the summaries and evidence below.',
+      'Keep the report concise and high-signal.',
+      'Do not do additional investigation.',
       'Return only JSON that matches the provided schema.',
       'Use `userConfirmationNeeded` only for decisions that must be reviewed by the executor before proceeding.',
     ].join('\n'),
@@ -380,10 +377,6 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
           summary: input.summary,
           reason: input.reason,
         }, null, 2),
-      },
-      {
-        title: 'final assistant output',
-        content: input.output?.trim() || '(empty assistant output)',
       },
       ...(input.observation
         ? [{
@@ -413,12 +406,6 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
         title: 'handoff summary',
         content: handoffSummary.content,
       },
-      ...(recentEvents.length > 0
-        ? [{
-          title: 'recent events summary',
-          content: JSON.stringify(recentEvents, null, 2),
-        }]
-        : []),
       ...(diffStat
         ? [{
           title: 'git diff stat',
@@ -426,27 +413,18 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
         }]
         : []),
       {
-        title: 'available artifacts',
-        content: JSON.stringify(buildAvailableArtifacts(input, changedFiles), null, 2),
+        title: 'report inputs',
+        content: JSON.stringify(buildReportInputs(input, changedFiles), null, 2),
       },
-      ...(input.trace && input.trace.length > 0
-        ? [{
-          title: 'latest trace excerpt',
-          content: JSON.stringify(input.trace.slice(-20), null, 2),
-        }]
-        : []),
     ]
   );
 }
 
 function buildReportSystemPrompt(): string {
   return [
-    'You are generating a final report for melos exec.',
+    'You are generating a final report for melos run.',
     'This is a one-shot Claude Opus reporting pass.',
-    'Treat the workspace as strictly read-only.',
-    'Prefer Read, Grep, Glob, and LS for inspection.',
-    'Use Bash only for read-only git commands when necessary.',
-    'Never run commands that modify files, git state, or external systems.',
+    'Do not expand scope beyond the provided execution evidence.',
     'Never fabricate changes, rationale, or confirmations.',
   ].join('\n');
 }
@@ -458,14 +436,11 @@ function buildReportEngineOptions(cwd: string): ClaudeEngineOptions {
     effort: REPORT_EFFORT,
     timeout: REPORT_TIMEOUT_MS,
     printMode: true,
+    outputFormat: 'json',
     skipPermissions: false,
     permissionMode: 'dontAsk',
-    tools: REPORT_TOOLS,
-    allowedTools: REPORT_ALLOWED_TOOLS,
-    disallowedTools: REPORT_DISALLOWED_TOOLS,
     appendSystemPrompt: buildReportSystemPrompt(),
     jsonSchema: REPORT_JSON_SCHEMA,
-    addDirectories: [cwd],
     suppressTerminalOutput: true,
   };
 }

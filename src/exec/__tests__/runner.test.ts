@@ -257,6 +257,96 @@ describe('exec runner', () => {
     shutdownSpy.mockRestore();
   });
 
+  it('compiles review routes into a built-in review loop contract and stops when blockingCount reaches zero', async () => {
+    const cwd = createGitRepo('melos-exec-review-loop-');
+    const prompts: string[] = [];
+    const engine = new ScriptedEngine([
+      async () => {
+        writeFileSync(join(cwd, '.melos', 'review-result.json'), JSON.stringify({
+          summary: 'found one valid P2',
+          blockingCount: 1,
+        }), 'utf-8');
+        return { success: true, output: 'Found one valid P2 and fixed it.', exitCode: 0 };
+      },
+      async () => {
+        writeFileSync(join(cwd, '.melos', 'review-result.json'), JSON.stringify({
+          summary: 'no valid blocking findings remain',
+          blockingCount: 0,
+        }), 'utf-8');
+        return { success: true, output: 'No valid blocking findings remain.', exitCode: 0 };
+      },
+    ]);
+    const executeSpy = jest.spyOn(engine, 'execute').mockImplementation(async (prompt, options) => {
+      prompts.push(prompt);
+      return await ScriptedEngine.prototype.execute.call(engine, prompt, options);
+    });
+
+    const route = createRoute({
+      task: 'Review the diff and fix valid P1/P2 findings.',
+      context: [],
+      run: { engine, cwd },
+      review: {},
+      limit: 3,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe: route,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+    expect(prompts[0]).toContain('Review Loop Contract');
+    expect(prompts[0]).toContain('.melos/review-result.json');
+    expect(prompts[0]).toContain('blockingCount');
+    expect(prompts[0]).not.toContain('summary: "short summary"');
+
+    executeSpy.mockRestore();
+  });
+
+  it('keeps review routes iterative even when limit is omitted', async () => {
+    const cwd = createGitRepo('melos-exec-review-default-limit-');
+    let executions = 0;
+    const engine = new ScriptedEngine([
+      async () => {
+        executions += 1;
+        writeFileSync(join(cwd, '.melos', 'review-result.json'), JSON.stringify({
+          summary: 'one blocking finding remains',
+          blockingCount: 1,
+        }), 'utf-8');
+        return { success: true, output: 'Fixed one issue, one remains.', exitCode: 0 };
+      },
+      async () => {
+        executions += 1;
+        writeFileSync(join(cwd, '.melos', 'review-result.json'), JSON.stringify({
+          summary: 'no blocking findings remain',
+          blockingCount: 0,
+        }), 'utf-8');
+        return { success: true, output: 'No blocking findings remain.', exitCode: 0 };
+      },
+    ]);
+
+    const route = createRoute({
+      task: 'Review the diff and fix valid P1/P2 findings.',
+      context: [],
+      run: { engine, cwd },
+      review: {},
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe: route,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+    expect(executions).toBe(2);
+  });
+
   it('generates and saves a final report when report is configured', async () => {
     const cwd = createGitRepo('melos-exec-report-');
     const engine = new ScriptedEngine([
@@ -268,33 +358,20 @@ describe('exec runner', () => {
     ]);
     const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt, options) => {
       expect(prompt).toContain('Generate the final execution report as strict JSON.');
-      expect(prompt).toContain('"eventsPath"');
       expect(prompt).toContain('"changedFiles"');
       expect(prompt).toContain('handoff summary');
       expect(options).toMatchObject({
         cwd,
         model: 'opus',
-        effort: 'max',
+        effort: 'medium',
         printMode: true,
+        outputFormat: 'json',
         skipPermissions: false,
         permissionMode: 'dontAsk',
-        tools: ['Read', 'Grep', 'Glob', 'LS', 'Bash'],
-        disallowedTools: ['Edit', 'Write', 'MultiEdit'],
-        addDirectories: [cwd],
         suppressTerminalOutput: true,
       });
-      expect(options?.allowedTools).toEqual(expect.arrayContaining([
-        'Read',
-        'Grep',
-        'Glob',
-        'LS',
-        'Bash(git diff:*)',
-        'Bash(git show:*)',
-        'Bash(git log:*)',
-        'Bash(git status:*)',
-      ]));
       expect(typeof options?.appendSystemPrompt).toBe('string');
-      expect(options?.appendSystemPrompt).toContain('read-only');
+      expect(options?.appendSystemPrompt).toContain('provided execution evidence');
       expect(typeof options?.jsonSchema).toBe('string');
       return {
         success: true,
@@ -508,6 +585,278 @@ describe('exec runner', () => {
     expect(JSON.parse(readFileSync(join(cwd, 'score.json'), 'utf-8')).score).toBeCloseTo(0.8);
   });
 
+  it('creates a single git commit on stop when configured', async () => {
+    const cwd = createGitRepo('melos-exec-commit-stop-');
+    writeFileSync(join(cwd, '.gitignore'), '.melos/\n', 'utf-8');
+    writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed commit-stop fixture"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'pass\n', 'utf-8');
+        return { success: true, output: 'fixed for stop commit', exitCode: 0 };
+      },
+    ]);
+
+    const recipe = createRoute({
+      task: 'Fix the failing check and stop once it passes',
+      context: [],
+      run: { engine, cwd },
+      check: ['node check.js'],
+      commit: { when: 'stop' },
+      limit: 2,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    const history = execSync('git log --format=%s -2', { cwd, encoding: 'utf-8' })
+      .trim()
+      .split(/\r?\n/);
+    const eventTypes = readFileSync(join(cwd, '.melos', 'events.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line).type);
+    const nonMelosStatus = execSync("git status --short -- . ':(exclude).melos'", { cwd, encoding: 'utf-8' }).trim();
+
+    expect(summary.success).toBe(true);
+    expect(nonMelosStatus).toBe('');
+    expect(history[0]).toContain('melos: finalize iteration 1');
+    expect(eventTypes).toContain('commit_created');
+  });
+
+  it('keeps committed file evidence available to the final report after auto-commit', async () => {
+    const cwd = createGitRepo('melos-exec-commit-report-');
+    writeFileSync(join(cwd, '.gitignore'), '.melos/\n', 'utf-8');
+    writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed commit-report fixture"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'pass\n', 'utf-8');
+        return { success: true, output: 'fixed for stop commit with report', exitCode: 0 };
+      },
+    ]);
+    const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt) => {
+      expect(prompt).toContain('"changedFiles"');
+      expect(prompt).toContain('status.txt');
+      expect(prompt).toContain('Committed changes');
+      return {
+        success: true,
+        output: JSON.stringify({
+          summary: 'Fixed the failing check.',
+          changes: ['Updated status.txt to pass the check.'],
+          rationale: ['The report preserved committed change evidence.'],
+          finalState: 'The check now passes.',
+          remainingIssues: [],
+          userConfirmationNeeded: [],
+        }),
+        exitCode: 0,
+      };
+    });
+
+    const recipe = createRoute({
+      task: 'Fix the failing check and stop once it passes',
+      context: [],
+      run: { engine, cwd, model: 'codex-latest' },
+      check: ['node check.js'],
+      commit: { when: 'stop' },
+      report: { stdout: false },
+      limit: 2,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.report).toMatchObject({
+      summary: 'Fixed the failing check.',
+      finalState: 'The check now passes.',
+    });
+
+    executeSpy.mockRestore();
+  });
+
+  it('fails before running when auto-commit is configured on a dirty worktree', async () => {
+    const cwd = createGitRepo('melos-exec-commit-dirty-start-');
+    writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed dirty-start fixture"', { cwd, stdio: 'ignore' });
+    writeFileSync(join(cwd, 'notes.txt'), 'pre-existing user change\n', 'utf-8');
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'pass\n', 'utf-8');
+        return { success: true, output: 'fixed for stop commit', exitCode: 0 };
+      },
+    ]);
+    const executeSpy = jest.spyOn(engine, 'execute');
+
+    const recipe = createRoute({
+      task: 'Fix the failing check and stop once it passes',
+      context: [],
+      run: { engine, cwd },
+      check: ['node check.js'],
+      commit: { when: 'stop' },
+      limit: 2,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    const history = execSync('git log --format=%s', { cwd, encoding: 'utf-8' })
+      .trim()
+      .split(/\r?\n/);
+
+    expect(summary.success).toBe(false);
+    expect(summary.iterations).toBe(0);
+    expect(summary.summary).toContain('auto-commit requires a clean git worktree');
+    expect(summary.reason).toContain('notes.txt');
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(readFileSync(join(cwd, 'status.txt'), 'utf-8')).toBe('fail\n');
+    expect(history).toHaveLength(1);
+
+    executeSpy.mockRestore();
+  });
+
+  it('stages repository-wide changes before auto-commit even when run.cwd points to a subdirectory', async () => {
+    const cwd = createGitRepo('melos-exec-commit-subdir-');
+    mkdirSync(join(cwd, 'app'));
+    mkdirSync(join(cwd, 'docs'));
+    writeFileSync(join(cwd, '.gitignore'), '.melos/\n', 'utf-8');
+    writeFileSync(join(cwd, 'app', 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'app', 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    writeFileSync(join(cwd, 'docs', 'notes.txt'), 'before\n', 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed subdir auto-commit fixture"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        const runCwd = String(options?.cwd);
+        writeFileSync(join(runCwd, 'status.txt'), 'pass\n', 'utf-8');
+        writeFileSync(join(runCwd, '..', 'docs', 'notes.txt'), 'after\n', 'utf-8');
+        return { success: true, output: 'fixed app and docs changes', exitCode: 0 };
+      },
+    ]);
+
+    const recipe = createRoute({
+      task: 'Fix the app check and commit all accepted changes',
+      context: [],
+      run: { engine, cwd: 'app' },
+      check: ['node check.js'],
+      commit: { when: 'stop' },
+      limit: 2,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    const changedInHead = execSync('git show --pretty=format: --name-only HEAD', { cwd, encoding: 'utf-8' })
+      .trim()
+      .split(/\r?\n/)
+      .filter((line) => line.length > 0);
+    const nonMelosStatus = execSync("git status --short -- . ':(exclude).melos'", { cwd, encoding: 'utf-8' }).trim();
+
+    expect(summary.success).toBe(true);
+    expect(changedInHead).toEqual(expect.arrayContaining([
+      'app/status.txt',
+      'docs/notes.txt',
+    ]));
+    expect(nonMelosStatus).toBe('');
+  });
+
+  it('commits accepted iterations and keeps rollback available for later iterations', async () => {
+    const cwd = createGitRepo('melos-exec-commit-accepted-');
+    writeFileSync(join(cwd, 'score.json'), JSON.stringify({ score: 0.1 }), 'utf-8');
+    execSync('git add score.json', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed accepted-iteration metric"', { cwd, stdio: 'ignore' });
+
+    const scores = [0.5, 0.8, 0.6, 0.8];
+    const engine = new ScriptedEngine(scores.map((score) => async (options) => {
+      writeFileSync(join(String(options?.cwd), 'score.json'), JSON.stringify({ score }), 'utf-8');
+      return { success: true, output: `score=${score}`, exitCode: 0 };
+    }));
+
+    const recipe = createRuntimeRoute({
+      prompt: 'Improve the metric and keep accepted iterations',
+      context: [],
+      run: { engine, cwd },
+      evaluate: metricExtractor({
+        command: `node -e "process.stdout.write(require('fs').readFileSync('score.json', 'utf8'))"`,
+        extract: ({ parsedJson }) => ({
+          ok: false,
+          metrics: {
+            score: Number((parsedJson as { score?: number } | undefined)?.score ?? Number.NaN),
+          },
+        }),
+      }),
+      policy: plateauMetric('score', { patience: 2, rollbackOnRegression: true }),
+      limits: { maxIterations: 4, patience: 2 },
+      checkpoint: gitCheckpoint(),
+      commit: { when: 'accepted-iteration' },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    const history = execSync('git log --format=%s', { cwd, encoding: 'utf-8' })
+      .trim()
+      .split(/\r?\n/);
+    const eventTypes = readFileSync(join(cwd, '.melos', 'events.jsonl'), 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line).type);
+
+    expect(summary.success).toBe(false);
+    expect(JSON.parse(readFileSync(join(cwd, 'score.json'), 'utf-8')).score).toBeCloseTo(0.8);
+    expect(history[0]).toContain('melos: keep iteration 2');
+    expect(history[1]).toContain('melos: keep iteration 1');
+    expect(history).toHaveLength(3);
+    expect(eventTypes.filter((type) => type === 'commit_created')).toHaveLength(2);
+    expect(eventTypes).toContain('rollback_applied');
+  });
+
   it('runs simple prompt mode as a one-iteration recipe', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-simple-'));
     const recipe = createSimpleRoute({
@@ -627,6 +976,68 @@ describe('exec runner', () => {
     expect(prompts[1]).toContain('Where should the API token come from?');
     expect(prompts[2]).toContain('resolved questions');
     expect(prompts[2]).toContain('Use the API token from .env.local.');
+  });
+
+  it('keeps the main codex thread isolated from agent-based ask resolution', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-ask-thread-isolation-'));
+    const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute')
+      .mockResolvedValueOnce({ success: true, output: 'initial draft', exitCode: 0 })
+      .mockResolvedValueOnce({
+        success: true,
+        output: JSON.stringify({
+          resolved: true,
+          answer: 'Use the API token from .env.local.',
+          rationale: 'repo context already provides the answer',
+        }),
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({ success: true, output: 'final draft', exitCode: 0 });
+    const threadSpy = jest.spyOn(AppServerEngine.prototype, 'getActiveThreadId')
+      .mockReturnValueOnce('thr_main')
+      .mockReturnValueOnce('thr_resolver')
+      .mockReturnValueOnce('thr_main');
+    const shutdownSpy = jest.spyOn(AppServerEngine.prototype, 'shutdown').mockResolvedValue();
+
+    const recipe = createRuntimeRoute({
+      prompt: 'Ship the fix',
+      context: [],
+      run: { engine: 'codex', cwd },
+      evaluate: ({ state }) => {
+        if (state.iteration === 1) {
+          return {
+            ok: false,
+            status: 'fail',
+            summary: 'Need to know where the API token comes from',
+            question: 'Where should the API token come from?',
+          };
+        }
+        return {
+          ok: true,
+          status: 'pass',
+          summary: 'Resolved after follow-up',
+        };
+      },
+      policy: continueUntilPass(),
+      limits: { maxIterations: 3 },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      askMode: 'agent-first',
+    });
+
+    expect(summary.success).toBe(true);
+    expect(executeSpy).toHaveBeenCalledTimes(3);
+    expect(executeSpy.mock.calls[0]?.[1]).not.toHaveProperty('threadId');
+    expect(executeSpy.mock.calls[1]?.[1]).not.toHaveProperty('threadId');
+    expect(executeSpy.mock.calls[2]?.[1]).toMatchObject({ threadId: 'thr_main' });
+
+    executeSpy.mockRestore();
+    threadSpy.mockRestore();
+    shutdownSpy.mockRestore();
   });
 
   it('fails when ask fallback requires a user but stdin is not interactive', async () => {

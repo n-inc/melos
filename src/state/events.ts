@@ -2,28 +2,17 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export type MissionEventType =
-  | 'mission_started' | 'mission_completed' | 'mission_failed'
-  | 'mission_interrupted' | 'mission_resumed'
-  | 'plan_created' | 'plan_updated' | 'task_added' | 'task_status_changed'
-  | 'iteration_started' | 'iteration_completed'
-  | 'manager_started' | 'manager_decision' | 'manager_error'
-  | 'worker_started' | 'worker_checkpoint' | 'worker_finished' | 'worker_partial' | 'worker_error'
-  | 'review_started' | 'review_result'
-  | 'command_executed' | 'file_changed'
-  | 'validation_started' | 'validation_result' | 'warning_emitted'
-  | 'branch_created' | 'branch_merged' | 'branch_abandoned' | 'commit_created'
-  | 'user_steer' | 'user_answer' | 'escalation_created' | 'escalation_answered'
-  | 'heartbeat' | 'error' | 'snapshot_created'
-  | 'exec_started' | 'route_loaded' | 'context_built' | 'engine_finished'
-  | 'evaluation_finished' | 'decision_made' | 'checkpoint_created'
-  | 'rollback_applied' | 'report_generated' | 'exec_asked' | 'exec_completed' | 'exec_failed';
+  | 'run_started' | 'route_loaded' | 'iteration_started' | 'context_built' | 'engine_finished'
+  | 'evaluation_finished' | 'decision_made' | 'checkpoint_created' | 'commit_created'
+  | 'rollback_applied' | 'report_generated' | 'warning_emitted'
+  | 'run_asked' | 'user_answer' | 'run_completed' | 'run_failed';
 
 export interface MissionEventBase {
   seq: number;
   type: MissionEventType;
   timestamp: string;
   iteration: number;
-  agent: 'orchestrator' | 'manager' | 'worker' | 'system' | null;
+  agent: 'system' | null;
 }
 
 export type MissionEvent = MissionEventBase & { payload: Record<string, unknown> };
@@ -55,7 +44,7 @@ export class EventLog {
       type: params.type,
       timestamp: params.timestamp ?? new Date().toISOString(),
       iteration: Math.max(0, Math.floor(params.iteration)),
-      agent: params.agent ?? 'orchestrator',
+      agent: params.agent ?? 'system',
       payload: params.payload ?? {},
     };
 
