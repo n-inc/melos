@@ -1,4 +1,20 @@
-import { renderFinalReportText } from '../report.js';
+import { execSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { jest } from '@jest/globals';
+
+import { ClaudeEngine } from '../../engines/claude.js';
+import { createRoute } from '../recipe.js';
+import { generateFinalReport, renderFinalReportText } from '../report.js';
+
+function createGitRepo(prefix: string): string {
+  const cwd = mkdtempSync(join(tmpdir(), prefix));
+  execSync('git init', { cwd, stdio: 'ignore' });
+  execSync('git config user.email "melos-test@example.com"', { cwd, stdio: 'ignore' });
+  execSync('git config user.name "Melos Test"', { cwd, stdio: 'ignore' });
+  return cwd;
+}
 
 describe('exec report', () => {
   it('renders a generated report for text output', () => {
@@ -33,5 +49,50 @@ describe('exec report', () => {
     }, '/repo/.melos/final-report.json', { degraded: true });
 
     expect(text).toContain('Warning: report was generated from fallback data.');
+  });
+
+  it('includes staged-only files in the report artifact list', async () => {
+    const cwd = createGitRepo('melos-exec-report-staged-');
+    mkdirSync(join(cwd, '.melos'));
+    writeFileSync(join(cwd, 'tracked.txt'), 'base\n', 'utf-8');
+    execSync('git add tracked.txt', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed tracked file"', { cwd, stdio: 'ignore' });
+
+    writeFileSync(join(cwd, 'staged-only.txt'), 'content\n', 'utf-8');
+    execSync('git add staged-only.txt', { cwd, stdio: 'ignore' });
+
+    const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt) => {
+      expect(prompt).toContain('"changedFiles"');
+      expect(prompt).toContain('staged-only.txt');
+      return {
+        success: true,
+        output: JSON.stringify({
+          summary: 'Report summary.',
+          changes: ['Included staged file.'],
+          rationale: ['Needed for final inspection.'],
+          finalState: 'Report generated.',
+          remainingIssues: [],
+          userConfirmationNeeded: [],
+        }),
+        exitCode: 0,
+      };
+    });
+
+    const report = await generateFinalReport({
+      recipe: createRoute({
+        task: 'Summarize the staged change',
+        run: { engine: 'auto' },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      iterations: 1,
+      success: true,
+      decision: 'stop',
+      summary: 'completed',
+      output: 'done',
+    });
+
+    expect(report.degraded).toBe(false);
+    executeSpy.mockRestore();
   });
 });

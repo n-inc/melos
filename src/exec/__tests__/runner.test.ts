@@ -341,6 +341,52 @@ describe('exec runner', () => {
     executeSpy.mockRestore();
   });
 
+  it('keeps a successful run completed when final report persistence fails', async () => {
+    const cwd = createGitRepo('melos-exec-report-write-failure-');
+    const engine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'Implemented the login flow and verified the happy path.',
+        exitCode: 0,
+      }),
+    ]);
+    const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockResolvedValue({
+      success: true,
+      output: JSON.stringify({
+        summary: 'Implemented and verified the login flow.',
+        changes: ['Added login flow handling.', 'Verified the happy path.'],
+        rationale: ['Kept the change focused on the requested scope.'],
+        finalState: 'The login flow now succeeds in the happy path.',
+        remainingIssues: [],
+        userConfirmationNeeded: [],
+      }),
+      exitCode: 0,
+    });
+
+    const recipe = createRoute({
+      task: 'Implement the login flow',
+      context: [],
+      run: { engine, cwd, model: 'codex-latest' },
+      report: { path: '/dev/null/final-report.json', stdout: true },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.status).toBe('completed');
+    expect(summary.report).toBeDefined();
+    expect(summary.reportDegraded).toBe(true);
+    expect(summary.reportWarning).toMatch(/failed to write final report/i);
+    expect(summary.reportPath).toBeUndefined();
+
+    executeSpy.mockRestore();
+  });
+
   it('evaluates check and pass in the same iteration even when checks fail', async () => {
     const cwd = createGitRepo('melos-exec-check-and-pass-');
     writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');

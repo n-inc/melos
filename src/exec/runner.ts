@@ -255,7 +255,16 @@ async function attachFinalReport(input: {
     trace: input.trace ?? input.state.lastTrace,
   });
   const reportPath = resolveReportPath(input.baseCwd, input.recipe.report);
-  writeFinalReport(reportPath, report.report);
+  let persistedReportPath: string | undefined = reportPath;
+  let writeWarning: string | undefined;
+  try {
+    writeFinalReport(reportPath, report.report);
+  } catch (error) {
+    persistedReportPath = undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    writeWarning = `failed to write final report: ${message}`;
+  }
+  const degraded = report.degraded || Boolean(writeWarning);
   input.logger.emit({
     type: 'report_generated',
     iteration: input.iteration,
@@ -263,18 +272,18 @@ async function attachFinalReport(input: {
     payload: {
       path: reportPath,
       summary: report.report.summary,
-      degraded: report.degraded,
+      degraded,
       model: report.model,
-      error: report.error,
+      error: writeWarning ?? report.error,
     },
   });
   return {
     ...input.summary,
     report: report.report,
-    reportPath,
+    reportPath: persistedReportPath,
     reportModel: report.model,
-    reportDegraded: report.degraded,
-    reportWarning: report.error,
+    reportDegraded: degraded,
+    reportWarning: writeWarning ?? report.error,
     reportStdout: input.recipe.report?.stdout !== false,
   };
 }

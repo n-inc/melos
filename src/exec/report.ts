@@ -240,11 +240,15 @@ function listChangedFiles(cwd: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+  const staged = safeExecOutput('git diff --cached --name-only --', cwd)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
   const untracked = safeExecOutput('git ls-files --others --exclude-standard', cwd)
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  return Array.from(new Set([...tracked, ...untracked]));
+  return Array.from(new Set([...tracked, ...staged, ...untracked]));
 }
 
 function buildDiffStat(cwd: string): string | null {
