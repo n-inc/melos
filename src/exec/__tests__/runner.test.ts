@@ -383,6 +383,44 @@ describe('exec runner', () => {
     expect(existsSync(join(cwd, '.melos', 'handoff', `sha256-${fingerprint}`, 'iteration-1.json'))).toBe(true);
   });
 
+  it('resolves relative recipe paths against the run cwd for handoff fingerprinting', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-handoff-relative-path-'));
+    const recipeDir = join(cwd, 'recipes');
+    mkdirSync(recipeDir, { recursive: true });
+    writeFileSync(join(recipeDir, 'sample.ts'), 'export default {};\n', 'utf-8');
+
+    const recipe = createRecipe({
+      prompt: 'Ship the fix',
+      context: [],
+      run: {
+        engine: new ScriptedEngine([
+          async () => ({ success: true, output: 'done', exitCode: 0 }),
+        ]),
+        cwd,
+      },
+      evaluate: () => ({
+        ok: true,
+        status: 'pass',
+        summary: 'Completed',
+      }),
+      policy: continueUntilPass(),
+      limits: { maxIterations: 1 },
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    await runRecipe({
+      recipe,
+      cwd,
+      recipePath: 'recipes/sample.ts',
+      melosDir: join(cwd, '.melos'),
+    });
+
+    const fingerprint = resolveHandoffFingerprint({ recipePath: join(cwd, 'recipes', 'sample.ts') });
+    expect(fingerprint).not.toBeNull();
+    expect(existsSync(join(cwd, '.melos', 'handoff', `sha256-${fingerprint}`, 'iteration-1.json'))).toBe(true);
+    expect(existsSync(join(cwd, '.melos', 'handoff', 'sha256-unknown', 'iteration-1.json'))).toBe(false);
+  });
+
   it('injects handoff history automatically from the second iteration onward', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-handoff-context-'));
     const prompts: string[] = [];

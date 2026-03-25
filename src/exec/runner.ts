@@ -525,8 +525,10 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
     ? Date.now() + recipe.limits.timeoutMs
     : null;
   const handoffFingerprint = resolveHandoffFingerprint({
-    recipePath: options.recipePath,
-    prompt: !options.recipePath && typeof recipe.prompt === 'string' ? recipe.prompt : undefined,
+    recipePath: options.recipePath
+      ? resolve(options.cwd ?? process.cwd(), options.recipePath)
+      : undefined,
+    prompt: typeof recipe.prompt === 'string' ? recipe.prompt : undefined,
     promptSource: typeof recipe.prompt === 'function' ? recipe.prompt.toString() : undefined,
   }) ?? 'unknown';
 
