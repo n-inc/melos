@@ -306,6 +306,47 @@ describe('exec runner', () => {
     executeSpy.mockRestore();
   });
 
+  it('keeps review routes iterative even when limit is omitted', async () => {
+    const cwd = createGitRepo('melos-exec-review-default-limit-');
+    let executions = 0;
+    const engine = new ScriptedEngine([
+      async () => {
+        executions += 1;
+        writeFileSync(join(cwd, '.melos', 'review-result.json'), JSON.stringify({
+          summary: 'one blocking finding remains',
+          blockingCount: 1,
+        }), 'utf-8');
+        return { success: true, output: 'Fixed one issue, one remains.', exitCode: 0 };
+      },
+      async () => {
+        executions += 1;
+        writeFileSync(join(cwd, '.melos', 'review-result.json'), JSON.stringify({
+          summary: 'no blocking findings remain',
+          blockingCount: 0,
+        }), 'utf-8');
+        return { success: true, output: 'No blocking findings remain.', exitCode: 0 };
+      },
+    ]);
+
+    const route = createRoute({
+      task: 'Review the diff and fix valid P1/P2 findings.',
+      context: [],
+      run: { engine, cwd },
+      review: {},
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe: route,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+    expect(executions).toBe(2);
+  });
+
   it('generates and saves a final report when report is configured', async () => {
     const cwd = createGitRepo('melos-exec-report-');
     const engine = new ScriptedEngine([
