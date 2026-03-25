@@ -233,6 +233,7 @@ export class ClaudeEngine extends Engine {
     } = options;
 
     const args: string[] = [];
+    const useSkipPermissions = permissionMode ? false : skipPermissions;
 
     if (printMode) {
       args.push('-p');
@@ -241,7 +242,7 @@ export class ClaudeEngine extends Engine {
       args.push('--output-format', 'stream-json');
     }
 
-    if (skipPermissions) {
+    if (useSkipPermissions) {
       args.push('--dangerously-skip-permissions');
     }
 
