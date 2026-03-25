@@ -6,6 +6,7 @@ import { ClaudeEngine, type ClaudeEngineOptions } from '../engines/claude.js';
 import type { EngineResult } from '../engines/base.js';
 import { CLAUDE_LATEST_ALIAS, resolveRuntimeModel } from '../models/registry.js';
 import { readHandoffHistory, type IterationHandoff } from './handoff.js';
+import { renderPromptWithSections } from './prompt-sections.js';
 import type {
   FinalReport,
   FinalReportCheckEvidence,
@@ -16,7 +17,6 @@ import type {
   ResolvedQuestion,
   RuntimeTraceEntry,
 } from './recipe.js';
-import { defaultPromptRenderer } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
 
 const REPORT_RUNTIME_MODEL = resolveRuntimeModel(CLAUDE_LATEST_ALIAS, CLAUDE_LATEST_ALIAS);
@@ -357,7 +357,7 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
   const diffStat = buildDiffStat(input);
   const evidence = buildEvidence(input.observation);
 
-  return defaultPromptRenderer(
+  return renderPromptWithSections(
     [
       'Generate the final execution report as strict JSON.',
       'You are in a concise reporting phase.',

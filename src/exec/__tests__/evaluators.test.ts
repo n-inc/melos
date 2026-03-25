@@ -187,30 +187,12 @@ describe('exec evaluators', () => {
     executeSpy.mockRestore();
   });
 
-  it('includes provider context in the llmEvaluate prompt', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-evaluator-llm-context-'));
-    const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute').mockResolvedValue({
-      success: true,
-      output: JSON.stringify({
-        criteria: [
-          { criterion: 'Mentions benchmark evidence', verdict: 'yes', rationale: 'The answer references it.' },
-        ],
-      }),
-      exitCode: 0,
-    });
-
-    const evaluate = llmEvaluate({
+  it('rejects removed llmEvaluate context options', () => {
+    expect(() => llmEvaluate({
       criteria: ['Mentions benchmark evidence'],
       context: [() => ({ title: 'requirements', content: 'must mention benchmark evidence' })],
       engine: 'codex',
-    });
-    await evaluate({
-      ...createContext(cwd),
-      assistantText: 'Benchmarks improved by 2x.',
-    });
-
-    expect(executeSpy.mock.calls[0]?.[0]).toContain('must mention benchmark evidence');
-    executeSpy.mockRestore();
+    } as never)).toThrow(/context .*removed/i);
   });
 
   it('rejects llmEvaluate output when returned criteria do not match the requested set', async () => {

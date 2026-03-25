@@ -7,7 +7,6 @@ export {
 
 export * from '../exec/recipe.js';
 export * from '../exec/loader.js';
-export * from '../exec/providers.js';
 export * from '../exec/evaluators.js';
 export * from '../exec/policies.js';
 export * from '../exec/checkpoint.js';

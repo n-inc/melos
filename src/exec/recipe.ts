@@ -6,11 +6,6 @@ import { compileRecipeConfig } from './compiler.js';
 
 export type MaybePromise<T> = T | Promise<T>;
 
-export interface ContextSection {
-  title: string;
-  content: string;
-}
-
 export interface Observation {
   ok: boolean;
   status: 'pass' | 'fail' | 'error';
@@ -101,9 +96,7 @@ export interface RecipeContextBase {
   runConfig?: RecipeRunConfig;
 }
 
-export interface PromptContext extends RecipeContextBase {
-  contextSections: ContextSection[];
-}
+export type PromptContext = RecipeContextBase;
 
 export interface EvaluationContext extends RecipeContextBase {
   assistantText: string;
@@ -114,10 +107,6 @@ export interface PolicyContext extends EvaluationContext {
   observation: Observation;
   recipe: RecipeDefinition;
 }
-
-export type ContextProvider = (
-  ctx: RecipeContextBase
-) => MaybePromise<ContextSection | ContextSection[] | null | undefined>;
 
 export type Evaluator = (ctx: EvaluationContext) => MaybePromise<ObservationInput>;
 
@@ -229,7 +218,6 @@ export interface RecipeLog {
 export interface RecipeDefinition {
   apiVersion: 2;
   prompt: string | ((ctx: PromptContext) => MaybePromise<string>);
-  context: ContextProvider[];
   run: RecipeRunConfig;
   evaluate: Evaluator;
   policy: Policy;
@@ -273,7 +261,6 @@ export interface ReviewConfig {
 
 export interface RecipeConfig {
   task: string | ((ctx: PromptContext) => MaybePromise<string>);
-  context?: ContextProvider[];
   run: RecipeRunConfig;
   check?: Array<string | ShellCommandSpec>;
   pass?: string[];
@@ -292,9 +279,8 @@ const DEFAULT_REVIEW_ARTIFACT_PATH = '.melos/review-result.json';
 const DEFAULT_FINAL_REPORT_PATH = '.melos/final-report.json';
 
 export type RuntimeRecipeInput =
-  & Omit<RecipeDefinition, 'apiVersion' | 'context' | 'review' | 'report'>
+  & Omit<RecipeDefinition, 'apiVersion' | 'review' | 'report'>
   & {
-    context?: ContextProvider[];
     review?: ReviewConfig;
     report?: RecipeReportConfig;
   };
@@ -318,10 +304,12 @@ function normalizeReportConfig(report?: RecipeReportConfig): RecipeReportConfig 
 }
 
 export function normalizeRuntimeRecipe(recipe: RuntimeRecipeInput): RecipeDefinition {
+  if (Object.prototype.hasOwnProperty.call(recipe, 'context')) {
+    throw new Error('route context has been removed; build dynamic prompt text in task(ctx) instead');
+  }
   return {
     apiVersion: 2,
     ...recipe,
-    context: recipe.context ?? [],
     review: normalizeReviewConfig(recipe.review),
     report: normalizeReportConfig(recipe.report),
   };
@@ -352,25 +340,6 @@ export function createRuntimeRoute(route: RuntimeRecipeInput): RouteDefinition {
 
 export function createRoute(route: RouteConfig): RouteDefinition {
   return createRecipe(route);
-}
-
-export function defaultPromptRenderer(prompt: string, sections: ContextSection[]): string {
-  const blocks: string[] = [];
-  const trimmedPrompt = prompt.trim();
-  if (trimmedPrompt.length > 0) {
-    blocks.push(trimmedPrompt);
-  }
-
-  for (const section of sections) {
-    const title = section.title.trim();
-    const content = section.content.trim();
-    if (title.length === 0 || content.length === 0) {
-      continue;
-    }
-    blocks.push(`## ${title}\n${content}`);
-  }
-
-  return blocks.join('\n\n');
 }
 
 export function normalizeObservation(input: ObservationInput): Observation {

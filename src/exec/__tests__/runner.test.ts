@@ -88,7 +88,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Fix the failing checks',
-      context: [],
       run: { engine, cwd },
       evaluate: shellChecks([
         'node check.js',
@@ -131,7 +130,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Fix the failing api check',
-      context: [],
       run: { engine, cwd: 'api' },
       evaluate: shellChecks(['node check.js']),
       policy: continueUntilPass(),
@@ -170,7 +168,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Fix the failing check',
-      context: [],
       run: { engine, cwd },
       check: ['node check.js'],
       limit: 3,
@@ -206,7 +203,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Improve the score',
-      context: [],
       run: { engine, cwd },
       measure: {
         command: `node -e "process.stdout.write(require('fs').readFileSync('score.json', 'utf8'))"`,
@@ -255,7 +251,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Implement the login flow',
-      context: [],
       run: { engine, cwd, model: 'codex-latest' },
       pass: ['Mentions that the login flow succeeds'],
       limit: 3,
@@ -302,7 +297,6 @@ describe('exec runner', () => {
 
     const route = createRoute({
       task: 'Review the diff and fix valid P1/P2 findings.',
-      context: [],
       run: { engine, cwd },
       review: {},
       limit: 3,
@@ -349,7 +343,6 @@ describe('exec runner', () => {
 
     const route = createRoute({
       task: 'Review the diff and fix valid P1/P2 findings.',
-      context: [],
       run: { engine, cwd },
       review: {},
       log: eventLog({ melosDir: join(cwd, '.melos') }),
@@ -408,7 +401,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Implement the login flow',
-      context: [],
       run: { engine, cwd, model: 'codex-latest' },
       report: { stdout: true },
       log: eventLog({ melosDir: join(cwd, '.melos') }),
@@ -508,7 +500,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Implement the login flow',
-      context: [],
       run: { engine, cwd, model: 'codex-latest' },
       report: { path: '/dev/null/final-report.json', stdout: true },
       log: eventLog({ melosDir: join(cwd, '.melos') }),
@@ -607,7 +598,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Fix the login flow',
-      context: [],
       run: { engine, cwd, model: 'codex-latest' },
       check: ['node check.js'],
       pass: ['Mentions that the login flow succeeds'],
@@ -658,7 +648,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Improve the metric',
-      context: [],
       run: { engine, cwd },
       evaluate: metricExtractor({
         command: `node -e "process.stdout.write(require('fs').readFileSync('score.json', 'utf8'))"`,
@@ -714,7 +703,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Fix the failing check and stop once it passes',
-      context: [],
       run: { engine, cwd },
       check: ['node check.js'],
       commit: { when: 'stop' },
@@ -781,7 +769,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Fix the failing check and stop once it passes',
-      context: [],
       run: { engine, cwd, model: 'codex-latest' },
       check: ['node check.js'],
       commit: { when: 'stop' },
@@ -827,7 +814,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Fix the failing check and stop once it passes',
-      context: [],
       run: { engine, cwd },
       check: ['node check.js'],
       commit: { when: 'stop' },
@@ -882,7 +868,6 @@ describe('exec runner', () => {
 
     const recipe = createRoute({
       task: 'Fix the app check and commit all accepted changes',
-      context: [],
       run: { engine, cwd: 'app' },
       check: ['node check.js'],
       commit: { when: 'stop' },
@@ -924,7 +909,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Improve the metric and keep accepted iterations',
-      context: [],
       run: { engine, cwd },
       evaluate: metricExtractor({
         command: `node -e "process.stdout.write(require('fs').readFileSync('score.json', 'utf8'))"`,
@@ -1002,7 +986,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Keep iterating until pass',
-      context: [],
       run: { engine: 'codex', cwd },
       evaluate: ({ state }) => ({
         ok: state.iteration >= 2,
@@ -1052,7 +1035,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
-      context: [],
       run: { engine, cwd },
       evaluate: ({ state }) => {
         if (state.iteration === 1) {
@@ -1110,7 +1092,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
-      context: [],
       run: { engine: 'codex', cwd },
       evaluate: ({ state }) => {
         if (state.iteration === 1) {
@@ -1159,7 +1140,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
-      context: [],
       run: { engine, cwd },
       evaluate: () => ({
         ok: false,
@@ -1198,7 +1178,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
-      context: [],
       run: { engine, cwd },
       evaluate: ({ state }) => state.iteration === 1
         ? {
@@ -1238,7 +1217,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
-      context: [],
       run: {
         engine: new ScriptedEngine([
           async () => ({ success: true, output: 'done', exitCode: 0 }),
@@ -1274,7 +1252,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Ship the fix',
-      context: [],
       run: {
         engine: new ScriptedEngine([
           async () => ({ success: true, output: 'done', exitCode: 0 }),
@@ -1318,7 +1295,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Iterate with history',
-      context: [],
       run: { engine, cwd },
       evaluate: ({ state }) => ({
         ok: state.iteration >= 2,
@@ -1379,7 +1355,6 @@ describe('exec runner', () => {
 
     const recipe = createRuntimeRoute({
       prompt: 'Iterate with history',
-      context: [],
       run: { engine, cwd },
       evaluate: ({ state }) => ({
         ok: state.iteration >= 2,

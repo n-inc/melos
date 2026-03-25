@@ -36,7 +36,7 @@ npx melos run --prompt "この diff を要約して"
 - `--no-ask`
 - `--always-ask`
 
-`createRoute()` / `createRuntimeRoute()` では `context` の空配列を明示する必要はありません。
+`context` は公開 API から削除されました。動的な prompt 文面が必要な場合は `task(ctx)` で組み立ててください。
 
 `review.path` は既定で `.melos/review-result.json`、`report.path` は既定で `.melos/final-report.json` を使います。保存先を変えたいときだけ指定してください。
 

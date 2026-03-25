@@ -1,8 +1,8 @@
 import { llmEvaluate, metricExtractor, shellChecks } from './evaluators.js';
 import { askDecision, continueDecision, rollbackDecision, stopDecision } from './policies.js';
-import { defaultPromptRenderer, normalizeObservation } from './recipe.js';
+import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
+import { normalizeObservation } from './recipe.js';
 import type {
-  ContextSection,
   Evaluator,
   Observation,
   Policy,
@@ -76,7 +76,7 @@ function resolveReviewArtifactPath(review?: ReviewConfig): string {
   return review?.path?.trim() ? review.path.trim() : DEFAULT_REVIEW_ARTIFACT_PATH;
 }
 
-function buildReviewContractSection(review?: ReviewConfig): ContextSection | null {
+function buildReviewContractSection(review?: ReviewConfig): PromptSection | null {
   if (!review) {
     return null;
   }
@@ -101,9 +101,9 @@ function buildPrompt(config: RecipeConfig): RecipeDefinition['prompt'] {
   }
   const task = config.task;
   if (typeof task === 'function') {
-    return async (ctx) => defaultPromptRenderer(await task(ctx), [reviewSection]);
+    return async (ctx) => renderPromptWithSections(await task(ctx), [reviewSection]);
   }
-  return defaultPromptRenderer(task, [reviewSection]);
+  return renderPromptWithSections(task, [reviewSection]);
 }
 
 function buildReviewMeasureEvaluator(review?: ReviewConfig): Evaluator | null {
@@ -284,6 +284,9 @@ export function compileRecipeConfig(config: RecipeConfig): Omit<RecipeDefinition
   if (typeof config !== 'object' || config === null) {
     throw new Error('route config must be an object');
   }
+  if (Object.prototype.hasOwnProperty.call(config, 'context')) {
+    throw new Error('route context has been removed; build dynamic prompt text in task(ctx) instead');
+  }
   if ('prompt' in config || 'evaluate' in config || 'policy' in config || 'limits' in config) {
     throw new Error('legacy runtime route shape is no longer supported; use createRoute({ task, ... })');
   }
@@ -302,7 +305,6 @@ export function compileRecipeConfig(config: RecipeConfig): Omit<RecipeDefinition
 
   return {
     prompt: buildPrompt(config),
-    context: config.context ?? [],
     run: config.run,
     evaluate: buildDeclarativeEvaluator(config),
     policy: buildLoopPolicy(config),

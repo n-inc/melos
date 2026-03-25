@@ -3,7 +3,8 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { defaultPromptRenderer, type ContextSection, type Decision, type Observation, type ResolvedQuestion, type RuntimeTraceEntry } from './recipe.js';
+import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
+import { type Decision, type Observation, type ResolvedQuestion, type RuntimeTraceEntry } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
 
 export const SAFE_PROMPT_CEILING = 900_000;
@@ -34,7 +35,7 @@ export interface IterationHandoff {
 
 export interface HandoffSectionDecision {
   mode: 'none' | 'full' | 'compact' | 'trimmed' | 'omitted';
-  section: ContextSection | null;
+  section: PromptSection | null;
   totalEntries: number;
   includedEntries: number;
   omittedEntries: number;
@@ -254,11 +255,11 @@ function compactHandoffEntry(entry: IterationHandoff): Record<string, unknown> {
 
 function fitsPromptBudget(input: {
   prompt: string;
-  sections: ContextSection[];
+  sections: PromptSection[];
   handoffSectionContent: string;
   ceiling: number;
 }): boolean {
-  return defaultPromptRenderer(
+  return renderPromptWithSections(
     input.prompt,
     [...input.sections, { title: 'handoff history', content: input.handoffSectionContent }]
   ).length <= input.ceiling;
@@ -268,7 +269,7 @@ export function selectHandoffHistorySection(input: {
   melosDir: string;
   fingerprint: string;
   prompt: string;
-  sections: ContextSection[];
+  sections: PromptSection[];
   ceiling?: number;
 }): HandoffSectionDecision {
   const history = readHandoffHistory(input.melosDir, input.fingerprint);

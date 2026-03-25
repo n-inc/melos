@@ -25,7 +25,6 @@ function createContext() {
     recipe: {
       apiVersion: 2 as const,
       prompt: 'test',
-      context: [],
       run: { engine: 'codex' as const },
       evaluate: async () => ({ ok: true, summary: 'ok' }),
       policy: async () => ({ kind: 'stop' as const }),

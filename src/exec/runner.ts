@@ -9,12 +9,11 @@ import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
 import { applyConfiguredCommit, assertCommitWorkspaceClean, isCommitEnabled } from './commit.js';
 import { buildIterationHandoff, resolveHandoffFingerprint, selectHandoffHistorySection, writeIterationHandoff } from './handoff.js';
+import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
 import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
 import {
-  defaultPromptRenderer,
   type FinalReport,
   normalizeObservation,
-  type ContextSection,
   type Decision,
   type EvaluationContext,
   type RecipeContextBase,
@@ -166,7 +165,7 @@ function buildEngineOptions(input: {
   return options;
 }
 
-function serializeSections(sections: ContextSection[]): Record<string, unknown> {
+function serializeSections(sections: PromptSection[]): Record<string, unknown> {
   return {
     count: sections.length,
     titles: sections.map((section) => section.title),
@@ -291,7 +290,7 @@ async function attachFinalReport(input: {
   };
 }
 
-function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): ContextSection[] {
+function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): PromptSection[] {
   if (resolvedQuestions.length === 0) {
     return [];
   }
@@ -414,7 +413,7 @@ function buildAskResolverPrompt(input: {
   assistantText: string;
   resolvedQuestions: ResolvedQuestion[];
 }): string {
-  return defaultPromptRenderer(
+  return renderPromptWithSections(
     [
       'You are resolving a blocking question for melos run.',
       'Return strict JSON only.',
@@ -763,27 +762,11 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         }
       }
 
-      const staticContextSections: ContextSection[] = [
+      const staticContextSections: PromptSection[] = [
         ...buildResolvedQuestionsSection(state.resolvedQuestions ?? []),
       ];
-      for (const provider of recipe.context) {
-        const provided = await provider(createRecipeContext(state, options.melosDir, recipe));
-        if (!provided) {
-          continue;
-        }
-        if (Array.isArray(provided)) {
-          staticContextSections.push(...provided.filter((section) => section.content.trim().length > 0));
-          continue;
-        }
-        if (provided.content.trim().length > 0) {
-          staticContextSections.push(provided);
-        }
-      }
       const promptText = typeof recipe.prompt === 'function'
-        ? await recipe.prompt({
-          ...createRecipeContext(state, options.melosDir, recipe),
-          contextSections: staticContextSections,
-        })
+        ? await recipe.prompt(createRecipeContext(state, options.melosDir, recipe))
         : recipe.prompt;
       const handoffDecision = selectHandoffHistorySection({
         melosDir: options.melosDir,
@@ -791,7 +774,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
         prompt: promptText,
         sections: staticContextSections,
       });
-      const contextSections: ContextSection[] = handoffDecision.section
+      const contextSections: PromptSection[] = handoffDecision.section
         ? [...staticContextSections, handoffDecision.section]
         : staticContextSections;
       logger.emit({
@@ -822,7 +805,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           },
         });
       }
-      const renderedPrompt = defaultPromptRenderer(promptText, contextSections);
+      const renderedPrompt = renderPromptWithSections(promptText, contextSections);
 
       const trace: RuntimeTraceEntry[] = [];
       const traceCallbacks = captureEngineTrace(trace);

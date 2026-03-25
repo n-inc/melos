@@ -6,6 +6,14 @@ import { clearConfiguredRunArtifacts, clearStaleRunArtifacts } from '../index.js
 import { createRoute, type RouteDefinition } from '../recipe.js';
 
 describe('exec index', () => {
+  it('rejects declarative routes that still use context', () => {
+    expect(() => createRoute({
+      task: 'Implement the task',
+      context: [],
+      run: { engine: 'auto' },
+    } as never)).toThrow(/context .*removed/i);
+  });
+
   it('clears stale review and final report artifacts before a new run', () => {
     const melosDir = join(mkdtempSync(join(tmpdir(), 'melos-exec-index-')), '.melos');
     mkdirSync(melosDir, { recursive: true });

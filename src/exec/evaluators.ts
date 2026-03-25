@@ -5,7 +5,8 @@ import { AppServerEngine } from '../engines/app-server.js';
 import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
-import { defaultPromptRenderer, normalizeObservation, type ContextProvider, type Evaluator, type Observation, type ObservationInput, type RecipeRunConfig } from './recipe.js';
+import { renderPromptWithSections } from './prompt-sections.js';
+import { normalizeObservation, type Evaluator, type Observation, type ObservationInput, type RecipeRunConfig } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
 
 export interface CommandExecutionResult {
@@ -279,7 +280,6 @@ type LlmEngine = 'claude' | 'codex' | 'auto';
 
 export interface LlmEvaluateOptions {
   criteria: string[];
-  context?: ContextProvider[];
   engine?: LlmEngine;
   model?: string;
   effort?: EngineOptions['effort'] | EngineOptions['reasoningEffort'];
@@ -344,7 +344,7 @@ function buildLlmEvaluatePrompt(input: {
   sections: Array<{ title: string; content: string }>;
 }): string {
   const criteriaBlock = input.criteria.map((criterion, index) => `${index + 1}. ${criterion}`).join('\n');
-  return defaultPromptRenderer(
+  return renderPromptWithSections(
     [
       'Evaluate the candidate answer against every criterion.',
       'Return strict JSON with this exact shape:',
@@ -439,28 +439,17 @@ async function shutdownLlmEngine(engine: Engine): Promise<void> {
 }
 
 export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
-  return async (ctx) => {
-    const sections = [];
-    for (const provider of options.context ?? []) {
-      const provided = await provider(ctx);
-      if (!provided) {
-        continue;
-      }
-      if (Array.isArray(provided)) {
-        sections.push(...provided.filter((section) => section.content.trim().length > 0));
-        continue;
-      }
-      if (provided.content.trim().length > 0) {
-        sections.push(provided);
-      }
-    }
+  if (Object.prototype.hasOwnProperty.call(options, 'context')) {
+    throw new Error('llmEvaluate context has been removed');
+  }
 
+  return async (ctx) => {
     const engineName = resolveLlmEngineName(options.engine ?? 'auto', ctx.runConfig, options.model);
     const engine = createLlmEngine(options.engine ?? 'auto', ctx.runConfig, options.model);
     const prompt = buildLlmEvaluatePrompt({
       assistantText: ctx.assistantText,
       criteria: options.criteria,
-      sections,
+      sections: [],
     });
     const result = await (async () => {
       try {

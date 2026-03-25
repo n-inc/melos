@@ -1,7 +1,7 @@
 import { createRoute, createRuntimeRoute } from '../recipe.js';
 
 describe('exec recipe defaults', () => {
-  it('fills in runtime route defaults for omitted context and artifact paths', () => {
+  it('fills in runtime route defaults for omitted artifact paths', () => {
     const route = createRuntimeRoute({
       prompt: 'Implement the task',
       run: { engine: 'auto' },
@@ -11,12 +11,11 @@ describe('exec recipe defaults', () => {
       report: {},
     });
 
-    expect(route.context).toEqual([]);
     expect(route.review).toEqual({ path: '.melos/review-result.json' });
     expect(route.report).toEqual({ path: '.melos/final-report.json', stdout: true });
   });
 
-  it('fills in declarative route defaults for omitted context and artifact paths', () => {
+  it('fills in declarative route defaults for omitted artifact paths', () => {
     const route = createRoute({
       task: 'Implement the task',
       run: { engine: 'auto' },
@@ -24,7 +23,6 @@ describe('exec recipe defaults', () => {
       report: { stdout: false },
     });
 
-    expect(route.context).toEqual([]);
     expect(route.review).toEqual({ path: '.melos/review-result.json' });
     expect(route.report).toEqual({ path: '.melos/final-report.json', stdout: false });
   });
@@ -37,7 +35,6 @@ describe('exec recipe defaults', () => {
       policy: () => ({ kind: 'stop', success: true }),
     });
 
-    expect(route.context).toEqual([]);
     expect(route.report).toEqual({ path: '.melos/final-report.json', stdout: true });
   });
 
@@ -47,7 +44,6 @@ describe('exec recipe defaults', () => {
       run: { engine: 'auto' },
     });
 
-    expect(route.context).toEqual([]);
     expect(route.report).toEqual({ path: '.melos/final-report.json', stdout: true });
   });
 });
