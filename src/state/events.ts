@@ -14,9 +14,9 @@ export type MissionEventType =
   | 'branch_created' | 'branch_merged' | 'branch_abandoned' | 'commit_created'
   | 'user_steer' | 'user_answer' | 'escalation_created' | 'escalation_answered'
   | 'heartbeat' | 'error' | 'snapshot_created'
-  | 'exec_started' | 'recipe_loaded' | 'context_built' | 'engine_finished'
+  | 'exec_started' | 'route_loaded' | 'context_built' | 'engine_finished'
   | 'evaluation_finished' | 'decision_made' | 'checkpoint_created'
-  | 'rollback_applied' | 'exec_asked' | 'exec_completed' | 'exec_failed';
+  | 'rollback_applied' | 'report_generated' | 'exec_asked' | 'exec_completed' | 'exec_failed';
 
 export interface MissionEventBase {
   seq: number;

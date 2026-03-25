@@ -3,25 +3,25 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { loadRecipeModule, resolveRecipePath, resolveRecipeSource } from '../loader.js';
+import { loadRouteModule, resolveRoutePath, resolveRouteSource } from '../loader.js';
 
 describe('exec loader', () => {
-  it('resolves recipe path relative to cwd', () => {
+  it('resolves route path relative to cwd', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-'));
-    expect(resolveRecipePath('recipes/sample.ts', cwd)).toBe(join(cwd, 'recipes/sample.ts'));
+    expect(resolveRoutePath('routes/sample.ts', cwd)).toBe(join(cwd, 'routes/sample.ts'));
   });
 
-  it('rejects non-ts recipe path', () => {
+  it('rejects non-ts route path', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-ext-'));
-    expect(() => resolveRecipePath('recipe.js', cwd)).toThrow(/\.ts/);
+    expect(() => resolveRoutePath('route.js', cwd)).toThrow(/\.ts/);
   });
 
-  it('writes stdin recipe to a temporary ts file', async () => {
+  it('writes stdin route to a temporary ts file', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-stdin-'));
-    const resolved = await resolveRecipeSource({
-      recipePath: '-',
+    const resolved = await resolveRouteSource({
+      routePath: '-',
       cwd,
-      stdinText: 'export default { prompt: "x" };\n',
+      stdinText: 'export default { task: "x" };\n',
     });
 
     expect(resolved.fromStdin).toBe(true);
@@ -31,32 +31,46 @@ describe('exec loader', () => {
 
   it('fails when default export is missing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-module-'));
-    const recipePath = join(cwd, 'recipe.mjs');
-    writeFileSync(recipePath, 'export const value = 1;\n', 'utf-8');
+    const routePath = join(cwd, 'route.mjs');
+    writeFileSync(routePath, 'export const value = 1;\n', 'utf-8');
 
-    await expect(loadRecipeModule(recipePath)).rejects.toThrow(/default export/);
+    await expect(loadRouteModule(routePath)).rejects.toThrow(/default export/);
   });
 
   const itIfBun = spawnSync('bun', ['--version'], { encoding: 'utf-8' }).status === 0 ? it : it.skip;
 
-  itIfBun('imports a ts recipe module through Bun-compatible dynamic import', async () => {
-    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-bun-'));
-    const recipePath = join(cwd, 'recipe.ts');
-    writeFileSync(recipePath, `
-      import { createRecipe } from ${JSON.stringify(join(process.cwd(), 'src/exec/index.ts'))};
-      export default createRecipe({
+  it('rejects legacy route modules that export the old runtime shape directly', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-legacy-'));
+    const routePath = join(cwd, 'route.mjs');
+    writeFileSync(routePath, `
+      export default {
         prompt: 'hello',
         context: [],
         run: { engine: 'codex' },
         evaluate: () => ({ ok: true, summary: 'ok' }),
         policy: () => ({ kind: 'stop', success: true }),
+      };
+    `, 'utf-8');
+
+    await expect(loadRouteModule(routePath)).rejects.toThrow(/apiVersion|createRoute/);
+  });
+
+  itIfBun('imports a declarative ts route module through Bun-compatible dynamic import', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-bun-'));
+    const routePath = join(cwd, 'route.ts');
+    writeFileSync(routePath, `
+      import { createRoute } from ${JSON.stringify(join(process.cwd(), 'src/exec/index.ts'))};
+      export default createRoute({
+        task: 'hello',
+        context: [],
+        run: { engine: 'codex' },
       });
     `, 'utf-8');
 
     const result = spawnSync('bun', ['-e', `
-      const { loadRecipeModule } = await import(${JSON.stringify(join(process.cwd(), 'src/exec/loader.ts'))});
-      const recipe = await loadRecipeModule(${JSON.stringify(recipePath)});
-      process.stdout.write(recipe.prompt + "\\n");
+      const { loadRouteModule } = await import(${JSON.stringify(join(process.cwd(), 'src/exec/loader.ts'))});
+      const route = await loadRouteModule(${JSON.stringify(routePath)});
+      process.stdout.write(route.prompt + "\\n");
     `], {
       encoding: 'utf-8',
       cwd: process.cwd(),

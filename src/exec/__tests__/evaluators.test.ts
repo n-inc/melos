@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jest } from '@jest/globals';
@@ -38,6 +38,19 @@ describe('exec evaluators', () => {
     const observation = normalizeObservation(await evaluate(createContext(cwd)));
     expect(observation.ok).toBe(false);
     expect(observation.status).toBe('fail');
+  });
+
+  it('runs shell checks from an overridden cwd when configured', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-evaluator-shell-cwd-'));
+    const apiDir = join(cwd, 'api');
+    writeFileSync(join(cwd, 'root.txt'), 'root\n', 'utf-8');
+    mkdirSync(apiDir, { recursive: true });
+    writeFileSync(join(apiDir, 'ok.txt'), 'api\n', 'utf-8');
+
+    const evaluate = shellChecks([{ command: 'test -f ok.txt', cwd: 'api' }]);
+    const observation = normalizeObservation(await evaluate(createContext(cwd)));
+
+    expect(observation.ok).toBe(true);
   });
 
   it('parses JSON command output', async () => {

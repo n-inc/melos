@@ -1,5 +1,8 @@
 import type { Engine, EngineOptions, EngineResult } from '../engines/base.js';
 import type { MissionEvent, MissionEventBase, MissionEventType } from '../state/events.js';
+import type { CommandExecutionResult, MetricExtraction, ShellCommandSpec } from './evaluators.js';
+
+import { compileRecipeConfig } from './compiler.js';
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -154,6 +157,42 @@ export interface RecipeLimits {
   patience?: number;
 }
 
+export interface RecipeReportConfig {
+  format?: 'json';
+  path?: string;
+  stdout?: boolean;
+}
+
+export interface FinalReportCheckEvidence {
+  command: string;
+  cwd?: string;
+  exitCode: number;
+  ok: boolean;
+  timedOut?: boolean;
+}
+
+export interface FinalReportPassEvidence {
+  criterion: string;
+  verdict: 'yes' | 'no';
+  rationale?: string;
+}
+
+export interface FinalReportEvidence {
+  checks?: FinalReportCheckEvidence[];
+  metrics?: Record<string, number>;
+  pass?: FinalReportPassEvidence[];
+}
+
+export interface FinalReport {
+  summary: string;
+  changes: string[];
+  rationale: string[];
+  finalState: string;
+  remainingIssues: string[];
+  userConfirmationNeeded: string[];
+  evidence?: FinalReportEvidence;
+}
+
 export interface CheckpointController {
   create(ctx: RecipeContextBase): MaybePromise<string | undefined>;
   rollback(ctx: RecipeContextBase, ref: string): MaybePromise<void>;
@@ -171,18 +210,87 @@ export interface RecipeLog {
 }
 
 export interface RecipeDefinition {
+  apiVersion: 2;
   prompt: string | ((ctx: PromptContext) => MaybePromise<string>);
   context: ContextProvider[];
   run: RecipeRunConfig;
   evaluate: Evaluator;
   policy: Policy;
   limits?: RecipeLimits;
+  report?: RecipeReportConfig;
   checkpoint?: CheckpointController;
   log?: RecipeLog;
 }
 
-export function createRecipe(recipe: RecipeDefinition): RecipeDefinition {
-  return recipe;
+export interface ThresholdCondition {
+  metric: string;
+  above?: number;
+  atLeast?: number;
+  below?: number;
+  atMost?: number;
+}
+
+export interface PlateauCondition {
+  metric: string;
+  goal?: 'maximize' | 'minimize';
+  patience?: number;
+  minImprovement?: number;
+  rollbackOnRegression?: boolean;
+}
+
+export interface MeasureConfig {
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+  extract?: (input: {
+    result: CommandExecutionResult;
+    parsedJson?: unknown;
+  }) => MetricExtraction | Record<string, number> | number | Promise<MetricExtraction | Record<string, number> | number>;
+}
+
+export interface RecipeConfig {
+  task: string | ((ctx: PromptContext) => MaybePromise<string>);
+  context?: ContextProvider[];
+  run: RecipeRunConfig;
+  check?: Array<string | ShellCommandSpec>;
+  pass?: string[];
+  measure?: MeasureConfig;
+  until?: ThresholdCondition | ThresholdCondition[];
+  plateau?: PlateauCondition;
+  limit?: number;
+  report?: RecipeReportConfig;
+  checkpoint?: CheckpointController;
+  log?: RecipeLog;
+}
+
+export function createRuntimeRecipe(recipe: Omit<RecipeDefinition, 'apiVersion'>): RecipeDefinition {
+  return {
+    apiVersion: 2,
+    ...recipe,
+  };
+}
+
+export function createRecipe(recipe: RecipeConfig): RecipeDefinition {
+  return createRuntimeRecipe(compileRecipeConfig(recipe));
+}
+
+export type RouteContextBase = RecipeContextBase;
+export type RouteRunConfig = RecipeRunConfig;
+export type RouteLimits = RecipeLimits;
+export type RouteReportConfig = RecipeReportConfig;
+export type RouteDefinition = RecipeDefinition;
+export type RouteConfig = RecipeConfig;
+export type RouteLog = RecipeLog;
+export type RouteContext = PromptContext;
+export type RouteEvaluationContext = EvaluationContext;
+export type RoutePolicyContext = PolicyContext;
+
+export function createRuntimeRoute(route: Omit<RouteDefinition, 'apiVersion'>): RouteDefinition {
+  return createRuntimeRecipe(route);
+}
+
+export function createRoute(route: RouteConfig): RouteDefinition {
+  return createRecipe(route);
 }
 
 export function defaultPromptRenderer(prompt: string, sections: ContextSection[]): string {
