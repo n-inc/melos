@@ -6,7 +6,7 @@ import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
-import { applyConfiguredCommit } from './commit.js';
+import { applyConfiguredCommit, assertCommitWorkspaceClean, isCommitEnabled } from './commit.js';
 import { buildIterationHandoff, resolveHandoffFingerprint, selectHandoffHistorySection, writeIterationHandoff } from './handoff.js';
 import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
 import {
@@ -633,6 +633,44 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
 
   const engine = createRuntimeEngine(recipe.run.engine, recipe.run.model);
   try {
+    if (isCommitEnabled(recipe.commit)) {
+      try {
+        assertCommitWorkspaceClean(cwd);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const summary = finalizeSummary({
+          status: 'failed',
+          success: false,
+          decision: 'failed',
+          iterations: 0,
+          cwd,
+          recipePath: options.recipePath,
+          startedAt,
+          summary: 'auto-commit requires a clean git worktree',
+          reason,
+        });
+        const summarized = await attachFinalReport({
+          summary,
+          recipe,
+          cwd,
+          baseCwd,
+          melosDir: options.melosDir,
+          recipePath: options.recipePath,
+          iteration: 0,
+          logger,
+          state,
+          reason,
+        });
+        logger.emit({
+          type: 'run_failed',
+          iteration: 0,
+          agent: 'system',
+          payload: summarized as unknown as Record<string, unknown>,
+        });
+        return summarized;
+      }
+    }
+
     for (let iteration = 1; iteration <= maxIterations; iteration++) {
       if (deadline !== null && Date.now() > deadline) {
         const summary = finalizeSummary({

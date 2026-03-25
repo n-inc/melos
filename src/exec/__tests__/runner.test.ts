@@ -634,6 +634,57 @@ describe('exec runner', () => {
     expect(eventTypes).toContain('commit_created');
   });
 
+  it('fails before running when auto-commit is configured on a dirty worktree', async () => {
+    const cwd = createGitRepo('melos-exec-commit-dirty-start-');
+    writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed dirty-start fixture"', { cwd, stdio: 'ignore' });
+    writeFileSync(join(cwd, 'notes.txt'), 'pre-existing user change\n', 'utf-8');
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'pass\n', 'utf-8');
+        return { success: true, output: 'fixed for stop commit', exitCode: 0 };
+      },
+    ]);
+    const executeSpy = jest.spyOn(engine, 'execute');
+
+    const recipe = createRoute({
+      task: 'Fix the failing check and stop once it passes',
+      context: [],
+      run: { engine, cwd },
+      check: ['node check.js'],
+      commit: { when: 'stop' },
+      limit: 2,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    const history = execSync('git log --format=%s', { cwd, encoding: 'utf-8' })
+      .trim()
+      .split(/\r?\n/);
+
+    expect(summary.success).toBe(false);
+    expect(summary.iterations).toBe(0);
+    expect(summary.summary).toContain('auto-commit requires a clean git worktree');
+    expect(summary.reason).toContain('notes.txt');
+    expect(executeSpy).not.toHaveBeenCalled();
+    expect(readFileSync(join(cwd, 'status.txt'), 'utf-8')).toBe('fail\n');
+    expect(history).toHaveLength(1);
+
+    executeSpy.mockRestore();
+  });
+
   it('commits accepted iterations and keeps rollback available for later iterations', async () => {
     const cwd = createGitRepo('melos-exec-commit-accepted-');
     writeFileSync(join(cwd, 'score.json'), JSON.stringify({ score: 0.1 }), 'utf-8');

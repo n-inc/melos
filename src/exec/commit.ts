@@ -15,6 +15,10 @@ export interface CommitResult {
   changedFiles: string[];
 }
 
+export interface CommitWorkspaceStatus {
+  changedFiles: string[];
+}
+
 function runGit(cwd: string, args: string[]): string {
   return execFileSync('git', args, {
     cwd,
@@ -42,6 +46,29 @@ function listChangedFiles(cwd: string): string[] {
     .filter((line) => line.length > 0);
   return Array.from(new Set([...tracked, ...staged, ...untracked]))
     .filter((path) => isCommittablePath(path));
+}
+
+export function isCommitEnabled(config: CommitConfig | undefined): boolean {
+  return (config?.when ?? 'never') !== 'never';
+}
+
+export function readCommitWorkspaceStatus(cwd: string): CommitWorkspaceStatus {
+  return {
+    changedFiles: listChangedFiles(cwd),
+  };
+}
+
+export function assertCommitWorkspaceClean(cwd: string): void {
+  const { changedFiles } = readCommitWorkspaceStatus(cwd);
+  if (changedFiles.length === 0) {
+    return;
+  }
+
+  const preview = changedFiles.slice(0, 5).join(', ');
+  const suffix = changedFiles.length > 5 ? ` (+${changedFiles.length - 5} more)` : '';
+  throw new Error(
+    `auto-commit requires a clean git worktree before the run starts; existing changes: ${preview}${suffix}`
+  );
 }
 
 function sanitizeSummary(summary: string): string {
