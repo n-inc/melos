@@ -248,12 +248,17 @@ export interface MeasureConfig {
   }) => MetricExtraction | Record<string, number> | number | Promise<MetricExtraction | Record<string, number> | number>;
 }
 
+export interface ReviewConfig {
+  path?: string;
+}
+
 export interface RecipeConfig {
   task: string | ((ctx: PromptContext) => MaybePromise<string>);
   context?: ContextProvider[];
   run: RecipeRunConfig;
   check?: Array<string | ShellCommandSpec>;
   pass?: string[];
+  review?: ReviewConfig;
   measure?: MeasureConfig;
   until?: ThresholdCondition | ThresholdCondition[];
   plateau?: PlateauCondition;

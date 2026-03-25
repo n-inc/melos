@@ -257,6 +257,55 @@ describe('exec runner', () => {
     shutdownSpy.mockRestore();
   });
 
+  it('compiles review routes into a built-in review loop contract and stops when blockingCount reaches zero', async () => {
+    const cwd = createGitRepo('melos-exec-review-loop-');
+    const prompts: string[] = [];
+    const engine = new ScriptedEngine([
+      async () => {
+        writeFileSync(join(cwd, '.melos', 'review-result.json'), JSON.stringify({
+          summary: 'found one valid P2',
+          blockingCount: 1,
+        }), 'utf-8');
+        return { success: true, output: 'Found one valid P2 and fixed it.', exitCode: 0 };
+      },
+      async () => {
+        writeFileSync(join(cwd, '.melos', 'review-result.json'), JSON.stringify({
+          summary: 'no valid blocking findings remain',
+          blockingCount: 0,
+        }), 'utf-8');
+        return { success: true, output: 'No valid blocking findings remain.', exitCode: 0 };
+      },
+    ]);
+    const executeSpy = jest.spyOn(engine, 'execute').mockImplementation(async (prompt, options) => {
+      prompts.push(prompt);
+      return await ScriptedEngine.prototype.execute.call(engine, prompt, options);
+    });
+
+    const route = createRoute({
+      task: 'Review the diff and fix valid P1/P2 findings.',
+      context: [],
+      run: { engine, cwd },
+      review: {},
+      limit: 3,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe: route,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+    expect(prompts[0]).toContain('Review Loop Contract');
+    expect(prompts[0]).toContain('.melos/review-result.json');
+    expect(prompts[0]).toContain('blockingCount');
+    expect(prompts[0]).not.toContain('summary: "short summary"');
+
+    executeSpy.mockRestore();
+  });
+
   it('generates and saves a final report when report is configured', async () => {
     const cwd = createGitRepo('melos-exec-report-');
     const engine = new ScriptedEngine([
