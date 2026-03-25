@@ -635,6 +635,68 @@ describe('exec runner', () => {
     expect(eventTypes).toContain('commit_created');
   });
 
+  it('keeps committed file evidence available to the final report after auto-commit', async () => {
+    const cwd = createGitRepo('melos-exec-commit-report-');
+    writeFileSync(join(cwd, '.gitignore'), '.melos/\n', 'utf-8');
+    writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');
+    writeFileSync(join(cwd, 'check.js'), `
+      const { readFileSync } = require('node:fs');
+      const content = readFileSync(__dirname + '/status.txt', 'utf-8');
+      process.exit(content.includes('pass') ? 0 : 1);
+    `, 'utf-8');
+    execSync('git add .', { cwd, stdio: 'ignore' });
+    execSync('git commit -m "test: seed commit-report fixture"', { cwd, stdio: 'ignore' });
+
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), 'status.txt'), 'pass\n', 'utf-8');
+        return { success: true, output: 'fixed for stop commit with report', exitCode: 0 };
+      },
+    ]);
+    const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt) => {
+      expect(prompt).toContain('"changedFiles"');
+      expect(prompt).toContain('status.txt');
+      expect(prompt).toContain('Committed changes');
+      return {
+        success: true,
+        output: JSON.stringify({
+          summary: 'Fixed the failing check.',
+          changes: ['Updated status.txt to pass the check.'],
+          rationale: ['The report preserved committed change evidence.'],
+          finalState: 'The check now passes.',
+          remainingIssues: [],
+          userConfirmationNeeded: [],
+        }),
+        exitCode: 0,
+      };
+    });
+
+    const recipe = createRoute({
+      task: 'Fix the failing check and stop once it passes',
+      context: [],
+      run: { engine, cwd, model: 'codex-latest' },
+      check: ['node check.js'],
+      commit: { when: 'stop' },
+      report: { stdout: false },
+      limit: 2,
+      log: eventLog({ melosDir: join(cwd, '.melos') }),
+    });
+
+    const summary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.report).toMatchObject({
+      summary: 'Fixed the failing check.',
+      finalState: 'The check now passes.',
+    });
+
+    executeSpy.mockRestore();
+  });
+
   it('fails before running when auto-commit is configured on a dirty worktree', async () => {
     const cwd = createGitRepo('melos-exec-commit-dirty-start-');
     writeFileSync(join(cwd, 'status.txt'), 'fail\n', 'utf-8');

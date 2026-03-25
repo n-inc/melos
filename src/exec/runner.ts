@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -226,6 +227,10 @@ async function attachFinalReport(input: {
   baseCwd: string;
   melosDir: string;
   recipePath?: string;
+  commitRange?: {
+    baseRef: string;
+    headRef: string;
+  };
   iteration: number;
   logger: RecipeLog;
   state: RunnerState;
@@ -243,6 +248,7 @@ async function attachFinalReport(input: {
     cwd: input.cwd,
     melosDir: input.melosDir,
     recipePath: input.recipePath,
+    commitRange: input.commitRange,
     handoffFingerprint: input.state.handoffFingerprint,
     lastHandoffPath: input.state.lastHandoffPath,
     iterations: input.summary.iterations,
@@ -586,6 +592,32 @@ function readActiveThreadId(engine: Engine): string | undefined {
   return undefined;
 }
 
+function readHeadRef(cwd: string): string | undefined {
+  try {
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return ref.length > 0 ? ref : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildFinalReportCommitRange(range: {
+  baseRef?: string;
+  headRef?: string;
+} | null): { baseRef: string; headRef: string } | undefined {
+  if (!range?.baseRef || !range.headRef || range.baseRef === range.headRef) {
+    return undefined;
+  }
+  return {
+    baseRef: range.baseRef,
+    headRef: range.headRef,
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -632,6 +664,12 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
   };
 
   const engine = createRuntimeEngine(recipe.run.engine, recipe.run.model);
+  const reportCommitRange = isCommitEnabled(recipe.commit)
+    ? {
+      baseRef: readHeadRef(cwd),
+      headRef: undefined as string | undefined,
+    }
+    : null;
   try {
     if (isCommitEnabled(recipe.commit)) {
       try {
@@ -656,6 +694,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration: 0,
           logger,
           state,
@@ -690,6 +729,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration: iteration - 1,
           logger,
           state,
@@ -836,6 +876,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration,
           logger,
           state,
@@ -943,6 +984,9 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             assistantText: engineResult.output,
           });
           if (committed) {
+            if (reportCommitRange) {
+              reportCommitRange.headRef = committed.ref;
+            }
             logger.emit({
               type: 'commit_created',
               iteration,
@@ -976,6 +1020,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             baseCwd,
             melosDir: options.melosDir,
             recipePath: options.recipePath,
+            commitRange: buildFinalReportCommitRange(reportCommitRange),
             iteration,
             logger,
             state,
@@ -1016,6 +1061,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             baseCwd,
             melosDir: options.melosDir,
             recipePath: options.recipePath,
+            commitRange: buildFinalReportCommitRange(reportCommitRange),
             iteration,
             logger,
             state,
@@ -1071,6 +1117,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration,
           logger,
           state,
@@ -1112,6 +1159,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           baseCwd,
           melosDir: options.melosDir,
           recipePath: options.recipePath,
+          commitRange: buildFinalReportCommitRange(reportCommitRange),
           iteration,
           logger,
           state,
@@ -1148,6 +1196,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
       baseCwd,
       melosDir: options.melosDir,
       recipePath: options.recipePath,
+      commitRange: buildFinalReportCommitRange(reportCommitRange),
       iteration: maxIterations,
       logger,
       state,

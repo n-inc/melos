@@ -60,6 +60,10 @@ interface GenerateFinalReportInput {
   cwd: string;
   melosDir: string;
   recipePath?: string;
+  commitRange?: {
+    baseRef: string;
+    headRef: string;
+  };
   handoffFingerprint?: string;
   lastHandoffPath?: string;
   iterations: number;
@@ -223,7 +227,7 @@ function safeExecOutput(command: string, cwd: string): string {
   }
 }
 
-function listChangedFiles(cwd: string): string[] {
+function listWorktreeChangedFiles(cwd: string): string[] {
   const tracked = safeExecOutput('git diff --name-only --', cwd)
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -239,9 +243,58 @@ function listChangedFiles(cwd: string): string[] {
   return Array.from(new Set([...tracked, ...staged, ...untracked]));
 }
 
-function buildDiffStat(cwd: string): string | null {
+function listCommittedRangeFiles(
+  cwd: string,
+  commitRange?: GenerateFinalReportInput['commitRange']
+): string[] {
+  if (!commitRange || commitRange.baseRef === commitRange.headRef) {
+    return [];
+  }
+  return safeExecOutput(`git diff --name-only ${commitRange.baseRef}..${commitRange.headRef} --`, cwd)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function listChangedFiles(input: GenerateFinalReportInput): string[] {
+  return Array.from(new Set([
+    ...listCommittedRangeFiles(input.cwd, input.commitRange),
+    ...listWorktreeChangedFiles(input.cwd),
+  ]));
+}
+
+function buildWorktreeDiffStat(cwd: string): string | null {
   const output = safeExecOutput('git diff --stat --', cwd);
   return output.length > 0 ? output : null;
+}
+
+function buildCommittedRangeDiffStat(
+  cwd: string,
+  commitRange?: GenerateFinalReportInput['commitRange']
+): string | null {
+  if (!commitRange || commitRange.baseRef === commitRange.headRef) {
+    return null;
+  }
+  const output = safeExecOutput(`git diff --stat ${commitRange.baseRef}..${commitRange.headRef} --`, cwd);
+  return output.length > 0 ? output : null;
+}
+
+function buildDiffStat(input: GenerateFinalReportInput): string | null {
+  const sections: string[] = [];
+  const committed = buildCommittedRangeDiffStat(input.cwd, input.commitRange);
+  if (committed) {
+    sections.push([
+      `Committed changes (${input.commitRange?.baseRef.slice(0, 7)}..${input.commitRange?.headRef.slice(0, 7)}):`,
+      committed,
+    ].join('\n'));
+  }
+
+  const worktree = buildWorktreeDiffStat(input.cwd);
+  if (worktree) {
+    sections.push(['Working tree changes:', worktree].join('\n'));
+  }
+
+  return sections.length > 0 ? sections.join('\n\n') : null;
 }
 
 function compactHandoffEntry(entry: IterationHandoff): Record<string, unknown> {
@@ -290,6 +343,7 @@ function buildReportInputs(input: GenerateFinalReportInput, changedFiles: string
   return {
     cwd: input.cwd,
     recipePath: input.recipePath,
+    commitRange: input.commitRange,
     changedFiles,
   };
 }
@@ -299,8 +353,8 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
     ? readHandoffHistory(input.melosDir, input.handoffFingerprint)
     : [];
   const handoffSummary = buildCompactHandoffSummary(handoffEntries);
-  const changedFiles = listChangedFiles(input.cwd);
-  const diffStat = buildDiffStat(input.cwd);
+  const changedFiles = listChangedFiles(input);
+  const diffStat = buildDiffStat(input);
   const evidence = buildEvidence(input.observation);
 
   return defaultPromptRenderer(
