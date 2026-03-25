@@ -49,6 +49,24 @@ describe('ClaudeEngine', () => {
     expect(readArgs()).not.toContain('--dangerously-skip-permissions');
   });
 
+  it('uses kebab-case tool allowlist flags', async () => {
+    const readArgs = mockSuccessfulSpawn();
+    const engine = new ClaudeEngine();
+
+    const result = await engine.execute('hello', {
+      allowedTools: ['Read', 'Bash(git diff:*)'],
+      disallowedTools: ['Edit', 'Write'],
+    });
+
+    expect(result.success).toBe(true);
+    expect(readArgs()).toContain('--allowed-tools');
+    expect(readArgs()).toContain('Read,Bash(git diff:*)');
+    expect(readArgs()).toContain('--disallowed-tools');
+    expect(readArgs()).toContain('Edit,Write');
+    expect(readArgs()).not.toContain('--allowedTools');
+    expect(readArgs()).not.toContain('--disallowedTools');
+  });
+
   it('keeps dangerously-skip-permissions enabled when no permissionMode is provided', async () => {
     const readArgs = mockSuccessfulSpawn();
     const engine = new ClaudeEngine();

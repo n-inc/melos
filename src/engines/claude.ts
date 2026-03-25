@@ -259,11 +259,11 @@ export class ClaudeEngine extends Engine {
     }
 
     if (allowedTools && allowedTools.length > 0) {
-      args.push('--allowedTools', allowedTools.join(','));
+      args.push('--allowed-tools', allowedTools.join(','));
     }
 
     if (disallowedTools && disallowedTools.length > 0) {
-      args.push('--disallowedTools', disallowedTools.join(','));
+      args.push('--disallowed-tools', disallowedTools.join(','));
     }
 
     if (systemPrompt) {
