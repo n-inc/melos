@@ -14,6 +14,8 @@ export interface RunCommandActionOptions {
   alwaysAsk?: boolean;
 }
 
+type SharedRunCommandActionOptions = Omit<RunCommandActionOptions, 'route' | 'prompt'>;
+
 export function createProgram(): Command {
   const program = new Command();
 
@@ -42,6 +44,23 @@ export function createProgram(): Command {
       });
     });
 
+  program
+    .command('route <path>')
+    .description('route module を実行する')
+    .option('--model <model>', 'モデル', CODEX_LATEST_ALIAS)
+    .option('--cwd <dir>', '作業ディレクトリ')
+    .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
+    .option('--effort <level>', '推論 effort')
+    .option('--no-ask', 'ユーザーには質問せず agent 解決のみを試みる')
+    .option('--always-ask', 'agent 解決をスキップして必ずユーザーに質問する')
+    .action(async (path: string, options: SharedRunCommandActionOptions) => {
+      await handleCommandAction(async () => {
+        const { run } = await import('./run/index.js');
+        const summary = await run(buildRouteCommandOptions(path, options));
+        if (!summary.success) process.exit(1);
+      });
+    });
+
   return program;
 }
 
@@ -56,6 +75,13 @@ export function buildRunCommandOptions(options: RunCommandActionOptions): RunCom
     noAsk: options.ask === false,
     alwaysAsk: options.alwaysAsk,
   };
+}
+
+export function buildRouteCommandOptions(path: string, options: SharedRunCommandActionOptions): RunCommandOptions {
+  return buildRunCommandOptions({
+    ...options,
+    route: path,
+  });
 }
 
 export async function run(argv?: string[]): Promise<void> {

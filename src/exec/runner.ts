@@ -239,10 +239,6 @@ async function attachFinalReport(input: {
   observation?: ReturnType<typeof normalizeObservation>;
   trace?: RuntimeTraceEntry[];
 }): Promise<ExecRunSummary> {
-  if (!input.recipe.report) {
-    return input.summary;
-  }
-
   const report = await generateFinalReport({
     recipe: input.recipe,
     cwd: input.cwd,

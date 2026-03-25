@@ -12,7 +12,6 @@ export interface SimpleRecipeOptions {
 export function createSimpleRecipe(options: SimpleRecipeOptions): RecipeDefinition {
   return createRuntimeRecipe({
     prompt: options.prompt,
-    context: [],
     run: {
       engine: 'auto',
       model: options.model,

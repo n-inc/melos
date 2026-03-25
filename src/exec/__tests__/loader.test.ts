@@ -79,4 +79,37 @@ describe('exec loader', () => {
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('hello');
   });
+
+  itIfBun('fills in route defaults for minimal declarative route modules', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-defaults-'));
+    const routePath = join(cwd, 'route.ts');
+    writeFileSync(routePath, `
+      import { createRoute } from ${JSON.stringify(join(process.cwd(), 'src/exec/index.ts'))};
+      export default createRoute({
+        task: 'hello',
+        run: { engine: 'codex' },
+      });
+    `, 'utf-8');
+
+    const result = spawnSync('bun', ['-e', `
+      const { loadRouteModule } = await import(${JSON.stringify(join(process.cwd(), 'src/exec/loader.ts'))});
+      const route = await loadRouteModule(${JSON.stringify(routePath)});
+      process.stdout.write(JSON.stringify({
+        context: route.context,
+        report: route.report,
+      }));
+    `], {
+      encoding: 'utf-8',
+      cwd: process.cwd(),
+    });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      context: [],
+      report: {
+        path: '.melos/final-report.json',
+        stdout: true,
+      },
+    });
+  });
 });

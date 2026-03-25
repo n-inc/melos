@@ -1,11 +1,13 @@
-import { buildRunCommandOptions, createProgram } from '../../cli.js';
+import { buildRouteCommandOptions, buildRunCommandOptions, createProgram } from '../../cli.js';
 import { CODEX_LATEST_ALIAS } from '../../models/registry.js';
 
 describe('cli run command', () => {
   it('registers route/prompt execution options', () => {
     const program = createProgram();
     const runCommand = program.commands.find((command) => command.name() === 'run');
+    const routeCommand = program.commands.find((command) => command.name() === 'route');
     expect(runCommand).toBeDefined();
+    expect(routeCommand).toBeDefined();
 
     const options = new Set(runCommand?.options.map((option) => option.long));
     expect(options.has('--route')).toBe(true);
@@ -16,6 +18,13 @@ describe('cli run command', () => {
     expect(options.has('--always-ask')).toBe(true);
     expect(options.has('--keep-handoff')).toBe(false);
     expect(options.has('--steering')).toBe(false);
+
+    const routeOptions = new Set(routeCommand?.options.map((option) => option.long));
+    expect(routeOptions.has('--route')).toBe(false);
+    expect(routeOptions.has('--prompt')).toBe(false);
+    expect(routeOptions.has('--output-format')).toBe(true);
+    expect(routeOptions.has('--no-ask')).toBe(true);
+    expect(routeOptions.has('--always-ask')).toBe(true);
   });
 
   it('limits output format choices', () => {
@@ -40,6 +49,15 @@ describe('cli run command', () => {
   it('maps --route to run route', () => {
     expect(buildRunCommandOptions({
       route: '/tmp/sample.ts',
+      model: 'codex-latest',
+      outputFormat: 'text',
+    })).toEqual(expect.objectContaining({
+      route: '/tmp/sample.ts',
+    }));
+  });
+
+  it('maps melos route positional path to run route', () => {
+    expect(buildRouteCommandOptions('/tmp/sample.ts', {
       model: 'codex-latest',
       outputFormat: 'text',
     })).toEqual(expect.objectContaining({

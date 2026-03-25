@@ -2,7 +2,7 @@
 
 Melos は route module または single prompt を実行するための CLI です。
 
-公開実行面は `melos run` です。
+公開実行面は `melos run` と `melos route` です。
 
 ## Setup
 
@@ -15,7 +15,7 @@ npm install
 route を実行:
 
 ```bash
-npx melos run --route ./path/to/route.ts
+npx melos route ./path/to/route.ts
 ```
 
 prompt を 1 回だけ実行:
@@ -26,6 +26,7 @@ npx melos run --prompt "この diff を要約して"
 
 主なオプション:
 
+- `route <path>`
 - `--route <path>`
 - `--prompt <text>`
 - `--cwd <dir>`
@@ -34,6 +35,12 @@ npx melos run --prompt "この diff を要約して"
 - `--output-format text|json|stream-json`
 - `--no-ask`
 - `--always-ask`
+
+`createRoute()` / `createRuntimeRoute()` では `context` の空配列を明示する必要はありません。
+
+`review.path` は既定で `.melos/review-result.json`、`report.path` は既定で `.melos/final-report.json` を使います。保存先を変えたいときだけ指定してください。
+
+`report` 自体も省略できます。省略時でも final report は既定で生成されて保存され、標準出力にも表示されます。標準出力だけ止めたい場合は `report: { stdout: false }` を指定してください。
 
 ## Runtime Artifacts
 

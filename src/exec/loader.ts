@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { extname, isAbsolute, resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { RecipeDefinition } from './recipe.js';
+import { normalizeRuntimeRecipe, type RecipeDefinition, type RuntimeRecipeInput } from './recipe.js';
 
 export interface ResolvedRecipeSource {
   path: string;
@@ -86,7 +86,7 @@ export async function loadRecipeModule(recipePath: string): Promise<RecipeDefini
   if (!('run' in recipe) || !('evaluate' in recipe) || !('policy' in recipe) || !('prompt' in recipe)) {
     throw new Error('route module の default export が runtime route shape を満たしていません');
   }
-  return recipe;
+  return normalizeRuntimeRecipe(recipe as RuntimeRecipeInput);
 }
 
 export function readRecipeFile(recipePath: string): string {

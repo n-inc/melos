@@ -288,11 +288,47 @@ export interface RecipeConfig {
   log?: RecipeLog;
 }
 
-export function createRuntimeRecipe(recipe: Omit<RecipeDefinition, 'apiVersion'>): RecipeDefinition {
+const DEFAULT_REVIEW_ARTIFACT_PATH = '.melos/review-result.json';
+const DEFAULT_FINAL_REPORT_PATH = '.melos/final-report.json';
+
+export type RuntimeRecipeInput =
+  & Omit<RecipeDefinition, 'apiVersion' | 'context' | 'review' | 'report'>
+  & {
+    context?: ContextProvider[];
+    review?: ReviewConfig;
+    report?: RecipeReportConfig;
+  };
+
+function normalizeReviewConfig(review?: ReviewConfig): ReviewConfig | undefined {
+  if (!review) {
+    return undefined;
+  }
+
+  return {
+    path: review.path?.trim() || DEFAULT_REVIEW_ARTIFACT_PATH,
+  };
+}
+
+function normalizeReportConfig(report?: RecipeReportConfig): RecipeReportConfig | undefined {
+  return {
+    ...report,
+    path: report?.path?.trim() || DEFAULT_FINAL_REPORT_PATH,
+    stdout: report?.stdout ?? true,
+  };
+}
+
+export function normalizeRuntimeRecipe(recipe: RuntimeRecipeInput): RecipeDefinition {
   return {
     apiVersion: 2,
     ...recipe,
+    context: recipe.context ?? [],
+    review: normalizeReviewConfig(recipe.review),
+    report: normalizeReportConfig(recipe.report),
   };
+}
+
+export function createRuntimeRecipe(recipe: RuntimeRecipeInput): RecipeDefinition {
+  return normalizeRuntimeRecipe(recipe);
 }
 
 export function createRecipe(recipe: RecipeConfig): RecipeDefinition {
@@ -310,7 +346,7 @@ export type RouteContext = PromptContext;
 export type RouteEvaluationContext = EvaluationContext;
 export type RoutePolicyContext = PolicyContext;
 
-export function createRuntimeRoute(route: Omit<RouteDefinition, 'apiVersion'>): RouteDefinition {
+export function createRuntimeRoute(route: RuntimeRecipeInput): RouteDefinition {
   return createRuntimeRecipe(route);
 }
 

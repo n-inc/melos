@@ -112,9 +112,7 @@ export function clearConfiguredRunArtifacts(cwd: string, recipe: RouteDefinition
     rmSync(reviewPath, { force: true });
   }
 
-  if (recipe.report) {
-    rmSync(resolveReportPath(cwd, recipe.report), { force: true });
-  }
+  rmSync(resolveReportPath(cwd, recipe.report), { force: true });
 }
 
 function formatTextSummary(summary: ExecRunSummary): string {

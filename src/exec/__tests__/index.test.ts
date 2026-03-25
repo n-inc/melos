@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { clearConfiguredRunArtifacts, clearStaleRunArtifacts } from '../index.js';
-import type { RouteDefinition } from '../recipe.js';
+import { createRoute, type RouteDefinition } from '../recipe.js';
 
 describe('exec index', () => {
   it('clears stale review and final report artifacts before a new run', () => {
@@ -35,6 +35,21 @@ describe('exec index', () => {
     } as unknown as RouteDefinition);
 
     expect(existsSync(reviewPath)).toBe(false);
+    expect(existsSync(reportPath)).toBe(false);
+  });
+
+  it('clears the default final report artifact before a new run even when report is omitted', () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-default-report-'));
+    const melosDir = join(cwd, '.melos');
+    mkdirSync(melosDir, { recursive: true });
+    const reportPath = join(melosDir, 'final-report.json');
+    writeFileSync(reportPath, '{"summary":"old"}\n', 'utf-8');
+
+    clearConfiguredRunArtifacts(cwd, createRoute({
+      task: 'Implement the task',
+      run: { engine: 'auto' },
+    }));
+
     expect(existsSync(reportPath)).toBe(false);
   });
 });
