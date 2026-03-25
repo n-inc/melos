@@ -64,7 +64,7 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
       stderr.write(`rollback: ${String(event.payload.ref ?? '')}\n`);
       return;
     }
-    if (event.type === 'exec_asked') {
+    if (event.type === 'run_asked') {
       stderr.write(`ask: ${String(event.payload.question ?? '')}\n`);
       return;
     }
@@ -72,11 +72,11 @@ function createProgressSink(stderr: NodeJS.WritableStream): (event: MissionEvent
       stderr.write(`report: ${String(event.payload.path ?? '')}\n`);
       return;
     }
-    if (event.type === 'exec_failed') {
+    if (event.type === 'run_failed') {
       stderr.write(`failed: ${String(event.payload.summary ?? '')}\n`);
       return;
     }
-    if (event.type === 'exec_completed') {
+    if (event.type === 'run_completed') {
       stderr.write(`completed: ${String(event.payload.summary ?? '')}\n`);
     }
   };
@@ -160,7 +160,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
     onEvent,
   });
   log.emit({
-    type: 'exec_started',
+    type: 'run_started',
     iteration: 0,
     agent: 'system',
     payload: {
@@ -244,7 +244,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       finishedAt: new Date().toISOString(),
     };
     log.emit({
-      type: 'exec_failed',
+      type: 'run_failed',
       iteration: 0,
       agent: 'system',
       payload: summary as unknown as Record<string, unknown>,

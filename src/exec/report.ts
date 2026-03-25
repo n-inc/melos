@@ -441,7 +441,7 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
 
 function buildReportSystemPrompt(): string {
   return [
-    'You are generating a final report for melos exec.',
+    'You are generating a final report for melos run.',
     'This is a one-shot Claude Opus reporting pass.',
     'Treat the workspace as strictly read-only.',
     'Prefer Read, Grep, Glob, and LS for inspection.',

@@ -413,7 +413,7 @@ function buildAskResolverPrompt(input: {
 }): string {
   return defaultPromptRenderer(
     [
-      'You are resolving a blocking question for melos exec.',
+      'You are resolving a blocking question for melos run.',
       'Return strict JSON only.',
       'Use this exact shape:',
       '{"resolved":true|false,"answer":"...","rationale":"..."}',
@@ -539,7 +539,7 @@ async function resolveAskDecision(input: {
   }
 
   input.logger.emit({
-    type: 'exec_asked',
+    type: 'run_asked',
     iteration: input.state.iteration,
     agent: 'system',
     payload: {
@@ -653,7 +653,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           state,
         });
         logger.emit({
-          type: 'exec_failed',
+          type: 'run_failed',
           iteration: iteration - 1,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
@@ -801,7 +801,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           trace,
         });
         logger.emit({
-          type: 'exec_failed',
+          type: 'run_failed',
           iteration,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
@@ -922,7 +922,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
             trace,
           });
           logger.emit({
-            type: 'exec_failed',
+            type: 'run_failed',
             iteration,
             agent: 'system',
             payload: summarized as unknown as Record<string, unknown>,
@@ -977,7 +977,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           trace,
         });
         logger.emit({
-          type: 'exec_failed',
+          type: 'run_failed',
           iteration,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
@@ -1018,7 +1018,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
           trace,
         });
         logger.emit({
-          type: summarized.success ? 'exec_completed' : 'exec_failed',
+          type: summarized.success ? 'run_completed' : 'run_failed',
           iteration,
           agent: 'system',
           payload: summarized as unknown as Record<string, unknown>,
@@ -1051,7 +1051,7 @@ export async function runRecipe(options: RunRecipeOptions): Promise<ExecRunSumma
       observation: state.lastObservation ?? undefined,
     });
     logger.emit({
-      type: 'exec_failed',
+      type: 'run_failed',
       iteration: maxIterations,
       agent: 'system',
       payload: summarized as unknown as Record<string, unknown>,

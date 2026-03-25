@@ -49,7 +49,7 @@ export async function resolveRecipeSource(options: {
     throw new Error('stdin から route を読み込めませんでした');
   }
 
-  const dir = mkdtempSync(join(tmpdir(), 'melos-exec-route-'));
+  const dir = mkdtempSync(join(tmpdir(), 'melos-run-route-'));
   const tempPath = join(dir, 'stdin-route.ts');
   writeFileSync(tempPath, sourceText, 'utf-8');
   return {

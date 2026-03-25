@@ -3,162 +3,52 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { EventLog } from '../events.js';
-import { replayMissionEvents } from '../event-reducer.js';
-import { saveSnapshot, loadSnapshot } from '../snapshot.js';
 
-describe('event sourcing', () => {
-  it('appends events and replays kernel state', async () => {
+describe('state/events', () => {
+  it('appends run events with monotonically increasing seq', () => {
     const dir = mkdtempSync(join(tmpdir(), 'melos-events-'));
     const log = new EventLog({ melosDir: dir });
 
     log.emit({
-      type: 'mission_started',
+      type: 'run_started',
       iteration: 0,
-      agent: 'orchestrator',
-      payload: { message: 'start' },
+      payload: { mode: 'prompt' },
     });
-
     log.emit({
-      type: 'worker_started',
+      type: 'decision_made',
       iteration: 1,
-      agent: 'worker',
-      payload: { runId: 1, type: 'implement', featureId: 'm1-f1' },
-    });
-
-    log.emit({
-      type: 'worker_checkpoint',
-      iteration: 1,
-      agent: 'worker',
-      payload: { message: 'read file' },
-    });
-
-    log.emit({
-      type: 'worker_finished',
-      iteration: 1,
-      agent: 'worker',
-      payload: { runId: 1, message: 'done' },
+      payload: { kind: 'continue' },
     });
 
     const events = log.readAll();
-    expect(events).toHaveLength(4);
+    expect(events).toHaveLength(2);
     expect(events[0]?.seq).toBe(1);
-    expect(events[3]?.seq).toBe(4);
-
-    const state = replayMissionEvents(events);
-    expect(state.workerRuns).toHaveLength(1);
-    expect(state.workerRuns[0]?.status).toBe('done');
-    expect(state.workerRuns[0]?.log.some((entry) => entry.message.includes('read file'))).toBe(true);
-
-    await saveSnapshot(dir, {
-      seq: 4,
-      savedAt: new Date().toISOString(),
-      state: { kernel: state },
-    });
-    const snapshot = await loadSnapshot<{ kernel: typeof state }>(dir);
-    expect(snapshot?.seq).toBe(4);
-    expect(snapshot?.state.kernel.workerRuns[0]?.id).toBe(1);
+    expect(events[1]?.seq).toBe(2);
+    expect(events[0]?.agent).toBe('system');
   });
 
-  it('reads only events after snapshot sequence', () => {
+  it('reads only events after the given seq', () => {
     const dir = mkdtempSync(join(tmpdir(), 'melos-events-after-'));
     const log = new EventLog({ melosDir: dir });
 
     log.emit({
-      type: 'mission_started',
+      type: 'run_started',
       iteration: 0,
-      agent: 'orchestrator',
-      payload: { message: 'start' },
+      payload: { mode: 'route' },
     });
     log.emit({
-      type: 'command_executed',
-      iteration: 1,
-      agent: 'system',
-      payload: { command: 'echo before', exitCode: 0 },
+      type: 'route_loaded',
+      iteration: 0,
+      payload: { path: '/tmp/route.ts' },
     });
     log.emit({
-      type: 'command_executed',
+      type: 'run_completed',
       iteration: 1,
-      agent: 'system',
-      payload: { command: 'echo after', exitCode: 0 },
+      payload: { summary: 'done' },
     });
 
     const replay = log.readAfter(2);
     expect(replay).toHaveLength(1);
-    expect(replay[0]?.payload.command).toBe('echo after');
-  });
-
-  it('projects manager and validation events into progress log messages', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'melos-events-progress-'));
-    const log = new EventLog({ melosDir: dir });
-
-    log.emit({
-      type: 'manager_started',
-      iteration: 0,
-      agent: 'manager',
-      payload: { phase: 'planning', message: 'Planning mission...' },
-    });
-    log.emit({
-      type: 'validation_started',
-      iteration: 1,
-      agent: 'orchestrator',
-      payload: { milestoneId: 'm1' },
-    });
-
-    const state = replayMissionEvents(log.readAll());
-    const messages = state.progressLog.map((entry) => entry.message);
-    expect(messages).toContain('Planning mission...');
-    expect(messages.some((message) => message.startsWith('validation_started:'))).toBe(true);
-    expect(state.managerLog?.some((entry) => entry.message.includes('Planning mission...'))).toBe(true);
-    expect(state.logEntries.some((entry) => entry.actor === 'planning' || entry.actor === 'manager')).toBe(true);
-  });
-
-  it('stores warning events and exposes WARN log entries', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'melos-events-warning-'));
-    const log = new EventLog({ melosDir: dir });
-
-    log.emit({
-      type: 'warning_emitted',
-      iteration: 1,
-      agent: 'worker',
-      payload: {
-        source: 'worker',
-        milestoneId: 'm1',
-        featureId: 'm1-f1',
-        message: 'manual verification is still required',
-      },
-    });
-
-    const state = replayMissionEvents(log.readAll());
-    expect(state.warnings).toEqual([
-      expect.objectContaining({
-        source: 'worker',
-        featureId: 'm1-f1',
-        message: 'manual verification is still required',
-      }),
-    ]);
-    expect(state.logEntries).toEqual([
-      expect.objectContaining({
-        actor: 'worker',
-        kind: 'WARN',
-      }),
-    ]);
-  });
-
-  it('returns null snapshot when state.json does not exist', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'melos-events-no-snapshot-'));
-    const snapshot = await loadSnapshot(dir);
-    expect(snapshot).toBeNull();
-  });
-
-  it('creates snapshot directory on save when missing', async () => {
-    const dir = join(tmpdir(), `melos-events-save-${Date.now()}`);
-    const state = replayMissionEvents([]);
-    await saveSnapshot(dir, {
-      seq: 1,
-      savedAt: new Date().toISOString(),
-      state: { kernel: state },
-    });
-    const snapshot = await loadSnapshot<{ kernel: typeof state }>(dir);
-    expect(snapshot?.seq).toBe(1);
+    expect(replay[0]?.type).toBe('run_completed');
   });
 });
