@@ -5,7 +5,7 @@ Melos は route runner です。
 ## Core Rules
 
 1. 実行面の source of truth は `melos run --route` / `--prompt`。
-2. 停止条件は prompt ではなく route field (`check`, `pass`, `measure`, `until`, `plateau`, `limit`) に置く。
+2. 停止条件は prompt ではなく route field (`validate.shell`, `validate.llm`, `validate.metrics`, `limit`) に置く。
 3. 実行結果の source of truth は `.melos/events.jsonl` と `.melos/final-report.json`。
 4. final report は main task の最後の一言ではなく、終了後の report phase が生成する。
 

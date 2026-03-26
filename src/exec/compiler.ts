@@ -282,6 +282,17 @@ function hasEvaluatorConfig(config: WorkflowPhaseConfig): boolean {
   return Boolean(config.validate);
 }
 
+function hasActiveValidateConfig(validate?: WorkflowValidateConfig): boolean {
+  if (!validate) {
+    return false;
+  }
+  return Boolean(
+    (validate.shell && validate.shell.length > 0)
+    || (validate.llm && validate.llm.length > 0)
+    || validate.metrics
+  );
+}
+
 function compilePhaseConfig(
   phaseName: string,
   config: WorkflowPhaseConfig,
@@ -313,6 +324,9 @@ function compilePhaseConfig(
   }
   if (!config.on?.pass) {
     throw new Error(`workflow phase "${phaseName}" requires on.pass`);
+  }
+  if (config.validate && !hasActiveValidateConfig(config.validate)) {
+    throw new Error(`workflow phase "${phaseName}" validate must define at least one validator`);
   }
 
   const hasEvaluator = hasEvaluatorConfig(config);
