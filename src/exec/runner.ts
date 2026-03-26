@@ -757,11 +757,23 @@ function actionDecisionFromTransition(transition: WorkflowTransition, summary: s
   };
 }
 
+function isLlmEvaluatorPayload(data: unknown): boolean {
+  return isRecord(data) && typeof data.engine === 'string';
+}
+
+function isLlmEvaluatorErrorObservation(observation: ReturnType<typeof normalizeObservation>): boolean {
+  if (observation.status !== 'error') {
+    return false;
+  }
+  return isLlmEvaluatorPayload(observation.data)
+    || (isRecord(observation.data) && isLlmEvaluatorPayload(observation.data.pass));
+}
+
 function coerceDecisionForObservationError(
   decision: Decision,
   observation: ReturnType<typeof normalizeObservation>
 ): Decision {
-  if (observation.status !== 'error') {
+  if (!isLlmEvaluatorErrorObservation(observation)) {
     return decision;
   }
   if (decision.kind === 'stop' && decision.success === false) {
@@ -1506,9 +1518,10 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
         if (recipe.checkpoint && state.checkpointRef) {
           await recipe.checkpoint.keep?.(createRecipeContext(state, melosDir, recipe, mergedRun), state.checkpointRef);
         }
+        const stopSuccess = decision.success ?? observation.ok;
         const summary = finalizeSummary({
-          status: 'completed',
-          success: decision.kind === 'stop' ? (decision.success ?? observation.ok) : true,
+          status: stopSuccess ? 'completed' : 'failed',
+          success: stopSuccess,
           decision: decision.kind,
           iterations: phaseExecution,
           cwd: executionCwd,

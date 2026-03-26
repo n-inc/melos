@@ -551,6 +551,90 @@ describe('exec runner', () => {
     evaluateSpy.mockRestore();
   });
 
+  it('routes shell-check timeout errors through on.fail instead of hard-stopping', async () => {
+    const cwd = createGitRepo('melos-exec-timeout-follow-fail-');
+    const engine = new ScriptedEngine([
+      async () => ({ success: true, output: 'validate attempt', exitCode: 0 }),
+      async () => ({ success: true, output: 'fix attempt', exitCode: 0 }),
+    ]);
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd },
+        workflow: {
+          start: 'validate',
+          phases: {
+            validate: {
+              task: 'Validate the current state.',
+              check: [{
+                command: 'node -e "setTimeout(() => {}, 100)"',
+                timeoutMs: 10,
+              }],
+              on: {
+                pass: 'stop',
+                fail: { goto: 'fix' },
+              },
+            },
+            fix: {
+              task: 'Fix the latest validation failure.',
+              next: 'stop',
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+    expect(engine.prompts).toHaveLength(2);
+  });
+
+  it('marks on.fail stop transitions as failed when the observation failed', async () => {
+    const cwd = createGitRepo('melos-exec-fail-stop-');
+    const engine = new ScriptedEngine([
+      async () => ({ success: true, output: 'review attempt', exitCode: 0 }),
+    ]);
+    const evaluateSpy = jest.spyOn(AppServerEngine.prototype, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: JSON.stringify({
+          criteria: [
+            { criterion: 'Ready to publish', verdict: 'no', rationale: 'Needs more work.' },
+          ],
+        }),
+        exitCode: 0,
+      });
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd, model: 'codex-latest' },
+        workflow: {
+          start: 'review',
+          phases: {
+            review: {
+              task: 'Review the final article.',
+              pass: ['Ready to publish'],
+              on: {
+                pass: 'stop',
+                fail: 'stop',
+              },
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(false);
+    expect(summary.status).toBe('failed');
+    expect(summary.iterations).toBe(1);
+
+    evaluateSpy.mockRestore();
+  });
+
   it('repeats a phase after ask resolution and includes resolved answers in the next prompt', async () => {
     const cwd = createGitRepo('melos-exec-ask-repeat-');
     const engine = new ScriptedEngine([
