@@ -63,6 +63,17 @@ function joinSummary(parts: Array<{ key: string; observation: Observation | null
   return summaries.length > 0 ? summaries.join(' | ') : fallback;
 }
 
+function joinDetails(parts: Array<{ key: string; observation: Observation | null }>): string | undefined {
+  const details = parts.flatMap((part) => {
+    const value = part.observation?.details?.trim();
+    if (!value) {
+      return [];
+    }
+    return [`${part.key}: ${value}`];
+  });
+  return details.length > 0 ? details.join('\n\n') : undefined;
+}
+
 function mergeStatus(observations: Observation[]): Observation['status'] {
   if (observations.some((observation) => observation.status === 'error')) {
     return 'error';
@@ -115,6 +126,11 @@ function buildDeclarativeEvaluator(config: WorkflowPhaseConfig): Evaluator {
         { key: 'measure', observation: measureObservation },
         { key: 'pass', observation: passObservation },
       ], fallbackSummary),
+      details: joinDetails([
+        { key: 'check', observation: checkObservation },
+        { key: 'measure', observation: measureObservation },
+        { key: 'pass', observation: passObservation },
+      ]),
       metrics: measureObservation?.metrics ?? {},
       output: ctx.assistantText,
       data: mergeData([
@@ -220,6 +236,11 @@ function compilePhaseConfig(phaseName: string, config: WorkflowPhaseConfig): Wor
   if (hasEvaluator) {
     if (!config.on) {
       throw new Error(`workflow phase "${phaseName}" requires on when evaluators are configured`);
+    }
+    if (config.on.fail === 'repeat') {
+      throw new Error(
+        `workflow phase "${phaseName}" cannot use on.fail: "repeat"; send failures to an action phase with { goto: "..." } instead`
+      );
     }
     if ((config.until || config.plateau) && !config.measure) {
       throw new Error(`workflow phase "${phaseName}" requires measure when using until or plateau`);

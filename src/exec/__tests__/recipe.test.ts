@@ -1,3 +1,4 @@
+import { compileRecipeConfig } from '../compiler.js';
 import { createRoute } from '../recipe.js';
 
 describe('exec recipe defaults', () => {
@@ -69,6 +70,25 @@ describe('exec recipe defaults', () => {
     })).toThrow(/phase .*on/i);
   });
 
+  it('rejects evaluator phases that repeat on fail', () => {
+    expect(() => compileRecipeConfig({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'review',
+        phases: {
+          review: {
+            task: 'Review the work',
+            pass: ['States that the review is complete'],
+            on: {
+              pass: 'stop',
+              fail: 'repeat',
+            },
+          },
+        },
+      },
+    })).toThrow(/on\.fail: "repeat"/i);
+  });
+
   it('rejects action phases without next', () => {
     expect(() => createRoute({
       run: { engine: 'auto' },
@@ -99,7 +119,7 @@ describe('exec recipe defaults', () => {
             }),
             on: {
               pass: 'stop',
-              fail: 'repeat',
+              fail: 'stop',
             },
           },
         },

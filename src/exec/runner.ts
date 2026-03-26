@@ -171,6 +171,38 @@ function serializeSections(sections: PromptSection[]): Record<string, unknown> {
   };
 }
 
+function truncatePromptText(value: string, maxLength = 4_000): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  const omitted = trimmed.length - maxLength;
+  return `${trimmed.slice(0, maxLength)}\n...(truncated ${omitted} chars)`;
+}
+
+function extractFailureChecks(data: unknown): Array<Record<string, unknown>> | undefined {
+  const checks = isRecord(data) && isRecord(data.check) && Array.isArray(data.check.checks)
+    ? data.check.checks
+    : isRecord(data) && Array.isArray(data.checks)
+      ? data.checks
+      : undefined;
+  if (!checks) {
+    return undefined;
+  }
+  const normalized = checks.flatMap((check) => {
+    if (!isRecord(check) || typeof check.command !== 'string') {
+      return [];
+    }
+    return [{
+      command: check.command,
+      cwd: typeof check.cwd === 'string' ? check.cwd : undefined,
+      exitCode: typeof check.exitCode === 'number' ? check.exitCode : undefined,
+      timedOut: typeof check.timedOut === 'boolean' ? check.timedOut : undefined,
+    }];
+  });
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): PromptSection[] {
   if (resolvedQuestions.length === 0) {
     return [];
@@ -178,6 +210,29 @@ function buildResolvedQuestionsSection(resolvedQuestions: ResolvedQuestion[]): P
   return [{
     title: 'Resolved Questions',
     content: JSON.stringify(resolvedQuestions, null, 2),
+  }];
+}
+
+function buildLatestFailureSection(observation: RunnerState['lastObservation']): PromptSection[] {
+  if (!observation || observation.ok || observation.status === 'pass') {
+    return [];
+  }
+
+  const content: Record<string, unknown> = {
+    status: observation.status,
+    summary: observation.summary,
+  };
+  if (typeof observation.details === 'string' && observation.details.trim().length > 0) {
+    content.details = truncatePromptText(observation.details);
+  }
+  const checks = extractFailureChecks(observation.data);
+  if (checks) {
+    content.checks = checks;
+  }
+
+  return [{
+    title: 'Latest Failure',
+    content: JSON.stringify(content, null, 2),
   }];
 }
 
@@ -702,6 +757,36 @@ function actionDecisionFromTransition(transition: WorkflowTransition, summary: s
   };
 }
 
+function isLlmEvaluatorPayload(data: unknown): boolean {
+  return isRecord(data) && typeof data.engine === 'string';
+}
+
+function isLlmEvaluatorErrorObservation(observation: ReturnType<typeof normalizeObservation>): boolean {
+  if (observation.status !== 'error') {
+    return false;
+  }
+  return isLlmEvaluatorPayload(observation.data)
+    || (isRecord(observation.data) && isLlmEvaluatorPayload(observation.data.pass));
+}
+
+function coerceDecisionForObservationError(
+  decision: Decision,
+  observation: ReturnType<typeof normalizeObservation>
+): Decision {
+  if (!isLlmEvaluatorErrorObservation(observation)) {
+    return decision;
+  }
+  if (decision.kind === 'stop' && decision.success === false) {
+    return decision;
+  }
+  return {
+    kind: 'stop',
+    success: false,
+    summary: decision.summary ?? observation.summary,
+    reason: decision.reason ?? observation.summary,
+  };
+}
+
 function resolvePhaseTransition(input: {
   phaseName: string;
   phase: WorkflowPhaseDefinition;
@@ -936,6 +1021,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
       }
 
       const sections: PromptSection[] = [
+        ...buildLatestFailureSection(state.lastObservation),
         ...buildWorkflowSection(state, phaseName),
         ...buildResolvedQuestionsSection(state.resolvedQuestions ?? []),
       ];
@@ -1119,6 +1205,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           observation,
           recipe,
         });
+        decision = coerceDecisionForObservationError(decision, observation);
       }
 
       logger.emit({
@@ -1431,9 +1518,10 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
         if (recipe.checkpoint && state.checkpointRef) {
           await recipe.checkpoint.keep?.(createRecipeContext(state, melosDir, recipe, mergedRun), state.checkpointRef);
         }
+        const stopSuccess = decision.success ?? observation.ok;
         const summary = finalizeSummary({
-          status: 'completed',
-          success: decision.kind === 'stop' ? (decision.success ?? observation.ok) : true,
+          status: stopSuccess ? 'completed' : 'failed',
+          success: stopSuccess,
           decision: decision.kind,
           iterations: phaseExecution,
           cwd: executionCwd,
