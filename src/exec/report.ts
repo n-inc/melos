@@ -95,8 +95,33 @@ export interface GenerateFinalReportResult {
   model: string;
 }
 
+interface WorkflowOutputSummary {
+  _keys: string[];
+  _size: number;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function summarizeWorkflowOutput(value: unknown): WorkflowOutputSummary {
+  const serialized = JSON.stringify(value);
+  return {
+    _keys: isRecord(value) ? Object.keys(value) : [],
+    _size: typeof serialized === 'string' ? Buffer.byteLength(serialized, 'utf8') : 0,
+  };
+}
+
+function summarizeWorkflowEvidence(workflow?: FinalReportWorkflowEvidence): FinalReportWorkflowEvidence | undefined {
+  if (!workflow) {
+    return undefined;
+  }
+  return {
+    ...workflow,
+    outputs: Object.fromEntries(
+      Object.entries(workflow.outputs).map(([phaseName, value]) => [phaseName, summarizeWorkflowOutput(value)])
+    ),
+  };
 }
 
 function readStringArray(value: unknown): string[] | null {
@@ -184,15 +209,16 @@ function buildEvidence(observation?: Observation, workflow?: FinalReportWorkflow
   const metrics = observation && Object.keys(observation.metrics).length > 0
     ? observation.metrics
     : undefined;
+  const summarizedWorkflow = summarizeWorkflowEvidence(workflow);
 
-  if (!checks && !pass && !metrics && !workflow) {
+  if (!checks && !pass && !metrics && !summarizedWorkflow) {
     return undefined;
   }
   return {
     checks,
     metrics,
     pass,
-    workflow,
+    workflow: summarizedWorkflow,
   };
 }
 
@@ -356,6 +382,7 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
   const changedFiles = listChangedFiles(input);
   const diffStat = buildDiffStat(input);
   const evidence = buildEvidence(input.observation, input.workflow);
+  const summarizedWorkflow = summarizeWorkflowEvidence(input.workflow);
 
   return renderPromptWithSections(
     [
@@ -416,10 +443,10 @@ function buildReportPrompt(input: GenerateFinalReportInput): string {
         title: 'report inputs',
         content: JSON.stringify(buildReportInputs(input, changedFiles), null, 2),
       },
-      ...(input.workflow
+      ...(summarizedWorkflow
         ? [{
           title: 'workflow',
-          content: JSON.stringify(input.workflow, null, 2),
+          content: JSON.stringify(summarizedWorkflow, null, 2),
         }]
         : []),
     ]
@@ -511,6 +538,18 @@ function renderStringList(items: string[]): string {
     : '- None';
 }
 
+function renderWorkflowOutputSummary(outputs: Record<string, unknown>): string[] {
+  return Object.entries(outputs).map(([phaseName, value]) => {
+    if (!isRecord(value) || !Array.isArray(value._keys) || typeof value._size !== 'number') {
+      return `- ${phaseName}: summary unavailable`;
+    }
+    const keys = value._keys
+      .filter((key): key is string => typeof key === 'string' && key.trim().length > 0)
+      .join(', ');
+    return `- ${phaseName}: keys=[${keys}] size=${value._size}B`;
+  });
+}
+
 function renderEvidence(report: FinalReport): string[] {
   const evidence = report.evidence;
   if (!evidence) {
@@ -530,7 +569,7 @@ function renderEvidence(report: FinalReport): string[] {
   }
   if (evidence.workflow) {
     lines.push('Workflow Outputs:');
-    lines.push(JSON.stringify(evidence.workflow.outputs));
+    lines.push(...renderWorkflowOutputSummary(evidence.workflow.outputs));
   }
   return lines;
 }
