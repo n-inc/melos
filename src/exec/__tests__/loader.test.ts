@@ -66,7 +66,7 @@ describe('exec loader', () => {
           phases: {
             research: {
               task: 'hello',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -98,7 +98,7 @@ describe('exec loader', () => {
           phases: {
             research: {
               task: 'hello',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },

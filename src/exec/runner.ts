@@ -181,9 +181,11 @@ function truncatePromptText(value: string, maxLength = 4_000): string {
 }
 
 function extractFailureChecks(data: unknown): Array<Record<string, unknown>> | undefined {
-  const checks = isRecord(data) && isRecord(data.check) && Array.isArray(data.check.checks)
-    ? data.check.checks
-    : isRecord(data) && Array.isArray(data.checks)
+  const checks = isRecord(data) && isRecord(data.shell) && Array.isArray(data.shell.checks)
+    ? data.shell.checks
+    : isRecord(data) && isRecord(data.check) && Array.isArray(data.check.checks)
+      ? data.check.checks
+      : isRecord(data) && Array.isArray(data.checks)
       ? data.checks
       : undefined;
   if (!checks) {
@@ -246,6 +248,7 @@ function buildWorkflowSection(state: RunnerState, phaseName: string): PromptSect
       currentPhase: phaseName,
       outputs: state.outputs,
       phaseCounts: state.phaseCounts,
+      loopCounts: state.loopCounts ?? {},
       history: state.history,
     }, null, 2),
   }];
@@ -287,6 +290,7 @@ function createRecipeContext(
         phase: state.currentPhase,
         outputs: state.outputs,
         phaseCounts: state.phaseCounts,
+        loopCounts: state.loopCounts ?? {},
         history: state.history,
       }
       : undefined,
@@ -356,6 +360,7 @@ async function attachFinalReport(input: {
     workflow: {
       outputs: input.state.outputs,
       phaseCounts: input.state.phaseCounts,
+      loopCounts: input.state.loopCounts ?? {},
       history: input.state.history,
     },
   });
@@ -766,6 +771,7 @@ function isLlmEvaluatorErrorObservation(observation: ReturnType<typeof normalize
     return false;
   }
   return isLlmEvaluatorPayload(observation.data)
+    || (isRecord(observation.data) && isLlmEvaluatorPayload(observation.data.llm))
     || (isRecord(observation.data) && isLlmEvaluatorPayload(observation.data.pass));
 }
 
@@ -802,6 +808,9 @@ function resolvePhaseTransition(input: {
 
   if (!input.phase.on) {
     throw new Error(`workflow phase "${input.phaseName}" requires on when evaluators are configured`);
+  }
+  if (!input.phase.on.fail) {
+    throw new Error(`workflow phase "${input.phaseName}" requires on.fail when evaluators are configured`);
   }
 
   if (input.decision.kind === 'ask') {
@@ -865,6 +874,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
     handoffFingerprint,
     currentPhase: recipe.workflow.start,
     phaseCounts: {},
+    loopCounts: {},
     outputs: {},
     history: [],
     lastTransition: undefined,
@@ -982,6 +992,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
       const mergedRun = mergeRunConfig(recipe.run, phase.run);
       const executionCwd = resolveRunCwd(baseCwd, mergedRun.cwd);
       const phaseState = state.phaseStates[phaseName] ?? { attempts: 0, bestMetrics: {} };
+      const loopName = phase.loop?.name;
+      const loopIteration = loopName ? ((state.loopCounts ?? {})[loopName] ?? 0) + 1 : undefined;
       state = {
         ...state,
         iteration: phaseExecution,
@@ -994,6 +1006,12 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           ...state.phaseCounts,
           [phaseName]: (state.phaseCounts[phaseName] ?? 0) + 1,
         },
+        loopCounts: loopName
+          ? {
+            ...(state.loopCounts ?? {}),
+            [loopName]: loopIteration!,
+          }
+          : state.loopCounts ?? {},
       };
       logger.emit({
         type: 'iteration_started',
@@ -1003,6 +1021,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           recipePath: options.recipePath,
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
@@ -1015,7 +1035,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
             type: 'checkpoint_created',
             iteration: phaseExecution,
             agent: 'system',
-            payload: { ref: checkpointRef, phase: phaseName, phaseExecution },
+            payload: { ref: checkpointRef, phase: phaseName, phaseExecution, loop: loopName, loopIteration },
           });
         }
       }
@@ -1051,6 +1071,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           ...serializeSections(sections),
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
@@ -1082,6 +1104,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           error: engineResult.error,
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
@@ -1197,6 +1221,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
             metrics: observation.metrics,
             phase: phaseName,
             phaseExecution,
+            loop: loopName,
+            loopIteration,
           },
         });
 
@@ -1220,6 +1246,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           question: 'question' in decision ? decision.question : undefined,
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
@@ -1293,6 +1321,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
                 when: recipe.commit.when ?? 'never',
                 phase: phaseName,
                 phaseExecution,
+                loop: loopName,
+                loopIteration,
               },
             });
           }
@@ -1473,6 +1503,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
             reason: decision.reason ?? decision.summary ?? observation.summary,
             phase: phaseName,
             phaseExecution,
+            loop: loopName,
+            loopIteration,
           },
         });
       }
@@ -1491,6 +1523,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
             phase: phaseName,
             summary: decision.summary ?? observation.summary,
             decision: transitionLabel,
+            loop: loopName,
+            loopIteration,
           },
         ],
         lastTransition: {
@@ -1511,6 +1545,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           reason: decision.reason,
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 

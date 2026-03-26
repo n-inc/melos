@@ -91,11 +91,11 @@ describe('exec runner', () => {
             research: {
               task: 'Research the topic and return JSON.',
               produce: { from: 'assistant-json' },
-              next: { goto: 'write' },
+              on: { pass: { goto: 'write' } },
             },
             write: {
               task: ({ state }) => `Write the article.\nSources count: ${((state.outputs.research as { sources?: string[] } | undefined)?.sources ?? []).length}`,
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -151,10 +151,12 @@ describe('exec runner', () => {
             review: {
               task: 'Review the current work and write review-result.json.',
               produce: { from: { file: '.melos/review-result.json' } },
-              measure: {
-                command: `node -e "process.stdout.write(require('fs').readFileSync('.melos/review-result.json', 'utf8'))"`,
+              validate: {
+                metrics: {
+                  command: `node -e "process.stdout.write(require('fs').readFileSync('.melos/review-result.json', 'utf8'))"`,
+                  thresholds: { metric: 'blockingCount', below: 1 },
+                },
               },
-              until: { metric: 'blockingCount', below: 1 },
               on: {
                 pass: 'stop',
                 fail: { goto: 'fix' },
@@ -162,7 +164,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix valid findings from review-result.json.',
-              next: { goto: 'review' },
+              on: { pass: { goto: 'review' } },
             },
           },
         },
@@ -192,6 +194,7 @@ describe('exec runner', () => {
 
   it('supports a longer blog workflow with review loops', async () => {
     const cwd = createGitRepo('melos-exec-blog-workflow-');
+    const events: MissionEvent[] = [];
     const engine = new ScriptedEngine([
       async () => ({
         success: true,
@@ -256,15 +259,17 @@ describe('exec runner', () => {
             research: {
               task: 'Research the topic and return JSON.',
               produce: { from: 'assistant-json' },
-              next: { goto: 'write' },
+              on: { pass: { goto: 'write' } },
             },
             write: {
               task: ({ state }) => `Write the article using ${(state.outputs.research as { notes?: string[] } | undefined)?.notes?.length ?? 0} notes.`,
-              next: { goto: 'proofread' },
+              on: { pass: { goto: 'proofread' } },
             },
             proofread: {
               task: 'Proofread the article.',
-              pass: ['Draft is polished'],
+              validate: {
+                llm: ['Draft is polished'],
+              },
               on: {
                 pass: { goto: 'factcheck' },
                 fail: { goto: 'write' },
@@ -272,7 +277,9 @@ describe('exec runner', () => {
             },
             factcheck: {
               task: 'Fact-check the article.',
-              pass: ['Facts are accurate'],
+              validate: {
+                llm: ['Facts are accurate'],
+              },
               on: {
                 pass: { goto: 'review' },
                 fail: { goto: 'write' },
@@ -280,7 +287,9 @@ describe('exec runner', () => {
             },
             review: {
               task: 'Review the final article.',
-              pass: ['Ready to publish'],
+              validate: {
+                llm: ['Ready to publish'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'write' },
@@ -288,6 +297,12 @@ describe('exec runner', () => {
             },
           },
         },
+        log: eventLog({
+          melosDir: join(cwd, '.melos'),
+          onEvent: (event) => {
+            events.push(event);
+          },
+        }),
       }),
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -298,12 +313,18 @@ describe('exec runner', () => {
     expect(summary.report?.evidence?.workflow?.history).toEqual([
       { phase: 'research', summary: 'Research the topic and return JSON.', decision: 'goto:write' },
       { phase: 'write', summary: 'Write the article using 2 notes.', decision: 'goto:proofread' },
-      { phase: 'proofread', summary: 'pass: llm evaluation failed', decision: 'goto:write' },
+      { phase: 'proofread', summary: 'llm: llm evaluation failed', decision: 'goto:write', loop: 'proofread', loopIteration: 1 },
       { phase: 'write', summary: 'Write the article using 2 notes.', decision: 'goto:proofread' },
-      { phase: 'proofread', summary: 'pass: llm evaluation passed', decision: 'goto:factcheck' },
-      { phase: 'factcheck', summary: 'pass: llm evaluation passed', decision: 'goto:review' },
-      { phase: 'review', summary: 'pass: llm evaluation passed', decision: 'stop' },
+      { phase: 'proofread', summary: 'llm: llm evaluation passed', decision: 'goto:factcheck', loop: 'proofread', loopIteration: 2 },
+      { phase: 'factcheck', summary: 'llm: llm evaluation passed', decision: 'goto:review', loop: 'factcheck', loopIteration: 1 },
+      { phase: 'review', summary: 'llm: llm evaluation passed', decision: 'stop', loop: 'review', loopIteration: 1 },
     ]);
+    expect(events.some((event) => (
+      event.type === 'phase_transitioned'
+      && event.payload.phase === 'proofread'
+      && event.payload.loop === 'proofread'
+      && event.payload.loopIteration === 2
+    ))).toBe(true);
 
     evaluateSpy.mockRestore();
     shutdownSpy.mockRestore();
@@ -328,7 +349,7 @@ describe('exec runner', () => {
             research: {
               task: 'Research the topic and return JSON.',
               produce: { from: 'assistant-json' },
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -359,11 +380,11 @@ describe('exec runner', () => {
             research: {
               task: 'Research the topic.',
               run: { cwd: 'research', model: 'phase-model' },
-              next: { goto: 'write' },
+              on: { pass: { goto: 'write' } },
             },
             write: {
               task: 'Write the article.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -394,11 +415,11 @@ describe('exec runner', () => {
           phases: {
             research: {
               task: 'Research the topic.',
-              next: { goto: 'write' },
+              on: { pass: { goto: 'write' } },
             },
             write: {
               task: 'Write the article.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -452,7 +473,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix the article.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -481,7 +502,9 @@ describe('exec runner', () => {
           phases: {
             validate: {
               task: 'Validate the current state.',
-              check: ['node -e "console.error(\'type boom\'); process.exit(1)"'],
+              validate: {
+                shell: ['node -e "console.error(\'type boom\'); process.exit(1)"'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'fix' },
@@ -489,7 +512,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix the latest validation failure.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -525,7 +548,9 @@ describe('exec runner', () => {
           phases: {
             review: {
               task: 'Review the final article.',
-              pass: ['Ready to publish'],
+              validate: {
+                llm: ['Ready to publish'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'fix' },
@@ -533,7 +558,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix the article.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -566,10 +591,12 @@ describe('exec runner', () => {
           phases: {
             validate: {
               task: 'Validate the current state.',
-              check: [{
-                command: 'node -e "setTimeout(() => {}, 100)"',
-                timeoutMs: 10,
-              }],
+              validate: {
+                shell: [{
+                  command: 'node -e "setTimeout(() => {}, 100)"',
+                  timeoutMs: 10,
+                }],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'fix' },
@@ -577,7 +604,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix the latest validation failure.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -615,7 +642,9 @@ describe('exec runner', () => {
           phases: {
             review: {
               task: 'Review the final article.',
-              pass: ['Ready to publish'],
+              validate: {
+                llm: ['Ready to publish'],
+              },
               on: {
                 pass: 'stop',
                 fail: 'stop',

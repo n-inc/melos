@@ -107,7 +107,7 @@ describe('exec report', () => {
           phases: {
             research: {
               task: 'Summarize the staged change',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
