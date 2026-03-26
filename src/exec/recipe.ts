@@ -503,7 +503,8 @@ function isRuntimeRouteInput(route: RouteInput): route is RuntimeRecipeInput {
     typeof phase === 'object'
     && phase !== null
     && (
-      Object.prototype.hasOwnProperty.call(phase, 'evaluate')
+      Object.prototype.hasOwnProperty.call(phase, 'next')
+      || Object.prototype.hasOwnProperty.call(phase, 'evaluate')
       || Object.prototype.hasOwnProperty.call(phase, 'policy')
     )
   ));

@@ -152,6 +152,42 @@ describe('exec recipe defaults', () => {
     expect(route.workflow.phases.review.loop).toEqual({ name: 'review' });
   });
 
+  it('rejects empty validate blocks', () => {
+    expect(() => createRoute({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'review',
+        phases: {
+          review: {
+            task: 'Review the work',
+            validate: {},
+            on: {
+              pass: 'stop',
+              fail: 'repeat',
+            },
+          },
+        },
+      },
+    })).toThrow(/validate .*at least one validator/i);
+  });
+
+  it('preserves runtime route inputs that still use next', () => {
+    const route = createRoute({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'research',
+        phases: {
+          research: {
+            task: 'Research the topic',
+            next: 'stop',
+          },
+        },
+      },
+    } as never);
+
+    expect(route.workflow.phases.research.next).toBe('stop');
+  });
+
   it('rejects runtime phases that define evaluate without policy', () => {
     expect(() => createRoute({
       run: { engine: 'auto' },
