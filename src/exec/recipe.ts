@@ -74,6 +74,8 @@ export interface WorkflowHistoryEntry {
   phase: string;
   summary: string;
   decision: string;
+  loop?: string;
+  loopIteration?: number;
 }
 
 export interface WorkflowTransitionState {
@@ -105,6 +107,7 @@ export interface RunnerState {
   handoffFingerprint?: string;
   currentPhase?: string;
   phaseCounts: Record<string, number>;
+  loopCounts?: Record<string, number>;
   outputs: Record<string, unknown>;
   history: WorkflowHistoryEntry[];
   lastTransition?: WorkflowTransitionState;
@@ -115,6 +118,7 @@ export interface WorkflowContextSnapshot {
   phase: string;
   outputs: Record<string, unknown>;
   phaseCounts: Record<string, number>;
+  loopCounts?: Record<string, number>;
   history: WorkflowHistoryEntry[];
 }
 
@@ -225,6 +229,7 @@ export interface FinalReportPassEvidence {
 export interface FinalReportWorkflowEvidence {
   outputs: Record<string, unknown>;
   phaseCounts?: Record<string, number>;
+  loopCounts?: Record<string, number>;
   history?: WorkflowHistoryEntry[];
 }
 
@@ -301,9 +306,24 @@ export type WorkflowProduceConfig = AssistantJsonProduceConfig | FileProduceConf
 
 export interface WorkflowPhaseOnConfig {
   pass: WorkflowTransition;
-  fail: WorkflowTransition;
+  fail?: WorkflowTransition;
   ask?: WorkflowTransition;
   rollback?: WorkflowTransition;
+}
+
+export interface WorkflowLoopDefinition {
+  name: string;
+}
+
+export interface ValidateMetricsConfig extends MeasureConfig {
+  thresholds?: ThresholdCondition | ThresholdCondition[];
+  plateau?: PlateauCondition;
+}
+
+export interface WorkflowValidateConfig {
+  shell?: Array<string | ShellCommandSpec>;
+  llm?: string[];
+  metrics?: ValidateMetricsConfig;
 }
 
 export interface WorkflowPhaseDefinition {
@@ -315,6 +335,7 @@ export interface WorkflowPhaseDefinition {
   produce?: WorkflowProduceConfig;
   next?: WorkflowTransition;
   on?: WorkflowPhaseOnConfig;
+  loop?: WorkflowLoopDefinition;
 }
 
 export interface WorkflowDefinition {
@@ -339,13 +360,8 @@ export interface WorkflowPhaseConfig {
   skills?: SkillRef[];
   context?: ContextProvider[];
   run?: Partial<RecipeRunConfig>;
-  check?: Array<string | ShellCommandSpec>;
-  pass?: string[];
-  measure?: MeasureConfig;
-  until?: ThresholdCondition | ThresholdCondition[];
-  plateau?: PlateauCondition;
+  validate?: WorkflowValidateConfig;
   produce?: WorkflowProduceConfig;
-  next?: WorkflowTransition;
   on?: WorkflowPhaseOnConfig;
 }
 
@@ -412,14 +428,6 @@ function validateTransition(
   }
 }
 
-function validateEvaluatorFailTransition(transition: WorkflowTransition, phaseName: string): void {
-  if (transition === 'repeat') {
-    throw new Error(
-      `workflow phase "${phaseName}" cannot use on.fail: "repeat"; send failures to an action phase with { goto: "..." } instead`
-    );
-  }
-}
-
 function normalizeWorkflow(workflow: RuntimeRecipeInput['workflow']): WorkflowDefinition {
   if (!workflow || typeof workflow !== 'object') {
     throw new Error('route.workflow is required');
@@ -451,9 +459,11 @@ function normalizeWorkflow(workflow: RuntimeRecipeInput['workflow']): WorkflowDe
         if (!normalized.on) {
           throw new Error(`workflow phase "${phaseName}" requires on when evaluators are configured`);
         }
+        if (!normalized.on.fail) {
+          throw new Error(`workflow phase "${phaseName}" requires on.fail when evaluators are configured`);
+        }
         validateTransition(normalized.on.pass, phaseNames, phaseName, 'on.pass');
         validateTransition(normalized.on.fail, phaseNames, phaseName, 'on.fail');
-        validateEvaluatorFailTransition(normalized.on.fail, phaseName);
         if (normalized.on.ask) {
           validateTransition(normalized.on.ask, phaseNames, phaseName, 'on.ask');
         }
@@ -461,10 +471,12 @@ function normalizeWorkflow(workflow: RuntimeRecipeInput['workflow']): WorkflowDe
           validateTransition(normalized.on.rollback, phaseNames, phaseName, 'on.rollback');
         }
       } else {
-        if (!normalized.next) {
-          throw new Error(`workflow phase "${phaseName}" requires next when no evaluators are configured`);
+        const passTransition = normalized.next ?? normalized.on?.pass;
+        if (!passTransition) {
+          throw new Error(`workflow phase "${phaseName}" requires on.pass when no validators are configured`);
         }
-        validateTransition(normalized.next, phaseNames, phaseName, 'next');
+        validateTransition(passTransition, phaseNames, phaseName, 'on.pass');
+        normalized.next = passTransition;
       }
       return [phaseName, normalized];
     })
@@ -474,36 +486,6 @@ function normalizeWorkflow(workflow: RuntimeRecipeInput['workflow']): WorkflowDe
     start: workflow.start,
     phases: normalizedPhases,
   };
-}
-
-function phaseHasEvaluatorConfig(phase: unknown): boolean {
-  if (!phase || typeof phase !== 'object') {
-    return false;
-  }
-  const candidate = phase as Record<string, unknown>;
-  return Boolean(
-    candidate.evaluate
-    || candidate.policy
-    || (Array.isArray(candidate.check) && candidate.check.length > 0)
-    || (Array.isArray(candidate.pass) && candidate.pass.length > 0)
-    || candidate.measure
-    || candidate.until
-    || candidate.plateau
-  );
-}
-
-function validateRouteInput(route: RouteInput): void {
-  for (const [phaseName, phase] of Object.entries(route.workflow?.phases ?? {})) {
-    if (!phaseHasEvaluatorConfig(phase)) {
-      continue;
-    }
-    const on = phase && typeof phase === 'object' ? (phase as { on?: { fail?: WorkflowTransition } }).on : undefined;
-    if (on?.fail === 'repeat') {
-      throw new Error(
-        `workflow phase "${phaseName}" cannot use on.fail: "repeat"; send failures to an action phase with { goto: "..." } instead`
-      );
-    }
-  }
 }
 
 export function normalizeRuntimeRecipe(recipe: RuntimeRecipeInput): RecipeDefinition {
@@ -534,7 +516,6 @@ function isRuntimeRouteInput(route: RouteInput): route is RuntimeRecipeInput {
 }
 
 export function createRoute(route: RouteInput): RecipeDefinition {
-  validateRouteInput(route);
   return isRuntimeRouteInput(route)
     ? normalizeRuntimeRecipe(route)
     : normalizeRuntimeRecipe(compileRecipeConfig(route));

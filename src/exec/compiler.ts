@@ -13,15 +13,16 @@ import type {
   RecipeDefinition,
   SkillRef,
   ThresholdCondition,
+  WorkflowValidateConfig,
   WorkflowPhaseConfig,
   WorkflowPhaseDefinition,
 } from './recipe.js';
 
-function normalizeThresholds(until?: ThresholdCondition | ThresholdCondition[]): ThresholdCondition[] {
-  if (!until) {
+function normalizeThresholds(thresholds?: ThresholdCondition | ThresholdCondition[]): ThresholdCondition[] {
+  if (!thresholds) {
     return [];
   }
-  return Array.isArray(until) ? until : [until];
+  return Array.isArray(thresholds) ? thresholds : [thresholds];
 }
 
 function evaluateThresholds(metrics: Record<string, number>, thresholds: ThresholdCondition[]): boolean {
@@ -86,15 +87,15 @@ function mergeStatus(observations: Observation[]): Observation['status'] {
   return observations.every((observation) => observation.ok) ? 'pass' : 'fail';
 }
 
-function buildDeclarativeEvaluator(config: WorkflowPhaseConfig): Evaluator {
-  const checkEvaluator = config.check && config.check.length > 0
-    ? shellChecks(config.check)
+function buildDeclarativeEvaluator(validate: WorkflowValidateConfig): Evaluator {
+  const shellEvaluator = validate.shell && validate.shell.length > 0
+    ? shellChecks(validate.shell)
     : null;
-  const measureEvaluator = config.measure
-    ? metricExtractor(config.measure)
+  const metricsEvaluator = validate.metrics
+    ? metricExtractor(validate.metrics)
     : null;
-  const passEvaluator = config.pass && config.pass.length > 0
-    ? llmEvaluate({ criteria: config.pass })
+  const llmEvaluator = validate.llm && validate.llm.length > 0
+    ? llmEvaluate({ criteria: validate.llm })
     : null;
 
   return async (ctx) => {
@@ -108,16 +109,16 @@ function buildDeclarativeEvaluator(config: WorkflowPhaseConfig): Evaluator {
       });
     }
 
-    const checkObservation = checkEvaluator
-      ? normalizeObservation(await checkEvaluator(ctx))
+    const shellObservation = shellEvaluator
+      ? normalizeObservation(await shellEvaluator(ctx))
       : null;
-    const measureObservation = measureEvaluator
-      ? normalizeObservation(await measureEvaluator(ctx))
+    const metricsObservation = metricsEvaluator
+      ? normalizeObservation(await metricsEvaluator(ctx))
       : null;
-    const passObservation = passEvaluator
-      ? normalizeObservation(await passEvaluator(ctx))
+    const llmObservation = llmEvaluator
+      ? normalizeObservation(await llmEvaluator(ctx))
       : null;
-    const observations = [checkObservation, measureObservation, passObservation]
+    const observations = [shellObservation, metricsObservation, llmObservation]
       .filter((observation): observation is Observation => observation !== null);
     const combinedStatus = mergeStatus(observations);
     const combinedOk = observations.every((observation) => observation.ok);
@@ -127,29 +128,29 @@ function buildDeclarativeEvaluator(config: WorkflowPhaseConfig): Evaluator {
       ok: combinedOk,
       status: combinedStatus,
       summary: joinSummary([
-        { key: 'check', observation: checkObservation },
-        { key: 'measure', observation: measureObservation },
-        { key: 'pass', observation: passObservation },
+        { key: 'shell', observation: shellObservation },
+        { key: 'metrics', observation: metricsObservation },
+        { key: 'llm', observation: llmObservation },
       ], fallbackSummary),
       details: joinDetails([
-        { key: 'check', observation: checkObservation },
-        { key: 'measure', observation: measureObservation },
-        { key: 'pass', observation: passObservation },
+        { key: 'shell', observation: shellObservation },
+        { key: 'metrics', observation: metricsObservation },
+        { key: 'llm', observation: llmObservation },
       ]),
-      metrics: measureObservation?.metrics ?? {},
+      metrics: metricsObservation?.metrics ?? {},
       output: ctx.assistantText,
       data: mergeData([
-        { key: 'check', value: checkObservation?.data },
-        { key: 'measure', value: measureObservation?.data },
-        { key: 'pass', value: passObservation?.data },
+        { key: 'shell', value: shellObservation?.data },
+        { key: 'metrics', value: metricsObservation?.data },
+        { key: 'llm', value: llmObservation?.data },
       ]),
     });
   };
 }
 
-function buildLoopPolicy(config: WorkflowPhaseConfig): Policy {
-  const thresholds = normalizeThresholds(config.until);
-  const plateau = config.plateau;
+function buildLoopPolicy(validate: WorkflowValidateConfig): Policy {
+  const thresholds = normalizeThresholds(validate.metrics?.thresholds);
+  const plateau = validate.metrics?.plateau;
 
   return ({ observation, state, recipe }) => {
     if (observation.question) {
@@ -278,13 +279,7 @@ function resolveSkillProviders(
 }
 
 function hasEvaluatorConfig(config: WorkflowPhaseConfig): boolean {
-  return Boolean(
-    (config.check && config.check.length > 0)
-    || (config.pass && config.pass.length > 0)
-    || config.measure
-    || config.until
-    || config.plateau
-  );
+  return Boolean(config.validate);
 }
 
 function compilePhaseConfig(
@@ -308,18 +303,25 @@ function compilePhaseConfig(
     : [];
   const context = [...skillProviders, ...(config.context ?? [])];
 
+  const legacyFields = ['check', 'pass', 'measure', 'until', 'plateau', 'next']
+    .filter((field) => Object.prototype.hasOwnProperty.call(config as unknown as Record<string, unknown>, field));
+  if (legacyFields.includes('next')) {
+    throw new Error(`workflow phase "${phaseName}" next has been removed; use on.pass instead`);
+  }
+  if (legacyFields.length > 0) {
+    throw new Error(`workflow phase "${phaseName}" must define validations under validate`);
+  }
+  if (!config.on?.pass) {
+    throw new Error(`workflow phase "${phaseName}" requires on.pass`);
+  }
+
   const hasEvaluator = hasEvaluatorConfig(config);
   if (hasEvaluator) {
-    if (!config.on) {
-      throw new Error(`workflow phase "${phaseName}" requires on when evaluators are configured`);
+    if (!config.on.fail) {
+      throw new Error(`workflow phase "${phaseName}" requires on.fail when validate is configured`);
     }
-    if (config.on.fail === 'repeat') {
-      throw new Error(
-        `workflow phase "${phaseName}" cannot use on.fail: "repeat"; send failures to an action phase with { goto: "..." } instead`
-      );
-    }
-    if ((config.until || config.plateau) && !config.measure) {
-      throw new Error(`workflow phase "${phaseName}" requires measure when using until or plateau`);
+    if (config.validate?.metrics && typeof config.validate.metrics.command !== 'string') {
+      throw new Error(`workflow phase "${phaseName}" validate.metrics.command is required`);
     }
     return {
       task: config.task,
@@ -327,13 +329,14 @@ function compilePhaseConfig(
       run: config.run,
       produce: config.produce,
       on: config.on,
-      evaluate: buildDeclarativeEvaluator(config),
-      policy: buildLoopPolicy(config),
+      evaluate: buildDeclarativeEvaluator(config.validate!),
+      policy: buildLoopPolicy(config.validate!),
+      loop: { name: phaseName },
     };
   }
 
-  if (!config.next) {
-    throw new Error(`workflow phase "${phaseName}" requires next when no evaluators are configured`);
+  if (config.on.fail || config.on.ask || config.on.rollback) {
+    throw new Error(`workflow phase "${phaseName}" cannot define fail/ask/rollback transitions without validate`);
   }
 
   return {
@@ -341,7 +344,7 @@ function compilePhaseConfig(
     context,
     run: config.run,
     produce: config.produce,
-    next: config.next,
+    next: config.on.pass,
   };
 }
 

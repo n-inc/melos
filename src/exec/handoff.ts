@@ -55,6 +55,7 @@ export interface WorkflowResumeState {
   outputs: Record<string, unknown>;
   history: WorkflowHistoryEntry[];
   phaseCounts: Record<string, number>;
+  loopCounts?: Record<string, number>;
   phaseStates: Record<string, WorkflowPhaseState>;
   resolvedQuestions: ResolvedQuestion[];
   lastObservation: Observation | null;

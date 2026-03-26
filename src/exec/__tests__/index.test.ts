@@ -36,7 +36,9 @@ describe('exec index', () => {
         phases: {
           review: {
             task: 'Review the work',
-            pass: ['Review says the work is complete'],
+            validate: {
+              llm: ['Review says the work is complete'],
+            },
             produce: { from: { file: 'artifacts/review.json' } },
             on: {
               pass: 'stop',
@@ -67,7 +69,9 @@ describe('exec index', () => {
           review: {
             task: 'Review the work',
             run: { cwd: 'review-phase' },
-            pass: ['Review says the work is complete'],
+            validate: {
+              llm: ['Review says the work is complete'],
+            },
             produce: { from: { file: 'artifacts/review.json' } },
             on: {
               pass: 'stop',
@@ -95,7 +99,7 @@ describe('exec index', () => {
         phases: {
           research: {
             task: 'Research the topic',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },

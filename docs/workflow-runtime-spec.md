@@ -29,18 +29,23 @@ Prompt text is never the source of truth for stopping or branching.
 - Workflow execution is strictly sequential in v1.
 - No parallelism, joins, fan-out, or nested workflows are part of the contract.
 
-## Phase Categories
+## Phase Model
 
-There are only two valid phase categories:
+Public route config exposes a single phase model:
 
-- Action phase: executes work, then follows `next`
-- Evaluator phase: evaluates result, then branches via `on`
+- every phase has `task`
+- every phase uses `on.pass` for the success transition
+- phases with `validate` also require `on.fail`
 
-Contract:
+`validate` supports:
 
-- Action phase requires `next`
-- Evaluator phase requires `on`
-- Runtime phases may not define `evaluate` without `policy`, or `policy` without `evaluate`
+- `validate.shell`
+- `validate.llm`
+- `validate.metrics`
+
+Loop-scoped validation is represented by re-running a validated phase. There is no separate public `loop` node.
+
+Runtime phases may still normalize into action/evaluator internals, but route authors should treat the public API as a single unified phase model.
 
 ## Transition Semantics
 
@@ -55,6 +60,7 @@ Important semantic rules:
 - `continue` from policy means “take the retry/fail transition”, not “stop unsuccessfully”
 - `stop(success: false)` is terminal failure for the whole run
 - `stop(success: false)` does **not** fall through to `on.fail`
+- `on.fail: "repeat"` is valid for validated phases and is the direct way to express a loop-scoped retry
 - `ask` requires `on.ask` if the route is expected to continue
 - `rollback` requires `on.rollback` if the route is expected to continue
 
@@ -81,6 +87,7 @@ These workflow state concepts are part of the behavioral contract:
 
 - `outputs` stores the latest structured output per phase
 - `phaseCounts` counts how many times each phase actually ran
+- `loopCounts` counts how many times each validated phase loop ran
 - `history` stores the executed transition history, not just raw policy decisions
 - resolved ask answers become part of future prompt context
 
@@ -154,6 +161,7 @@ Report evidence may include:
 - final metrics
 - workflow outputs
 - workflow phase counts
+- workflow loop counts
 - workflow history
 
 If the reporting pass fails or returns invalid JSON:
@@ -176,7 +184,7 @@ The event log is append-only JSONL.
 For workflow runs, consumers should treat the following as stable concepts:
 
 - `iteration` means phase execution count
-- workflow-aware payloads may include `phase` and `phaseExecution`
+- workflow-aware payloads may include `phase`, `phaseExecution`, `loop`, and `loopIteration`
 - `phase_transitioned` is the event that records actual control-flow movement
 
 If a downstream consumer wants to reconstruct the workflow path, `events.jsonl` is the intended source.
