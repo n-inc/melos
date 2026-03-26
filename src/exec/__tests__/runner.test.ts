@@ -109,7 +109,10 @@ describe('exec runner', () => {
     expect(engine.prompts[1]).toContain('Sources count: 2');
     expect(summary.report?.evidence?.workflow?.outputs).toEqual({
       research: {
-        sources: ['https://example.com/a', 'https://example.com/b'],
+        _keys: ['sources'],
+        _size: Buffer.byteLength(JSON.stringify({
+          sources: ['https://example.com/a', 'https://example.com/b'],
+        }), 'utf8'),
       },
     });
   });
@@ -178,8 +181,11 @@ describe('exec runner', () => {
     expect(summary.iterations).toBe(3);
     expect(existsSync(join(cwd, 'fixed.txt'))).toBe(true);
     expect(summary.report?.evidence?.workflow?.outputs.review).toEqual({
-      summary: 'no blocking findings remain',
-      blockingCount: 0,
+      _keys: ['summary', 'blockingCount'],
+      _size: Buffer.byteLength(JSON.stringify({
+        summary: 'no blocking findings remain',
+        blockingCount: 0,
+      }), 'utf8'),
     });
     expect(events.some((event) => event.type === 'phase_transitioned' && event.payload.from === 'review' && event.payload.to === 'fix')).toBe(true);
   });

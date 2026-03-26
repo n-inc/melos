@@ -30,7 +30,7 @@ describe('exec report', () => {
         pass: [{ criterion: 'Does the final response explain the change?', verdict: 'yes' }],
         workflow: {
           outputs: {
-            research: { sources: ['a', 'b'] },
+            research: { _keys: ['sources'], _size: 27 },
           },
         },
       },
@@ -41,6 +41,7 @@ describe('exec report', () => {
     expect(text).toContain('Final State: The login flow now succeeds.');
     expect(text).toContain('User Confirmation Needed:');
     expect(text).toContain('Workflow Outputs:');
+    expect(text).toContain('- research: keys=[sources] size=27B');
     expect(text).toContain('Report Path: /repo/.melos/final-report.json');
   });
 
@@ -57,23 +58,38 @@ describe('exec report', () => {
     expect(text).toContain('Warning: report was generated from fallback data.');
   });
 
-  it('includes workflow outputs in the generated report evidence', async () => {
+  it('truncates workflow outputs in generated report evidence and prompts', async () => {
     const cwd = createGitRepo('melos-exec-report-workflow-');
     mkdirSync(join(cwd, '.melos'));
     writeFileSync(join(cwd, 'tracked.txt'), 'base\n', 'utf-8');
     execSync('git add tracked.txt', { cwd, stdio: 'ignore' });
     execSync('git commit -m "test: seed tracked file"', { cwd, stdio: 'ignore' });
+    const largePayload = 'x'.repeat(12_000);
+    const workflowOutput = {
+      summary: 'report',
+      raw: largePayload,
+      sources: ['https://example.com'],
+    };
+    const summarizedOutput = {
+      _keys: ['summary', 'raw', 'sources'],
+      _size: Buffer.byteLength(JSON.stringify(workflowOutput), 'utf8'),
+    };
 
     const executeSpy = jest.spyOn(ClaudeEngine.prototype, 'execute').mockImplementation(async (prompt, options) => {
       expect(prompt).toContain('"workflow"');
       expect(prompt).toContain('"outputs"');
       expect(prompt).toContain('"research"');
+      expect(prompt).toContain('"summary"');
+      expect(prompt).toContain('"raw"');
+      expect(prompt).toContain('"_keys"');
+      expect(prompt).toContain('"_size"');
+      expect(prompt).not.toContain(largePayload);
       expect(options?.effort).toBe('medium');
       return {
         success: true,
         output: JSON.stringify({
           summary: 'Report summary.',
-          changes: ['Included workflow outputs.'],
+          changes: ['Included workflow output summaries.'],
           rationale: ['Needed for final inspection.'],
           finalState: 'Report generated.',
           remainingIssues: [],
@@ -105,7 +121,7 @@ describe('exec report', () => {
       output: 'done',
       workflow: {
         outputs: {
-          research: { sources: ['https://example.com'] },
+          research: workflowOutput,
         },
         phaseCounts: { research: 1 },
         history: [{ phase: 'research', summary: 'completed', decision: 'stop' }],
@@ -115,7 +131,7 @@ describe('exec report', () => {
     expect(report.degraded).toBe(false);
     expect(report.report.evidence?.workflow).toEqual({
       outputs: {
-        research: { sources: ['https://example.com'] },
+        research: summarizedOutput,
       },
       phaseCounts: { research: 1 },
       history: [{ phase: 'research', summary: 'completed', decision: 'stop' }],
