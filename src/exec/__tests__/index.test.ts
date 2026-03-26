@@ -40,7 +40,7 @@ describe('exec index', () => {
             produce: { from: { file: 'artifacts/review.json' } },
             on: {
               pass: 'stop',
-              fail: 'repeat',
+              fail: 'stop',
             },
           },
         },
@@ -71,7 +71,7 @@ describe('exec index', () => {
             produce: { from: { file: 'artifacts/review.json' } },
             on: {
               pass: 'stop',
-              fail: 'repeat',
+              fail: 'stop',
             },
           },
         },

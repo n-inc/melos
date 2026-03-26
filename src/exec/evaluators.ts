@@ -277,6 +277,7 @@ export function asObservation(input: ObservationInput): Observation {
 }
 
 type LlmEngine = 'claude' | 'codex' | 'auto';
+const LLM_EVALUATE_MAX_ATTEMPTS = 2;
 
 export interface LlmEvaluateOptions {
   criteria: string[];
@@ -445,73 +446,101 @@ export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
 
   return async (ctx) => {
     const engineName = resolveLlmEngineName(options.engine ?? 'auto', ctx.runConfig, options.model);
-    const engine = createLlmEngine(options.engine ?? 'auto', ctx.runConfig, options.model);
     const prompt = buildLlmEvaluatePrompt({
       assistantText: ctx.assistantText,
       criteria: options.criteria,
       sections: [],
     });
-    const result = await (async () => {
-      try {
-        return await engine.execute(
-          prompt,
-          buildLlmEngineOptions(engineName, options, ctx.runConfig, ctx.cwd)
-        );
-      } finally {
-        await shutdownLlmEngine(engine);
+    const engineOptions = buildLlmEngineOptions(engineName, options, ctx.runConfig, ctx.cwd);
+
+    for (let attempt = 1; attempt <= LLM_EVALUATE_MAX_ATTEMPTS; attempt += 1) {
+      const engine = createLlmEngine(options.engine ?? 'auto', ctx.runConfig, options.model);
+      const result = await (async () => {
+        try {
+          return await engine.execute(prompt, engineOptions);
+        } finally {
+          await shutdownLlmEngine(engine);
+        }
+      })();
+      const attempts = { attempt, maxAttempts: LLM_EVALUATE_MAX_ATTEMPTS };
+
+      if (!result.success) {
+        if (attempt < LLM_EVALUATE_MAX_ATTEMPTS) {
+          continue;
+        }
+        return normalizeObservation({
+          ok: false,
+          status: 'error',
+          summary: 'llm evaluation failed',
+          details: result.error ?? result.output,
+          data: {
+            engine: engineName,
+            output: result.output,
+            attempts,
+          },
+        });
       }
-    })();
 
-    if (!result.success) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(result.output);
+      } catch (error) {
+        if (attempt < LLM_EVALUATE_MAX_ATTEMPTS) {
+          continue;
+        }
+        return normalizeObservation({
+          ok: false,
+          status: 'error',
+          summary: 'llm evaluation returned invalid JSON',
+          details: error instanceof Error ? error.message : String(error),
+          data: {
+            engine: engineName,
+            output: result.output,
+            attempts,
+          },
+        });
+      }
+
+      const normalized = normalizeLlmCriteria(parsed, options.criteria);
+      if (!normalized) {
+        if (attempt < LLM_EVALUATE_MAX_ATTEMPTS) {
+          continue;
+        }
+        return normalizeObservation({
+          ok: false,
+          status: 'error',
+          summary: 'llm evaluation returned an invalid criteria payload',
+          data: {
+            engine: engineName,
+            output: result.output,
+            attempts,
+          },
+        });
+      }
+
+      const ok = normalized.every((item) => item.verdict === 'yes');
       return normalizeObservation({
-        ok: false,
-        status: 'error',
-        summary: 'llm evaluation failed',
-        details: result.error ?? result.output,
+        ok,
+        status: ok ? 'pass' : 'fail',
+        summary: ok ? 'llm evaluation passed' : 'llm evaluation failed',
         data: {
           engine: engineName,
-          output: result.output,
+          criteria: normalized,
+          attempts,
         },
       });
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(result.output);
-    } catch (error) {
-      return normalizeObservation({
-        ok: false,
-        status: 'error',
-        summary: 'llm evaluation returned invalid JSON',
-        details: error instanceof Error ? error.message : String(error),
-        data: {
-          engine: engineName,
-          output: result.output,
-        },
-      });
-    }
-
-    const normalized = normalizeLlmCriteria(parsed, options.criteria);
-    if (!normalized) {
-      return normalizeObservation({
-        ok: false,
-        status: 'error',
-        summary: 'llm evaluation returned an invalid criteria payload',
-        data: {
-          engine: engineName,
-          output: result.output,
-        },
-      });
-    }
-
-    const ok = normalized.every((item) => item.verdict === 'yes');
     return normalizeObservation({
-      ok,
-      status: ok ? 'pass' : 'fail',
-      summary: ok ? 'llm evaluation passed' : 'llm evaluation failed',
+      ok: false,
+      status: 'error',
+      summary: 'llm evaluation failed',
       data: {
         engine: engineName,
-        criteria: normalized,
+        attempts: {
+          attempt: LLM_EVALUATE_MAX_ATTEMPTS,
+          maxAttempts: LLM_EVALUATE_MAX_ATTEMPTS,
+        },
       },
     });
   };

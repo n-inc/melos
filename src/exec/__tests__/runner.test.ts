@@ -466,6 +466,91 @@ describe('exec runner', () => {
     expect(engine.prompts).toHaveLength(1);
   });
 
+  it('includes the latest failure details in the next phase prompt after a shell check failure', async () => {
+    const cwd = createGitRepo('melos-exec-latest-failure-');
+    const engine = new ScriptedEngine([
+      async () => ({ success: true, output: 'validate attempt', exitCode: 0 }),
+      async () => ({ success: true, output: 'fix attempt', exitCode: 0 }),
+    ]);
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd },
+        workflow: {
+          start: 'validate',
+          phases: {
+            validate: {
+              task: 'Validate the current state.',
+              check: ['node -e "console.error(\'type boom\'); process.exit(1)"'],
+              on: {
+                pass: 'stop',
+                fail: { goto: 'fix' },
+              },
+            },
+            fix: {
+              task: 'Fix the latest validation failure.',
+              next: 'stop',
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(2);
+    expect(engine.prompts[1]).toContain('Latest Failure');
+    expect(engine.prompts[1]).toContain('type boom');
+  });
+
+  it('stops after an llm evaluation error retry instead of following on.fail', async () => {
+    const cwd = createGitRepo('melos-exec-llm-eval-error-stop-');
+    const engine = new ScriptedEngine([
+      async () => ({ success: true, output: 'review attempt one', exitCode: 0 }),
+      async () => ({ success: true, output: 'fix should not run', exitCode: 0 }),
+    ]);
+    const evaluateSpy = jest.spyOn(AppServerEngine.prototype, 'execute')
+      .mockResolvedValue({
+        success: true,
+        output: 'not-json',
+        exitCode: 0,
+      });
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd, model: 'codex-latest' },
+        workflow: {
+          start: 'review',
+          phases: {
+            review: {
+              task: 'Review the final article.',
+              pass: ['Ready to publish'],
+              on: {
+                pass: 'stop',
+                fail: { goto: 'fix' },
+              },
+            },
+            fix: {
+              task: 'Fix the article.',
+              next: 'stop',
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(false);
+    expect(summary.iterations).toBe(1);
+    expect(summary.observation?.status).toBe('error');
+    expect(engine.prompts).toHaveLength(1);
+    expect(evaluateSpy).toHaveBeenCalledTimes(2);
+
+    evaluateSpy.mockRestore();
+  });
+
   it('repeats a phase after ask resolution and includes resolved answers in the next prompt', async () => {
     const cwd = createGitRepo('melos-exec-ask-repeat-');
     const engine = new ScriptedEngine([
@@ -492,7 +577,7 @@ describe('exec runner', () => {
               policy: continueUntilPass(),
               on: {
                 pass: 'stop',
-                fail: 'repeat',
+                fail: 'stop',
                 ask: 'repeat',
               },
             },
@@ -586,7 +671,7 @@ describe('exec runner', () => {
               },
               on: {
                 pass: 'stop',
-                fail: 'repeat',
+                fail: { goto: 'stabilize' },
                 rollback: 'repeat',
               },
             },

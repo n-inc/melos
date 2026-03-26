@@ -192,6 +192,43 @@ describe('exec evaluators', () => {
     executeSpy.mockRestore();
   });
 
+  it('retries llmEvaluate once with a fresh engine after invalid JSON', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-evaluator-llm-retry-'));
+    const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute')
+      .mockResolvedValueOnce({
+        success: true,
+        output: 'not-json',
+        exitCode: 0,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        output: JSON.stringify({
+          criteria: [
+            { criterion: 'Has evidence', verdict: 'yes', rationale: 'Included logs.' },
+          ],
+        }),
+        exitCode: 0,
+      });
+    const shutdownSpy = jest.spyOn(AppServerEngine.prototype, 'shutdown').mockResolvedValue();
+
+    const evaluate = llmEvaluate({
+      criteria: ['Has evidence'],
+      engine: 'codex',
+    });
+    const observation = normalizeObservation(await evaluate({
+      ...createContext(cwd),
+      assistantText: 'Collected logs.',
+    }));
+
+    expect(observation.ok).toBe(true);
+    expect(observation.status).toBe('pass');
+    expect(executeSpy).toHaveBeenCalledTimes(2);
+    expect(shutdownSpy).toHaveBeenCalledTimes(2);
+
+    executeSpy.mockRestore();
+    shutdownSpy.mockRestore();
+  });
+
   it('rejects removed llmEvaluate context options', () => {
     expect(() => llmEvaluate({
       criteria: ['Mentions benchmark evidence'],

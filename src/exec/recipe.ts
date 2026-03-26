@@ -406,6 +406,14 @@ function validateTransition(
   }
 }
 
+function validateEvaluatorFailTransition(transition: WorkflowTransition, phaseName: string): void {
+  if (transition === 'repeat') {
+    throw new Error(
+      `workflow phase "${phaseName}" cannot use on.fail: "repeat"; send failures to an action phase with { goto: "..." } instead`
+    );
+  }
+}
+
 function normalizeWorkflow(workflow: RuntimeRecipeInput['workflow']): WorkflowDefinition {
   if (!workflow || typeof workflow !== 'object') {
     throw new Error('route.workflow is required');
@@ -439,6 +447,7 @@ function normalizeWorkflow(workflow: RuntimeRecipeInput['workflow']): WorkflowDe
         }
         validateTransition(normalized.on.pass, phaseNames, phaseName, 'on.pass');
         validateTransition(normalized.on.fail, phaseNames, phaseName, 'on.fail');
+        validateEvaluatorFailTransition(normalized.on.fail, phaseName);
         if (normalized.on.ask) {
           validateTransition(normalized.on.ask, phaseNames, phaseName, 'on.ask');
         }
@@ -459,6 +468,36 @@ function normalizeWorkflow(workflow: RuntimeRecipeInput['workflow']): WorkflowDe
     start: workflow.start,
     phases: normalizedPhases,
   };
+}
+
+function phaseHasEvaluatorConfig(phase: unknown): boolean {
+  if (!phase || typeof phase !== 'object') {
+    return false;
+  }
+  const candidate = phase as Record<string, unknown>;
+  return Boolean(
+    candidate.evaluate
+    || candidate.policy
+    || (Array.isArray(candidate.check) && candidate.check.length > 0)
+    || (Array.isArray(candidate.pass) && candidate.pass.length > 0)
+    || candidate.measure
+    || candidate.until
+    || candidate.plateau
+  );
+}
+
+function validateRouteInput(route: RouteInput): void {
+  for (const [phaseName, phase] of Object.entries(route.workflow?.phases ?? {})) {
+    if (!phaseHasEvaluatorConfig(phase)) {
+      continue;
+    }
+    const on = phase && typeof phase === 'object' ? (phase as { on?: { fail?: WorkflowTransition } }).on : undefined;
+    if (on?.fail === 'repeat') {
+      throw new Error(
+        `workflow phase "${phaseName}" cannot use on.fail: "repeat"; send failures to an action phase with { goto: "..." } instead`
+      );
+    }
+  }
 }
 
 export function normalizeRuntimeRecipe(recipe: RuntimeRecipeInput): RecipeDefinition {
@@ -489,6 +528,7 @@ function isRuntimeRouteInput(route: RouteInput): route is RuntimeRecipeInput {
 }
 
 export function createRoute(route: RouteInput): RecipeDefinition {
+  validateRouteInput(route);
   return isRuntimeRouteInput(route)
     ? normalizeRuntimeRecipe(route)
     : normalizeRuntimeRecipe(compileRecipeConfig(route));
