@@ -1,0 +1,220 @@
+import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { skillContextProvider } from '../compiler.js';
+import { compileRecipeConfig } from '../compiler.js';
+import type { RecipeContextBase } from '../recipe.js';
+
+function stubContext(cwd: string): RecipeContextBase {
+  return {
+    cwd,
+    melosDir: join(cwd, '.melos'),
+    state: {
+      iteration: 0,
+      phaseExecution: 0,
+      startedAt: new Date().toISOString(),
+      lastObservation: null,
+      bestMetrics: {},
+      cwd,
+      attempts: 0,
+      phaseCounts: {},
+      outputs: {},
+      history: [],
+      phaseStates: {},
+    },
+    previousObservation: null,
+  };
+}
+
+describe('skillContextProvider', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'melos-skill-test-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('resolves skill name to .claude/skills/<name>/SKILL.md', async () => {
+    const skillDir = join(tmpDir, '.claude/skills/my-skill');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, 'SKILL.md'), '---\nname: my-skill\n---\n\n# My Skill\n\nDo the thing.');
+
+    const provider = skillContextProvider('my-skill', tmpDir);
+    const result = await provider(stubContext(tmpDir));
+
+    expect(result).toEqual({
+      title: 'Skill: my-skill',
+      content: '# My Skill\n\nDo the thing.',
+    });
+  });
+
+  it('resolves { path } ref relative to cwd', async () => {
+    const guidePath = join(tmpDir, 'guides/STYLE.md');
+    await mkdir(join(tmpDir, 'guides'), { recursive: true });
+    await writeFile(guidePath, 'Be concise.');
+
+    const provider = skillContextProvider({ path: './guides/STYLE.md' }, tmpDir);
+    const result = await provider(stubContext(tmpDir));
+
+    expect(result).toEqual({
+      title: 'Skill: STYLE',
+      content: 'Be concise.',
+    });
+  });
+
+  it('strips YAML frontmatter from skill content', async () => {
+    const skillDir = join(tmpDir, '.claude/skills/fm-skill');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(
+      join(skillDir, 'SKILL.md'),
+      '---\nname: fm-skill\ndescription: test\ntype: editorial\n---\n\nClean content here.',
+    );
+
+    const provider = skillContextProvider('fm-skill', tmpDir);
+    const result = await provider(stubContext(tmpDir));
+
+    expect(result).toEqual({
+      title: 'Skill: fm-skill',
+      content: 'Clean content here.',
+    });
+  });
+});
+
+describe('compileRecipeConfig with skills', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), 'melos-skill-compile-'));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('adds skill context providers when route-level skills are set', () => {
+    const compiled = compileRecipeConfig({
+      run: { engine: 'auto' },
+      skills: ['my-skill'],
+      workflow: {
+        start: 'draft',
+        phases: {
+          draft: {
+            task: 'Write a draft',
+            next: 'stop',
+          },
+        },
+      },
+    });
+
+    expect(compiled.workflow.phases.draft.context.length).toBeGreaterThan(0);
+  });
+
+  it('adds skill context providers when phase-level skills are set', () => {
+    const compiled = compileRecipeConfig({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'lint',
+        phases: {
+          lint: {
+            task: 'Lint the text',
+            skills: ['human-writing'],
+            next: 'stop',
+          },
+        },
+      },
+    });
+
+    expect(compiled.workflow.phases.lint.context.length).toBeGreaterThan(0);
+  });
+
+  it('merges route-level and phase-level skills into one aggregated provider', () => {
+    const compiled = compileRecipeConfig({
+      run: { engine: 'auto' },
+      skills: ['base-skill'],
+      workflow: {
+        start: 'draft',
+        phases: {
+          draft: {
+            task: 'Write a draft',
+            skills: ['extra-skill'],
+            next: 'stop',
+          },
+        },
+      },
+    });
+
+    expect(compiled.workflow.phases.draft.context.length).toBe(1);
+  });
+
+  it('preserves user context providers alongside skill providers', () => {
+    const userProvider = async () => ({ title: 'User Context', content: 'Custom stuff' });
+
+    const compiled = compileRecipeConfig({
+      run: { engine: 'auto' },
+      skills: ['my-skill'],
+      workflow: {
+        start: 'draft',
+        phases: {
+          draft: {
+            task: 'Write a draft',
+            context: [userProvider],
+            next: 'stop',
+          },
+        },
+      },
+    });
+
+    // 1 skill aggregator + 1 user provider = 2
+    expect(compiled.workflow.phases.draft.context.length).toBe(2);
+  });
+
+  it('does not add skill providers when no skills are specified', () => {
+    const compiled = compileRecipeConfig({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'draft',
+        phases: {
+          draft: {
+            task: 'Write a draft',
+            next: 'stop',
+          },
+        },
+      },
+    });
+
+    expect(compiled.workflow.phases.draft.context).toEqual([]);
+  });
+
+  it('skill provider reads file at runtime using ctx.cwd', async () => {
+    const skillDir = join(tmpDir, '.claude/skills/runtime-skill');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, 'SKILL.md'), '---\nname: runtime-skill\n---\n\nRuntime content.');
+
+    const compiled = compileRecipeConfig({
+      run: { engine: 'auto' },
+      skills: ['runtime-skill'],
+      workflow: {
+        start: 'draft',
+        phases: {
+          draft: {
+            task: 'Write a draft',
+            next: 'stop',
+          },
+        },
+      },
+    });
+
+    const ctx = stubContext(tmpDir);
+    const provider = compiled.workflow.phases.draft.context[0];
+    const result = await provider(ctx);
+
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toEqual([
+      { title: 'Skill: runtime-skill', content: 'Runtime content.' },
+    ]);
+  });
+});

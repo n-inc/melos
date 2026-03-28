@@ -1,12 +1,17 @@
+import { readFile } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
+
 import { llmEvaluate, metricExtractor, shellChecks } from './evaluators.js';
 import { askDecision, continueDecision, rollbackDecision, stopDecision } from './policies.js';
 import { normalizeObservation } from './recipe.js';
 import type {
+  ContextProvider,
   Evaluator,
   Observation,
   Policy,
   RecipeConfig,
   RecipeDefinition,
+  SkillRef,
   ThresholdCondition,
   WorkflowPhaseConfig,
   WorkflowPhaseDefinition,
@@ -217,6 +222,27 @@ function buildLoopPolicy(config: WorkflowPhaseConfig): Policy {
   };
 }
 
+export function skillContextProvider(ref: SkillRef, cwd: string): ContextProvider {
+  return async () => {
+    const path = typeof ref === 'string'
+      ? resolve(cwd, '.claude/skills', ref, 'SKILL.md')
+      : resolve(cwd, ref.path);
+    const content = await readFile(path, 'utf-8');
+    const body = content.replace(/^---[\s\S]*?---\n*/, '');
+    const name = typeof ref === 'string' ? ref : basename(ref.path, '.md');
+    return { title: `Skill: ${name}`, content: body };
+  };
+}
+
+function resolveSkillProviders(
+  routeSkills: SkillRef[] | undefined,
+  phaseSkills: SkillRef[] | undefined,
+  cwd: string,
+): ContextProvider[] {
+  const merged = [...(routeSkills ?? []), ...(phaseSkills ?? [])];
+  return merged.map((ref) => skillContextProvider(ref, cwd));
+}
+
 function hasEvaluatorConfig(config: WorkflowPhaseConfig): boolean {
   return Boolean(
     (config.check && config.check.length > 0)
@@ -227,10 +253,25 @@ function hasEvaluatorConfig(config: WorkflowPhaseConfig): boolean {
   );
 }
 
-function compilePhaseConfig(phaseName: string, config: WorkflowPhaseConfig): WorkflowPhaseDefinition {
+function compilePhaseConfig(
+  phaseName: string,
+  config: WorkflowPhaseConfig,
+  routeSkills?: SkillRef[],
+): WorkflowPhaseDefinition {
   if (typeof config.task !== 'string' && typeof config.task !== 'function') {
     throw new Error(`workflow phase "${phaseName}" task is required`);
   }
+
+  // Build skill context providers that resolve at runtime using ctx.cwd
+  const hasSkills = (routeSkills && routeSkills.length > 0) || (config.skills && config.skills.length > 0);
+  const skillProviders: ContextProvider[] = hasSkills
+    ? [async (ctx) => {
+        const providers = resolveSkillProviders(routeSkills, config.skills, ctx.cwd);
+        const results = await Promise.all(providers.map((p) => p(ctx)));
+        return results.flat().filter((s): s is NonNullable<typeof s> => s != null);
+      }]
+    : [];
+  const context = [...skillProviders, ...(config.context ?? [])];
 
   const hasEvaluator = hasEvaluatorConfig(config);
   if (hasEvaluator) {
@@ -247,7 +288,7 @@ function compilePhaseConfig(phaseName: string, config: WorkflowPhaseConfig): Wor
     }
     return {
       task: config.task,
-      context: config.context ?? [],
+      context,
       run: config.run,
       produce: config.produce,
       on: config.on,
@@ -262,7 +303,7 @@ function compilePhaseConfig(phaseName: string, config: WorkflowPhaseConfig): Wor
 
   return {
     task: config.task,
-    context: config.context ?? [],
+    context,
     run: config.run,
     produce: config.produce,
     next: config.next,
@@ -289,7 +330,7 @@ export function compileRecipeConfig(config: RecipeConfig): Omit<RecipeDefinition
   const phases = Object.fromEntries(
     Object.entries(config.workflow.phases ?? {}).map(([phaseName, phaseConfig]) => [
       phaseName,
-      compilePhaseConfig(phaseName, phaseConfig),
+      compilePhaseConfig(phaseName, phaseConfig, config.skills),
     ])
   );
 
