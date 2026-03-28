@@ -611,6 +611,10 @@ async function resolveAskDecision(input: {
   trace: RuntimeTraceEntry[];
 }): Promise<{ resolvedQuestion: ResolvedQuestion | null; failureReason?: string }> {
   const askMode = input.options.askMode ?? 'agent-first';
+  const unresolvedReason = [
+    `Could not resolve question: ${input.decision.question}`,
+    'QUESTION: requires agent-resolvable context or interactive ask mode.',
+  ].join(' ');
 
   if (askMode !== 'always-user') {
     const resolvedQuestion = await resolveAskWithAgent({
@@ -630,11 +634,17 @@ async function resolveAskDecision(input: {
   }
 
   if (askMode === 'never-user') {
-    return { resolvedQuestion: null, failureReason: `Could not resolve question: ${input.decision.question}` };
+    return {
+      resolvedQuestion: null,
+      failureReason: [
+        `Could not resolve question in --no-ask mode: ${input.decision.question}`,
+        'Remove QUESTION:, rerun without --no-ask, or add enough context for agent-side resolution.',
+      ].join(' '),
+    };
   }
 
   if (!input.options.askUser) {
-    return { resolvedQuestion: null, failureReason: `Could not resolve question: ${input.decision.question}` };
+    return { resolvedQuestion: null, failureReason: unresolvedReason };
   }
 
   input.logger.emit({
@@ -654,7 +664,7 @@ async function resolveAskDecision(input: {
     recipe: input.options.recipe,
   });
   if (!answer || answer.trim().length === 0) {
-    return { resolvedQuestion: null, failureReason: `Could not resolve question: ${input.decision.question}` };
+    return { resolvedQuestion: null, failureReason: unresolvedReason };
   }
   input.logger.emit({
     type: 'user_answer',
@@ -703,6 +713,88 @@ function buildFinalReportCommitRange(range: {
   };
 }
 
+function tryParseJson(text: string): { ok: true; value: unknown } | { ok: false; error: unknown } {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+function extractEmbeddedJson(text: string): string | null {
+  const normalized = text.trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  for (const fencedMatch of normalized.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    const fenced = fencedMatch[1]?.trim();
+    if (!fenced || fenced.length === 0) {
+      continue;
+    }
+    if (tryParseJson(fenced).ok) {
+      return fenced;
+    }
+  }
+
+  for (let start = 0; start < normalized.length; start += 1) {
+    const open = normalized[start];
+    if (open !== '{' && open !== '[') {
+      continue;
+    }
+
+    const stack = [open];
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start + 1; index < normalized.length; index += 1) {
+      const char = normalized[index];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (char === '{' || char === '[') {
+        stack.push(char);
+        continue;
+      }
+
+      if (char === '}' || char === ']') {
+        const expected = char === '}' ? '{' : '[';
+        if (stack[stack.length - 1] !== expected) {
+          break;
+        }
+        stack.pop();
+        if (stack.length === 0) {
+          const candidate = normalized.slice(start, index + 1);
+          if (tryParseJson(candidate).ok) {
+            return candidate;
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 function readWorkflowProduce(input: {
   phaseName: string;
   phase: WorkflowPhaseDefinition;
@@ -714,17 +806,29 @@ function readWorkflowProduce(input: {
   }
 
   if (input.phase.produce.from === 'assistant-json') {
-    try {
+    const direct = tryParseJson(input.assistantText);
+    if (direct.ok) {
       return {
         ok: true,
-        value: JSON.parse(input.assistantText),
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        message: `phase "${input.phaseName}" assistant-json output is invalid: ${error instanceof Error ? error.message : String(error)}`,
+        value: direct.value,
       };
     }
+
+    const extracted = extractEmbeddedJson(input.assistantText);
+    if (extracted) {
+      const parsed = tryParseJson(extracted);
+      if (parsed.ok) {
+        return {
+          ok: true,
+          value: parsed.value,
+        };
+      }
+    }
+
+    return {
+      ok: false,
+      message: `phase "${input.phaseName}" assistant-json output is invalid: ${direct.error instanceof Error ? direct.error.message : String(direct.error)}`,
+    };
   }
 
   const filePath = input.phase.produce.from.file;
