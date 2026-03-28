@@ -782,7 +782,11 @@ function extractEmbeddedJson(text: string): string | null {
         }
         stack.pop();
         if (stack.length === 0) {
-          return normalized.slice(start, index + 1);
+          const candidate = normalized.slice(start, index + 1);
+          if (tryParseJson(candidate).ok) {
+            return candidate;
+          }
+          break;
         }
       }
     }

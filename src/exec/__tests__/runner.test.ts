@@ -430,6 +430,43 @@ describe('exec runner', () => {
     });
   });
 
+  it('skips non-JSON balanced substrings before later assistant-json payloads', async () => {
+    const cwd = createGitRepo('melos-exec-bracket-assistant-json-skip-');
+    const engine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'I found {the best approach}. Here is the data: {"sources":["https://example.com/final-source"]}',
+        exitCode: 0,
+      }),
+    ]);
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: 'Research the topic and return JSON.',
+              produce: { from: 'assistant-json' },
+              next: 'stop',
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.report?.evidence?.workflow?.outputs).toEqual({
+      research: {
+        _keys: ['sources'],
+        _size: Buffer.byteLength(JSON.stringify({ sources: ['https://example.com/final-source'] }), 'utf8'),
+      },
+    });
+  });
+
   it('applies per-phase run overrides and keeps every phase execution on a fresh thread', async () => {
     const cwd = createGitRepo('melos-exec-phase-overrides-');
     mkdirSync(join(cwd, 'research'), { recursive: true });
