@@ -727,10 +727,12 @@ function extractEmbeddedJson(text: string): string | null {
     return null;
   }
 
-  const fencedMatch = normalized.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fencedMatch?.[1]) {
-    const fenced = fencedMatch[1].trim();
-    if (fenced.length > 0) {
+  for (const fencedMatch of normalized.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    const fenced = fencedMatch[1]?.trim();
+    if (!fenced || fenced.length === 0) {
+      continue;
+    }
+    if (tryParseJson(fenced).ok) {
       return fenced;
     }
   }
