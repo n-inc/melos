@@ -96,6 +96,20 @@ describe('skillContextProvider', () => {
     );
   });
 
+  it('throws on empty alias (@/skill)', async () => {
+    const provider = skillContextProvider('@/skill', tmpDir, {});
+    await expect(provider(stubContext(tmpDir))).rejects.toThrow(
+      'empty alias',
+    );
+  });
+
+  it('throws on empty skill name (@alias/)', async () => {
+    const provider = skillContextProvider('@alias/', tmpDir, { alias: './some-repo' });
+    await expect(provider(stubContext(tmpDir))).rejects.toThrow(
+      'empty skill name',
+    );
+  });
+
   it('strips YAML frontmatter from skill content', async () => {
     const skillDir = join(tmpDir, '.claude/skills/fm-skill');
     await mkdir(skillDir, { recursive: true });

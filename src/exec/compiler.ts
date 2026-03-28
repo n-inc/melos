@@ -238,6 +238,12 @@ export function skillContextProvider(
       }
       const alias = ref.slice(1, slashIdx);
       const skillName = ref.slice(slashIdx + 1);
+      if (!alias) {
+        throw new Error(`Invalid skill ref "${ref}": empty alias — expected @alias/skill-name`);
+      }
+      if (!skillName) {
+        throw new Error(`Invalid skill ref "${ref}": empty skill name — expected @alias/skill-name`);
+      }
       const repoPath = repos?.[alias];
       if (!repoPath) {
         throw new Error(
