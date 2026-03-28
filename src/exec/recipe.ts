@@ -145,6 +145,8 @@ export type ContextProvider = (
   ctx: RecipeContextBase
 ) => MaybePromise<PromptSection | PromptSection[] | null | undefined>;
 
+export type SkillRef = string | { path: string };
+
 export type Evaluator = (ctx: EvaluationContext) => MaybePromise<ObservationInput>;
 
 export interface DecisionStateUpdate {
@@ -333,6 +335,7 @@ export interface RecipeDefinition {
 
 export interface WorkflowPhaseConfig {
   task: string | ((ctx: PromptContext) => MaybePromise<string>);
+  skills?: SkillRef[];
   context?: ContextProvider[];
   run?: Partial<RecipeRunConfig>;
   check?: Array<string | ShellCommandSpec>;
@@ -347,6 +350,7 @@ export interface WorkflowPhaseConfig {
 
 export interface RecipeConfig {
   run: RecipeRunConfig;
+  skills?: SkillRef[];
   workflow: {
     start: string;
     phases: Record<string, WorkflowPhaseConfig>;
