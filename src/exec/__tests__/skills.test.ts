@@ -66,6 +66,36 @@ describe('skillContextProvider', () => {
     });
   });
 
+  it('resolves @alias/skill-name using repos map', async () => {
+    const flowDir = join(tmpDir, 'repos/flow');
+    const skillDir = join(flowDir, '.claude/skills/deploy');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, 'SKILL.md'), '---\nname: deploy\n---\n\n# Deploy\n\nDeploy the app.');
+
+    const repos = { flow: './repos/flow' };
+    const provider = skillContextProvider('@flow/deploy', tmpDir, repos);
+    const result = await provider(stubContext(tmpDir));
+
+    expect(result).toEqual({
+      title: 'Skill: deploy',
+      content: '# Deploy\n\nDeploy the app.',
+    });
+  });
+
+  it('throws on unknown repo alias', async () => {
+    const provider = skillContextProvider('@unknown/skill', tmpDir, {});
+    await expect(provider(stubContext(tmpDir))).rejects.toThrow(
+      'Unknown repo alias "unknown"',
+    );
+  });
+
+  it('throws on malformed @ref without slash', async () => {
+    const provider = skillContextProvider('@noSlash', tmpDir, {});
+    await expect(provider(stubContext(tmpDir))).rejects.toThrow(
+      'Invalid skill ref "@noSlash": expected @alias/skill-name',
+    );
+  });
+
   it('strips YAML frontmatter from skill content', async () => {
     const skillDir = join(tmpDir, '.claude/skills/fm-skill');
     await mkdir(skillDir, { recursive: true });
@@ -187,6 +217,37 @@ describe('compileRecipeConfig with skills', () => {
     });
 
     expect(compiled.workflow.phases.draft.context).toEqual([]);
+  });
+
+  it('resolves @alias skills at runtime via repos map', async () => {
+    const flowDir = join(tmpDir, 'repos/flow');
+    const skillDir = join(flowDir, '.claude/skills/target-skill');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, 'SKILL.md'), '---\nname: target-skill\n---\n\nTarget repo skill.');
+
+    const compiled = compileRecipeConfig({
+      run: { engine: 'auto' },
+      repos: { flow: './repos/flow' },
+      skills: ['@flow/target-skill'],
+      workflow: {
+        start: 'deploy',
+        phases: {
+          deploy: {
+            task: 'Deploy it',
+            next: 'stop',
+          },
+        },
+      },
+    });
+
+    const ctx = stubContext(tmpDir);
+    const provider = compiled.workflow.phases.deploy.context[0];
+    const result = await provider(ctx);
+
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toEqual([
+      { title: 'Skill: target-skill', content: 'Target repo skill.' },
+    ]);
   });
 
   it('skill provider reads file at runtime using ctx.cwd', async () => {

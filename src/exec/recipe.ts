@@ -325,6 +325,7 @@ export interface WorkflowDefinition {
 export interface RecipeDefinition {
   apiVersion: 2;
   run: RecipeRunConfig;
+  repos?: Record<string, string>;
   workflow: WorkflowDefinition;
   limits?: RecipeLimits;
   report?: RecipeReportConfig;
@@ -350,6 +351,7 @@ export interface WorkflowPhaseConfig {
 
 export interface RecipeConfig {
   run: RecipeRunConfig;
+  repos?: Record<string, string>;
   skills?: SkillRef[];
   workflow: {
     start: string;

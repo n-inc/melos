@@ -222,14 +222,41 @@ function buildLoopPolicy(config: WorkflowPhaseConfig): Policy {
   };
 }
 
-export function skillContextProvider(ref: SkillRef, cwd: string): ContextProvider {
+export function skillContextProvider(
+  ref: SkillRef,
+  cwd: string,
+  repos?: Record<string, string>,
+): ContextProvider {
   return async () => {
-    const path = typeof ref === 'string'
-      ? resolve(cwd, '.claude/skills', ref, 'SKILL.md')
-      : resolve(cwd, ref.path);
-    const content = await readFile(path, 'utf-8');
+    let skillPath: string;
+    let name: string;
+
+    if (typeof ref === 'string' && ref.startsWith('@')) {
+      const slashIdx = ref.indexOf('/', 1);
+      if (slashIdx === -1) {
+        throw new Error(`Invalid skill ref "${ref}": expected @alias/skill-name`);
+      }
+      const alias = ref.slice(1, slashIdx);
+      const skillName = ref.slice(slashIdx + 1);
+      const repoPath = repos?.[alias];
+      if (!repoPath) {
+        throw new Error(
+          `Unknown repo alias "${alias}" in skill ref "${ref}". `
+          + `Declare it in route repos: { "${alias}": "../path" }`,
+        );
+      }
+      skillPath = resolve(cwd, repoPath, '.claude/skills', skillName, 'SKILL.md');
+      name = skillName;
+    } else if (typeof ref === 'string') {
+      skillPath = resolve(cwd, '.claude/skills', ref, 'SKILL.md');
+      name = ref;
+    } else {
+      skillPath = resolve(cwd, ref.path);
+      name = basename(ref.path, '.md');
+    }
+
+    const content = await readFile(skillPath, 'utf-8');
     const body = content.replace(/^---[\s\S]*?---\n*/, '');
-    const name = typeof ref === 'string' ? ref : basename(ref.path, '.md');
     return { title: `Skill: ${name}`, content: body };
   };
 }
@@ -238,9 +265,10 @@ function resolveSkillProviders(
   routeSkills: SkillRef[] | undefined,
   phaseSkills: SkillRef[] | undefined,
   cwd: string,
+  repos?: Record<string, string>,
 ): ContextProvider[] {
   const merged = [...(routeSkills ?? []), ...(phaseSkills ?? [])];
-  return merged.map((ref) => skillContextProvider(ref, cwd));
+  return merged.map((ref) => skillContextProvider(ref, cwd, repos));
 }
 
 function hasEvaluatorConfig(config: WorkflowPhaseConfig): boolean {
@@ -257,6 +285,7 @@ function compilePhaseConfig(
   phaseName: string,
   config: WorkflowPhaseConfig,
   routeSkills?: SkillRef[],
+  repos?: Record<string, string>,
 ): WorkflowPhaseDefinition {
   if (typeof config.task !== 'string' && typeof config.task !== 'function') {
     throw new Error(`workflow phase "${phaseName}" task is required`);
@@ -266,7 +295,7 @@ function compilePhaseConfig(
   const hasSkills = (routeSkills && routeSkills.length > 0) || (config.skills && config.skills.length > 0);
   const skillProviders: ContextProvider[] = hasSkills
     ? [async (ctx) => {
-        const providers = resolveSkillProviders(routeSkills, config.skills, ctx.cwd);
+        const providers = resolveSkillProviders(routeSkills, config.skills, ctx.cwd, repos);
         const results = await Promise.all(providers.map((p) => p(ctx)));
         return results.flat().filter((s): s is NonNullable<typeof s> => s != null);
       }]
@@ -330,12 +359,13 @@ export function compileRecipeConfig(config: RecipeConfig): Omit<RecipeDefinition
   const phases = Object.fromEntries(
     Object.entries(config.workflow.phases ?? {}).map(([phaseName, phaseConfig]) => [
       phaseName,
-      compilePhaseConfig(phaseName, phaseConfig, config.skills),
+      compilePhaseConfig(phaseName, phaseConfig, config.skills, config.repos),
     ])
   );
 
   return {
     run: config.run,
+    repos: config.repos,
     workflow: {
       start: config.workflow.start,
       phases,
