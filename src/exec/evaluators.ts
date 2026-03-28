@@ -367,6 +367,42 @@ function buildLlmEvaluatePrompt(input: {
   );
 }
 
+function truncatePromptText(text: string, maxLength = 12000): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  const omitted = text.length - maxLength;
+  return `${text.slice(0, maxLength)}\n...(truncated ${omitted} chars)`;
+}
+
+function buildPhaseOutputSections(ctx: Parameters<Evaluator>[0]): Array<{ title: string; content: string }> {
+  const phaseName = ctx.workflow?.phase ?? ctx.state.currentPhase;
+  if (!phaseName) {
+    return [];
+  }
+
+  const output = ctx.state.outputs[phaseName];
+  if (output === undefined) {
+    return [];
+  }
+
+  const content = typeof output === 'string'
+    ? output
+    : JSON.stringify(output, null, 2);
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    return [];
+  }
+
+  if (content.trim() === ctx.assistantText.trim()) {
+    return [];
+  }
+
+  return [{
+    title: 'current phase output',
+    content: truncatePromptText(content),
+  }];
+}
+
 function normalizeLlmCriteria(
   parsed: unknown,
   criteria: string[]
@@ -449,7 +485,7 @@ export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
     const prompt = buildLlmEvaluatePrompt({
       assistantText: ctx.assistantText,
       criteria: options.criteria,
-      sections: [],
+      sections: buildPhaseOutputSections(ctx),
     });
     const engineOptions = buildLlmEngineOptions(engineName, options, ctx.runConfig, ctx.cwd);
 

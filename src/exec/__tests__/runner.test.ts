@@ -342,6 +342,49 @@ describe('exec runner', () => {
     expect(summary.summary).toMatch(/assistant-json/i);
   });
 
+  it('extracts embedded JSON from assistant-json output when the engine adds prose', async () => {
+    const cwd = createGitRepo('melos-exec-embedded-assistant-json-');
+    const engine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: [
+          'Done. I wrote the brief below.',
+          '```json',
+          JSON.stringify({ sources: ['https://example.com/source'] }, null, 2),
+          '```',
+          'No further changes.',
+        ].join('\n'),
+        exitCode: 0,
+      }),
+    ]);
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: 'Research the topic and return JSON.',
+              produce: { from: 'assistant-json' },
+              next: 'stop',
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.report?.evidence?.workflow?.outputs).toEqual({
+      research: {
+        _keys: ['sources'],
+        _size: Buffer.byteLength(JSON.stringify({ sources: ['https://example.com/source'] }), 'utf8'),
+      },
+    });
+  });
+
   it('applies per-phase run overrides and keeps every phase execution on a fresh thread', async () => {
     const cwd = createGitRepo('melos-exec-phase-overrides-');
     mkdirSync(join(cwd, 'research'), { recursive: true });
@@ -502,6 +545,120 @@ describe('exec runner', () => {
     expect(summary.iterations).toBe(2);
     expect(engine.prompts[1]).toContain('Latest Failure');
     expect(engine.prompts[1]).toContain('type boom');
+  });
+
+  it('includes current phase output in llm evaluation when produce writes JSON to a file', async () => {
+    const cwd = createGitRepo('melos-exec-llm-phase-output-');
+    mkdirSync(join(cwd, '.melos'), { recursive: true });
+    const engine = new ScriptedEngine([
+      async (options) => {
+        writeFileSync(join(String(options?.cwd), '.melos', 'review-result.json'), JSON.stringify({
+          blockingCount: 0,
+          findings: ['Keep the FAQ link'],
+        }), 'utf-8');
+        return {
+          success: true,
+          output: 'Saved review-result.json',
+          exitCode: 0,
+        };
+      },
+    ]);
+    const evaluateSpy = jest.spyOn(AppServerEngine.prototype, 'execute').mockImplementation(async (prompt) => ({
+      success: true,
+      output: JSON.stringify({
+        criteria: [
+          {
+            criterion: 'Review result keeps the FAQ link',
+            verdict: prompt.includes('"Keep the FAQ link"') ? 'yes' : 'no',
+            rationale: 'Checked the serialized phase output.',
+          },
+        ],
+      }),
+      exitCode: 0,
+    }));
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd, model: 'codex-latest' },
+        workflow: {
+          start: 'review',
+          phases: {
+            review: {
+              task: 'Review the article and save JSON.',
+              produce: { from: { file: '.melos/review-result.json' } },
+              pass: ['Review result keeps the FAQ link'],
+              on: {
+                pass: 'stop',
+                fail: { goto: 'review-fix' },
+              },
+            },
+            'review-fix': {
+              task: 'Fix the latest review feedback.',
+              next: { goto: 'review' },
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+    });
+
+    expect(summary.success).toBe(true);
+    expect(evaluateSpy).toHaveBeenCalledTimes(1);
+    expect(evaluateSpy.mock.calls[0]?.[0]).toContain('current phase output');
+    expect(evaluateSpy.mock.calls[0]?.[0]).toContain('"Keep the FAQ link"');
+
+    evaluateSpy.mockRestore();
+  });
+
+  it('fails with an explicit message when QUESTION cannot be resolved in --no-ask mode', async () => {
+    const cwd = createGitRepo('melos-exec-no-ask-question-');
+    const engine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'QUESTION: Which audience should this article target?',
+        exitCode: 0,
+      }),
+      async () => ({
+        success: true,
+        output: JSON.stringify({
+          resolved: false,
+          rationale: 'No audience information available.',
+        }),
+        exitCode: 0,
+      }),
+    ]);
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd },
+        workflow: {
+          start: 'outline',
+          phases: {
+            outline: {
+              task: 'Draft the outline.',
+              check: ['true'],
+              on: {
+                pass: 'stop',
+                fail: { goto: 'outline-fix' },
+                ask: { goto: 'outline-fix' },
+              },
+            },
+            'outline-fix': {
+              task: 'Answer the blocking question or adjust the outline.',
+              next: { goto: 'outline' },
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      askMode: 'never-user',
+    });
+
+    expect(summary.success).toBe(false);
+    expect(summary.summary).toContain('--no-ask');
+    expect(summary.summary).toContain('QUESTION');
   });
 
   it('stops after an llm evaluation error retry instead of following on.fail', async () => {
