@@ -91,11 +91,11 @@ describe('exec runner', () => {
             research: {
               task: 'Research the topic and return JSON.',
               produce: { from: 'assistant-json' },
-              next: { goto: 'write' },
+              on: { pass: { goto: 'write' } },
             },
             write: {
               task: ({ state }) => `Write the article.\nSources count: ${((state.outputs.research as { sources?: string[] } | undefined)?.sources ?? []).length}`,
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -115,6 +115,112 @@ describe('exec runner', () => {
         }), 'utf8'),
       },
     });
+  });
+
+  it('starts from an explicit resume phase when startPhase is provided', async () => {
+    const cwd = createGitRepo('melos-exec-resume-phase-');
+    const engine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'write resumed',
+        exitCode: 0,
+      }),
+    ]);
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: 'Research the topic and return JSON.',
+              produce: { from: 'assistant-json' },
+              next: { goto: 'write' },
+            },
+            write: {
+              task: 'Write the article draft.',
+              next: 'stop',
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      startPhase: 'write',
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(1);
+    expect(engine.prompts).toHaveLength(1);
+    expect(engine.prompts[0]).toContain('Write the article draft.');
+    expect(summary.report?.evidence?.workflow?.history).toEqual([
+      expect.objectContaining({ phase: 'write' }),
+    ]);
+  });
+
+  it('restores prior workflow outputs when resuming a later phase', async () => {
+    const cwd = createGitRepo('melos-exec-resume-state-');
+    const recipe = createRoute({
+      run: { engine: new ScriptedEngine([
+        async () => ({
+          success: true,
+          output: JSON.stringify({ notes: ['carry-forward'] }),
+          exitCode: 0,
+        }),
+      ]), cwd },
+      workflow: {
+        start: 'research',
+        phases: {
+          research: {
+            task: 'Research the topic and return JSON.',
+            produce: { from: 'assistant-json' },
+            next: { goto: 'write' },
+          },
+          write: {
+            task: ({ state }) => `Write using ${(state.outputs.research as { notes?: string[] } | undefined)?.notes?.length ?? 0} notes.`,
+            next: 'stop',
+          },
+        },
+      },
+      limits: { maxIterations: 1 },
+    });
+
+    const firstSummary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      recipePath: '/tmp/resume-route.ts',
+    });
+
+    expect(firstSummary.success).toBe(false);
+    expect(firstSummary.summary).toContain('max iterations reached');
+
+    const resumedEngine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'write resumed',
+        exitCode: 0,
+      }),
+    ]);
+
+    const resumedSummary = await runRoute({
+      recipe: createRoute({
+        run: { engine: resumedEngine, cwd },
+        workflow: recipe.workflow,
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      recipePath: '/tmp/resume-route.ts',
+      startPhase: 'write',
+    });
+
+    expect(resumedSummary.success).toBe(true);
+    expect(resumedEngine.prompts[0]).toContain('Write using 1 notes.');
+    expect(resumedSummary.report?.evidence?.workflow?.history).toEqual([
+      expect.objectContaining({ phase: 'research' }),
+      expect.objectContaining({ phase: 'write' }),
+    ]);
   });
 
   it('supports a review-fix-review workflow with file produce and transitions', async () => {
@@ -151,10 +257,12 @@ describe('exec runner', () => {
             review: {
               task: 'Review the current work and write review-result.json.',
               produce: { from: { file: '.melos/review-result.json' } },
-              measure: {
-                command: `node -e "process.stdout.write(require('fs').readFileSync('.melos/review-result.json', 'utf8'))"`,
+              validate: {
+                metrics: {
+                  command: `node -e "process.stdout.write(require('fs').readFileSync('.melos/review-result.json', 'utf8'))"`,
+                  thresholds: { metric: 'blockingCount', below: 1 },
+                },
               },
-              until: { metric: 'blockingCount', below: 1 },
               on: {
                 pass: 'stop',
                 fail: { goto: 'fix' },
@@ -162,7 +270,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix valid findings from review-result.json.',
-              next: { goto: 'review' },
+              on: { pass: { goto: 'review' } },
             },
           },
         },
@@ -192,6 +300,7 @@ describe('exec runner', () => {
 
   it('supports a longer blog workflow with review loops', async () => {
     const cwd = createGitRepo('melos-exec-blog-workflow-');
+    const events: MissionEvent[] = [];
     const engine = new ScriptedEngine([
       async () => ({
         success: true,
@@ -256,15 +365,17 @@ describe('exec runner', () => {
             research: {
               task: 'Research the topic and return JSON.',
               produce: { from: 'assistant-json' },
-              next: { goto: 'write' },
+              on: { pass: { goto: 'write' } },
             },
             write: {
               task: ({ state }) => `Write the article using ${(state.outputs.research as { notes?: string[] } | undefined)?.notes?.length ?? 0} notes.`,
-              next: { goto: 'proofread' },
+              on: { pass: { goto: 'proofread' } },
             },
             proofread: {
               task: 'Proofread the article.',
-              pass: ['Draft is polished'],
+              validate: {
+                llm: ['Draft is polished'],
+              },
               on: {
                 pass: { goto: 'factcheck' },
                 fail: { goto: 'write' },
@@ -272,7 +383,9 @@ describe('exec runner', () => {
             },
             factcheck: {
               task: 'Fact-check the article.',
-              pass: ['Facts are accurate'],
+              validate: {
+                llm: ['Facts are accurate'],
+              },
               on: {
                 pass: { goto: 'review' },
                 fail: { goto: 'write' },
@@ -280,7 +393,9 @@ describe('exec runner', () => {
             },
             review: {
               task: 'Review the final article.',
-              pass: ['Ready to publish'],
+              validate: {
+                llm: ['Ready to publish'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'write' },
@@ -288,6 +403,12 @@ describe('exec runner', () => {
             },
           },
         },
+        log: eventLog({
+          melosDir: join(cwd, '.melos'),
+          onEvent: (event) => {
+            events.push(event);
+          },
+        }),
       }),
       cwd,
       melosDir: join(cwd, '.melos'),
@@ -298,12 +419,18 @@ describe('exec runner', () => {
     expect(summary.report?.evidence?.workflow?.history).toEqual([
       { phase: 'research', summary: 'Research the topic and return JSON.', decision: 'goto:write' },
       { phase: 'write', summary: 'Write the article using 2 notes.', decision: 'goto:proofread' },
-      { phase: 'proofread', summary: 'pass: llm evaluation failed', decision: 'goto:write' },
+      { phase: 'proofread', summary: 'llm: llm evaluation failed', decision: 'goto:write', loop: 'proofread', loopIteration: 1 },
       { phase: 'write', summary: 'Write the article using 2 notes.', decision: 'goto:proofread' },
-      { phase: 'proofread', summary: 'pass: llm evaluation passed', decision: 'goto:factcheck' },
-      { phase: 'factcheck', summary: 'pass: llm evaluation passed', decision: 'goto:review' },
-      { phase: 'review', summary: 'pass: llm evaluation passed', decision: 'stop' },
+      { phase: 'proofread', summary: 'llm: llm evaluation passed', decision: 'goto:factcheck', loop: 'proofread', loopIteration: 2 },
+      { phase: 'factcheck', summary: 'llm: llm evaluation passed', decision: 'goto:review', loop: 'factcheck', loopIteration: 1 },
+      { phase: 'review', summary: 'llm: llm evaluation passed', decision: 'stop', loop: 'review', loopIteration: 1 },
     ]);
+    expect(events.some((event) => (
+      event.type === 'phase_transitioned'
+      && event.payload.phase === 'proofread'
+      && event.payload.loop === 'proofread'
+      && event.payload.loopIteration === 2
+    ))).toBe(true);
 
     evaluateSpy.mockRestore();
     shutdownSpy.mockRestore();
@@ -328,7 +455,7 @@ describe('exec runner', () => {
             research: {
               task: 'Research the topic and return JSON.',
               produce: { from: 'assistant-json' },
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -484,11 +611,11 @@ describe('exec runner', () => {
             research: {
               task: 'Research the topic.',
               run: { cwd: 'research', model: 'phase-model' },
-              next: { goto: 'write' },
+              on: { pass: { goto: 'write' } },
             },
             write: {
               task: 'Write the article.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -519,11 +646,11 @@ describe('exec runner', () => {
           phases: {
             research: {
               task: 'Research the topic.',
-              next: { goto: 'write' },
+              on: { pass: { goto: 'write' } },
             },
             write: {
               task: 'Write the article.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -577,7 +704,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix the article.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -606,7 +733,9 @@ describe('exec runner', () => {
           phases: {
             validate: {
               task: 'Validate the current state.',
-              check: ['node -e "console.error(\'type boom\'); process.exit(1)"'],
+              validate: {
+                shell: ['node -e "console.error(\'type boom\'); process.exit(1)"'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'fix' },
@@ -614,7 +743,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix the latest validation failure.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -668,7 +797,9 @@ describe('exec runner', () => {
             review: {
               task: 'Review the article and save JSON.',
               produce: { from: { file: '.melos/review-result.json' } },
-              pass: ['Review result keeps the FAQ link'],
+              validate: {
+                llm: ['Review result keeps the FAQ link'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'review-fix' },
@@ -676,7 +807,7 @@ describe('exec runner', () => {
             },
             'review-fix': {
               task: 'Fix the latest review feedback.',
-              next: { goto: 'review' },
+              on: { pass: { goto: 'review' } },
             },
           },
         },
@@ -719,7 +850,9 @@ describe('exec runner', () => {
           phases: {
             outline: {
               task: 'Draft the outline.',
-              check: ['true'],
+              validate: {
+                shell: ['true'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'outline-fix' },
@@ -728,7 +861,7 @@ describe('exec runner', () => {
             },
             'outline-fix': {
               task: 'Answer the blocking question or adjust the outline.',
-              next: { goto: 'outline' },
+              on: { pass: { goto: 'outline' } },
             },
           },
         },
@@ -764,7 +897,9 @@ describe('exec runner', () => {
           phases: {
             review: {
               task: 'Review the final article.',
-              pass: ['Ready to publish'],
+              validate: {
+                llm: ['Ready to publish'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'fix' },
@@ -772,7 +907,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix the article.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -805,10 +940,12 @@ describe('exec runner', () => {
           phases: {
             validate: {
               task: 'Validate the current state.',
-              check: [{
-                command: 'node -e "setTimeout(() => {}, 100)"',
-                timeoutMs: 10,
-              }],
+              validate: {
+                shell: [{
+                  command: 'node -e "setTimeout(() => {}, 100)"',
+                  timeoutMs: 10,
+                }],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'fix' },
@@ -816,7 +953,7 @@ describe('exec runner', () => {
             },
             fix: {
               task: 'Fix the latest validation failure.',
-              next: 'stop',
+              on: { pass: 'stop' },
             },
           },
         },
@@ -854,7 +991,9 @@ describe('exec runner', () => {
           phases: {
             review: {
               task: 'Review the final article.',
-              pass: ['Ready to publish'],
+              validate: {
+                llm: ['Ready to publish'],
+              },
               on: {
                 pass: 'stop',
                 fail: 'stop',
@@ -1020,68 +1159,4 @@ describe('exec runner', () => {
     expect(engine.prompts).toHaveLength(3);
   });
 
-  it('restores workflow outputs when resuming from a later phase', async () => {
-    const cwd = createGitRepo('melos-exec-resume-from-phase-');
-    const melosDir = join(cwd, '.melos');
-    const firstEngine = new ScriptedEngine([
-      async () => ({
-        success: true,
-        output: JSON.stringify({
-          sources: ['https://example.com/a', 'https://example.com/b'],
-        }),
-        exitCode: 0,
-      }),
-    ]);
-
-    const recipe = createRoute({
-      run: { engine: firstEngine, cwd },
-      workflow: {
-        start: 'research',
-        phases: {
-          research: {
-            task: 'Research the topic and return JSON.',
-            produce: { from: 'assistant-json' },
-            next: { goto: 'write' },
-          },
-          write: {
-            task: ({ state }) => `Write the article.\nSources count: ${((state.outputs.research as { sources?: string[] } | undefined)?.sources ?? []).length}`,
-            next: 'stop',
-          },
-        },
-      },
-      limit: 1,
-    });
-
-    const firstRun = await runRoute({
-      recipe,
-      cwd,
-      melosDir,
-    });
-
-    expect(firstRun.success).toBe(false);
-    expect(firstRun.summary).toContain('max iterations reached');
-
-    const resumedEngine = new ScriptedEngine([
-      async (_options, prompt) => ({
-        success: true,
-        output: prompt.includes('Sources count: 2') ? 'draft written' : 'missing prior outputs',
-        exitCode: 0,
-      }),
-    ]);
-
-    const resumedRun = await runRoute({
-      recipe: createRoute({
-        run: { engine: resumedEngine, cwd },
-        workflow: recipe.workflow,
-      }),
-      cwd,
-      melosDir,
-      startPhase: 'write',
-    });
-
-    expect(resumedRun.success).toBe(true);
-    expect(resumedRun.iterations).toBe(2);
-    expect(resumedEngine.prompts).toHaveLength(1);
-    expect(resumedEngine.prompts[0]).toContain('Sources count: 2');
-  });
 });

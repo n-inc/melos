@@ -148,7 +148,7 @@ describe('compileRecipeConfig with skills', () => {
         phases: {
           draft: {
             task: 'Write a draft',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
@@ -166,7 +166,7 @@ describe('compileRecipeConfig with skills', () => {
           lint: {
             task: 'Lint the text',
             skills: ['human-writing'],
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
@@ -185,7 +185,7 @@ describe('compileRecipeConfig with skills', () => {
           draft: {
             task: 'Write a draft',
             skills: ['extra-skill'],
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
@@ -206,7 +206,7 @@ describe('compileRecipeConfig with skills', () => {
           draft: {
             task: 'Write a draft',
             context: [userProvider],
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
@@ -224,7 +224,7 @@ describe('compileRecipeConfig with skills', () => {
         phases: {
           draft: {
             task: 'Write a draft',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
@@ -248,7 +248,7 @@ describe('compileRecipeConfig with skills', () => {
         phases: {
           deploy: {
             task: 'Deploy it',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
@@ -277,7 +277,7 @@ describe('compileRecipeConfig with skills', () => {
         phases: {
           draft: {
             task: 'Write a draft',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },

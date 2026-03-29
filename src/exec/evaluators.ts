@@ -5,6 +5,7 @@ import { AppServerEngine } from '../engines/app-server.js';
 import { ClaudeEngine } from '../engines/claude.js';
 import type { Engine, EngineOptions } from '../engines/base.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
+import { parseJsonOrEmbedded } from './json.js';
 import { renderPromptWithSections } from './prompt-sections.js';
 import { normalizeObservation, type Evaluator, type Observation, type ObservationInput, type RecipeRunConfig } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
@@ -348,6 +349,8 @@ function buildLlmEvaluatePrompt(input: {
   return renderPromptWithSections(
     [
       'Evaluate the candidate answer against every criterion.',
+      'Do not use tools, file reads, web access, or external context.',
+      'Use only the candidate answer and provided sections in this prompt.',
       'Return strict JSON with this exact shape:',
       '{"criteria":[{"criterion":"...","verdict":"yes|no","rationale":"..."}]}',
       'Use only "yes" or "no" for verdict.',
@@ -517,10 +520,8 @@ export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
         });
       }
 
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(result.output);
-      } catch (error) {
+      const parsed = parseJsonOrEmbedded(result.output);
+      if (!parsed.ok) {
         if (attempt < LLM_EVALUATE_MAX_ATTEMPTS) {
           continue;
         }
@@ -528,7 +529,7 @@ export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
           ok: false,
           status: 'error',
           summary: 'llm evaluation returned invalid JSON',
-          details: error instanceof Error ? error.message : String(error),
+          details: parsed.error instanceof Error ? parsed.error.message : String(parsed.error),
           data: {
             engine: engineName,
             output: result.output,
@@ -537,7 +538,7 @@ export function llmEvaluate(options: LlmEvaluateOptions): Evaluator {
         });
       }
 
-      const normalized = normalizeLlmCriteria(parsed, options.criteria);
+      const normalized = normalizeLlmCriteria(parsed.value, options.criteria);
       if (!normalized) {
         if (attempt < LLM_EVALUATE_MAX_ATTEMPTS) {
           continue;

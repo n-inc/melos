@@ -196,13 +196,17 @@ function normalizePassEvidence(criteria: unknown): FinalReportPassEvidence[] | u
 
 function buildEvidence(observation?: Observation, workflow?: FinalReportWorkflowEvidence): FinalReport['evidence'] | undefined {
   const data = observation?.data;
-  const checks = isRecord(data) && isRecord(data.check)
-    ? normalizeCheckEvidence(data.check.checks)
+  const checks = isRecord(data) && isRecord(data.shell)
+    ? normalizeCheckEvidence(data.shell.checks)
+    : isRecord(data) && isRecord(data.check)
+      ? normalizeCheckEvidence(data.check.checks)
     : isRecord(data)
       ? normalizeCheckEvidence(data.checks)
       : undefined;
-  const pass = isRecord(data) && isRecord(data.pass)
-    ? normalizePassEvidence(data.pass.criteria)
+  const pass = isRecord(data) && isRecord(data.llm)
+    ? normalizePassEvidence(data.llm.criteria)
+    : isRecord(data) && isRecord(data.pass)
+      ? normalizePassEvidence(data.pass.criteria)
     : isRecord(data)
       ? normalizePassEvidence(data.criteria)
       : undefined;
@@ -570,6 +574,9 @@ function renderEvidence(report: FinalReport): string[] {
   if (evidence.workflow) {
     lines.push('Workflow Outputs:');
     lines.push(...renderWorkflowOutputSummary(evidence.workflow.outputs));
+    if (evidence.workflow.loopCounts && Object.keys(evidence.workflow.loopCounts).length > 0) {
+      lines.push(`Workflow Loop Counts: ${JSON.stringify(evidence.workflow.loopCounts)}`);
+    }
   }
   return lines;
 }

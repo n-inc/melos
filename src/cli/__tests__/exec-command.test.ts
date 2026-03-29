@@ -68,6 +68,29 @@ describe('cli run command', () => {
     }));
   });
 
+  it('maps --start-phase to run startPhase', () => {
+    expect(buildRunCommandOptions({
+      route: '/tmp/sample.ts',
+      model: 'codex-latest',
+      outputFormat: 'text',
+      startPhase: 'draft',
+    })).toEqual(expect.objectContaining({
+      route: '/tmp/sample.ts',
+      startPhase: 'draft',
+    }));
+  });
+
+  it('maps route positional path and start phase together', () => {
+    expect(buildRouteCommandOptions('/tmp/sample.ts', {
+      model: 'codex-latest',
+      outputFormat: 'text',
+      startPhase: 'draft',
+    })).toEqual(expect.objectContaining({
+      route: '/tmp/sample.ts',
+      startPhase: 'draft',
+    }));
+  });
+
   it('does not set a commander default for --model', () => {
     const program = createProgram();
     const runCommand = program.commands.find((command) => command.name() === 'run');

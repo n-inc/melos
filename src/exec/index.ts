@@ -34,9 +34,9 @@ export interface ExecCommandOptions {
   prompt?: string;
   model?: string;
   cwd?: string;
-  startPhase?: string;
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   outputFormat?: ExecOutputFormat;
+  startPhase?: string;
   stdin?: NodeJS.ReadableStream;
   stdout?: NodeJS.WritableStream;
   stderr?: NodeJS.WritableStream;
@@ -142,6 +142,10 @@ export function clearConfiguredRunArtifacts(cwd: string, recipe: RecipeDefinitio
   rmSync(resolveReportPath(cwd, recipe.report), { force: true });
 }
 
+export function shouldResetRunArtifacts(options: ExecCommandOptions): boolean {
+  return typeof options.startPhase !== 'string' || options.startPhase.trim().length === 0;
+}
+
 function formatTextSummary(summary: ExecRunSummary): string {
   if (summary.status === 'asked') {
     return summary.question ?? summary.summary;
@@ -204,7 +208,9 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
   const cwd = resolve(options.cwd ?? process.cwd());
   const melosDir = join(cwd, '.melos');
   mkdirSync(melosDir, { recursive: true });
-  clearStaleRunArtifacts(melosDir);
+  if (shouldResetRunArtifacts(options)) {
+    clearStaleRunArtifacts(melosDir);
+  }
 
   const outputFormat = options.outputFormat ?? 'text';
   const askMode = resolveAskMode(options);
@@ -277,7 +283,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       });
     }
 
-    if (!options.startPhase) {
+    if (shouldResetRunArtifacts(options)) {
       clearConfiguredRunArtifacts(cwd, recipe);
     }
 
