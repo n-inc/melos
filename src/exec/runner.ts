@@ -8,7 +8,15 @@ import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
 import { applyConfiguredCommit, assertCommitWorkspaceClean, isCommitEnabled } from './commit.js';
-import { buildIterationHandoff, resolveHandoffFingerprint, writeIterationHandoff } from './handoff.js';
+import {
+  buildIterationHandoff,
+  clearWorkflowResumeState,
+  readWorkflowResumeState,
+  resolveHandoffFingerprint,
+  writeIterationHandoff,
+  writeWorkflowResumeState,
+} from './handoff.js';
+import { parseJsonOrEmbedded } from './json.js';
 import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
 import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
 import {
@@ -56,6 +64,7 @@ export interface RunRouteOptions {
   cwd?: string;
   melosDir: string;
   recipePath?: string;
+  startPhase?: string;
   askMode?: 'agent-first' | 'never-user' | 'always-user';
   askUser?: (input: {
     question: string;
@@ -181,11 +190,15 @@ function truncatePromptText(value: string, maxLength = 4_000): string {
 }
 
 function extractFailureChecks(data: unknown): Array<Record<string, unknown>> | undefined {
-  const checks = isRecord(data) && isRecord(data.check) && Array.isArray(data.check.checks)
-    ? data.check.checks
-    : isRecord(data) && Array.isArray(data.checks)
-      ? data.checks
-      : undefined;
+  let checks: unknown[] | undefined;
+
+  if (isRecord(data) && isRecord(data.shell) && Array.isArray(data.shell.checks)) {
+    checks = data.shell.checks;
+  } else if (isRecord(data) && isRecord(data.check) && Array.isArray(data.check.checks)) {
+    checks = data.check.checks;
+  } else if (isRecord(data) && Array.isArray(data.checks)) {
+    checks = data.checks;
+  }
   if (!checks) {
     return undefined;
   }
@@ -246,6 +259,7 @@ function buildWorkflowSection(state: RunnerState, phaseName: string): PromptSect
       currentPhase: phaseName,
       outputs: state.outputs,
       phaseCounts: state.phaseCounts,
+      loopCounts: state.loopCounts ?? {},
       history: state.history,
     }, null, 2),
   }];
@@ -287,6 +301,7 @@ function createRecipeContext(
         phase: state.currentPhase,
         outputs: state.outputs,
         phaseCounts: state.phaseCounts,
+        loopCounts: state.loopCounts ?? {},
         history: state.history,
       }
       : undefined,
@@ -356,6 +371,7 @@ async function attachFinalReport(input: {
     workflow: {
       outputs: input.state.outputs,
       phaseCounts: input.state.phaseCounts,
+      loopCounts: input.state.loopCounts ?? {},
       history: input.state.history,
     },
   });
@@ -713,88 +729,6 @@ function buildFinalReportCommitRange(range: {
   };
 }
 
-function tryParseJson(text: string): { ok: true; value: unknown } | { ok: false; error: unknown } {
-  try {
-    return { ok: true, value: JSON.parse(text) };
-  } catch (error) {
-    return { ok: false, error };
-  }
-}
-
-function extractEmbeddedJson(text: string): string | null {
-  const normalized = text.trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-
-  for (const fencedMatch of normalized.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
-    const fenced = fencedMatch[1]?.trim();
-    if (!fenced || fenced.length === 0) {
-      continue;
-    }
-    if (tryParseJson(fenced).ok) {
-      return fenced;
-    }
-  }
-
-  for (let start = 0; start < normalized.length; start += 1) {
-    const open = normalized[start];
-    if (open !== '{' && open !== '[') {
-      continue;
-    }
-
-    const stack = [open];
-    let inString = false;
-    let escaped = false;
-
-    for (let index = start + 1; index < normalized.length; index += 1) {
-      const char = normalized[index];
-
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (char === '\\') {
-          escaped = true;
-          continue;
-        }
-        if (char === '"') {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (char === '"') {
-        inString = true;
-        continue;
-      }
-
-      if (char === '{' || char === '[') {
-        stack.push(char);
-        continue;
-      }
-
-      if (char === '}' || char === ']') {
-        const expected = char === '}' ? '{' : '[';
-        if (stack[stack.length - 1] !== expected) {
-          break;
-        }
-        stack.pop();
-        if (stack.length === 0) {
-          const candidate = normalized.slice(start, index + 1);
-          if (tryParseJson(candidate).ok) {
-            return candidate;
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
 function readWorkflowProduce(input: {
   phaseName: string;
   phase: WorkflowPhaseDefinition;
@@ -806,28 +740,17 @@ function readWorkflowProduce(input: {
   }
 
   if (input.phase.produce.from === 'assistant-json') {
-    const direct = tryParseJson(input.assistantText);
-    if (direct.ok) {
+    const parsed = parseJsonOrEmbedded(input.assistantText);
+    if (parsed.ok) {
       return {
         ok: true,
-        value: direct.value,
-      };
-    }
-
-    const extracted = extractEmbeddedJson(input.assistantText);
-    if (extracted) {
-      const parsed = tryParseJson(extracted);
-      if (parsed.ok) {
-        return {
-          ok: true,
-          value: parsed.value,
-        };
+        value: parsed.value,
       }
     }
 
     return {
       ok: false,
-      message: `phase "${input.phaseName}" assistant-json output is invalid: ${direct.error instanceof Error ? direct.error.message : String(direct.error)}`,
+      message: `phase "${input.phaseName}" assistant-json output is invalid: ${parsed.error instanceof Error ? parsed.error.message : String(parsed.error)}`,
     };
   }
 
@@ -870,6 +793,7 @@ function isLlmEvaluatorErrorObservation(observation: ReturnType<typeof normalize
     return false;
   }
   return isLlmEvaluatorPayload(observation.data)
+    || (isRecord(observation.data) && isLlmEvaluatorPayload(observation.data.llm))
     || (isRecord(observation.data) && isLlmEvaluatorPayload(observation.data.pass));
 }
 
@@ -907,6 +831,9 @@ function resolvePhaseTransition(input: {
   if (!input.phase.on) {
     throw new Error(`workflow phase "${input.phaseName}" requires on when evaluators are configured`);
   }
+  if (!input.phase.on.fail) {
+    throw new Error(`workflow phase "${input.phaseName}" requires on.fail when evaluators are configured`);
+  }
 
   if (input.decision.kind === 'ask') {
     if (!input.phase.on.ask) {
@@ -935,6 +862,10 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
   mkdirSync(melosDir, { recursive: true });
 
   const recipe = options.recipe;
+  const initialPhase = options.startPhase ?? recipe.workflow.start;
+  if (!recipe.workflow.phases[initialPhase]) {
+    throw new Error(`unknown start phase "${initialPhase}"`);
+  }
   const logger = recipe.log ?? eventLog({ melosDir });
   const startedAt = new Date().toISOString();
   const maxIterations = Math.max(1, recipe.limits?.maxIterations ?? 10);
@@ -950,29 +881,36 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
       phases: Object.keys(recipe.workflow.phases),
     }),
   }) ?? 'unknown';
+  if (!options.startPhase) {
+    clearWorkflowResumeState(melosDir, handoffFingerprint);
+  }
+  const workflowResumeState = options.startPhase
+    ? readWorkflowResumeState(melosDir, handoffFingerprint)
+    : null;
 
   let state: RunnerState = {
-    iteration: 0,
-    phaseExecution: 0,
+    iteration: workflowResumeState?.phaseExecution ?? 0,
+    phaseExecution: workflowResumeState?.phaseExecution ?? 0,
     startedAt,
-    lastObservation: null,
+    lastObservation: workflowResumeState?.lastObservation ?? null,
     bestMetrics: {},
     checkpointRef: undefined,
     cwd: resolveRunCwd(baseCwd, recipe.run.cwd),
     recipePath: options.recipePath,
     attempts: 0,
-    resolvedQuestions: [],
+    resolvedQuestions: workflowResumeState?.resolvedQuestions ?? [],
     lastAssistantText: undefined,
     lastTrace: [],
     engineThreadId: undefined,
     lastHandoffPath: undefined,
     handoffFingerprint,
-    currentPhase: recipe.workflow.start,
-    phaseCounts: {},
-    outputs: {},
-    history: [],
-    lastTransition: undefined,
-    phaseStates: {},
+    currentPhase: initialPhase,
+    phaseCounts: workflowResumeState?.phaseCounts ?? {},
+    loopCounts: workflowResumeState?.loopCounts ?? {},
+    outputs: workflowResumeState?.outputs ?? {},
+    history: workflowResumeState?.history ?? [],
+    lastTransition: workflowResumeState?.lastTransition,
+    phaseStates: workflowResumeState?.phaseStates ?? {},
   };
 
   const engines = new Set<Engine>();
@@ -1056,7 +994,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
         return summarized;
       }
 
-      const phaseName = state.currentPhase ?? recipe.workflow.start;
+      const phaseName = state.currentPhase ?? initialPhase;
       const phase = recipe.workflow.phases[phaseName];
       if (!phase) {
         const summary = finalizeSummary({
@@ -1086,6 +1024,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
       const mergedRun = mergeRunConfig(recipe.run, phase.run);
       const executionCwd = resolveRunCwd(baseCwd, mergedRun.cwd);
       const phaseState = state.phaseStates[phaseName] ?? { attempts: 0, bestMetrics: {} };
+      const loopName = phase.loop?.name;
+      const loopIteration = loopName ? ((state.loopCounts ?? {})[loopName] ?? 0) + 1 : undefined;
       state = {
         ...state,
         iteration: phaseExecution,
@@ -1098,6 +1038,12 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           ...state.phaseCounts,
           [phaseName]: (state.phaseCounts[phaseName] ?? 0) + 1,
         },
+        loopCounts: loopName
+          ? {
+            ...(state.loopCounts ?? {}),
+            [loopName]: loopIteration!,
+          }
+          : state.loopCounts ?? {},
       };
       logger.emit({
         type: 'iteration_started',
@@ -1107,6 +1053,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           recipePath: options.recipePath,
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
@@ -1119,7 +1067,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
             type: 'checkpoint_created',
             iteration: phaseExecution,
             agent: 'system',
-            payload: { ref: checkpointRef, phase: phaseName, phaseExecution },
+            payload: { ref: checkpointRef, phase: phaseName, phaseExecution, loop: loopName, loopIteration },
           });
         }
       }
@@ -1155,6 +1103,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           ...serializeSections(sections),
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
@@ -1186,6 +1136,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           error: engineResult.error,
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
@@ -1301,6 +1253,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
             metrics: observation.metrics,
             phase: phaseName,
             phaseExecution,
+            loop: loopName,
+            loopIteration,
           },
         });
 
@@ -1324,6 +1278,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           question: 'question' in decision ? decision.question : undefined,
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
@@ -1397,6 +1353,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
                 when: recipe.commit.when ?? 'never',
                 phase: phaseName,
                 phaseExecution,
+                loop: loopName,
+                loopIteration,
               },
             });
           }
@@ -1577,6 +1535,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
             reason: decision.reason ?? decision.summary ?? observation.summary,
             phase: phaseName,
             phaseExecution,
+            loop: loopName,
+            loopIteration,
           },
         });
       }
@@ -1595,6 +1555,8 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
             phase: phaseName,
             summary: decision.summary ?? observation.summary,
             decision: transitionLabel,
+            loop: loopName,
+            loopIteration,
           },
         ],
         lastTransition: {
@@ -1615,10 +1577,13 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
           reason: decision.reason,
           phase: phaseName,
           phaseExecution,
+          loop: loopName,
+          loopIteration,
         },
       });
 
       if (transition === 'stop') {
+        clearWorkflowResumeState(melosDir, handoffFingerprint);
         if (recipe.checkpoint && state.checkpointRef) {
           await recipe.checkpoint.keep?.(createRecipeContext(state, melosDir, recipe, mergedRun), state.checkpointRef);
         }
@@ -1665,6 +1630,18 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
         ...state,
         currentPhase: nextPhase ?? phaseName,
       };
+      writeWorkflowResumeState(melosDir, handoffFingerprint, {
+        currentPhase: state.currentPhase,
+        phaseExecution: state.phaseExecution,
+        outputs: state.outputs,
+        history: state.history,
+        phaseCounts: state.phaseCounts,
+        loopCounts: state.loopCounts ?? {},
+        phaseStates: state.phaseStates,
+        resolvedQuestions: state.resolvedQuestions ?? [],
+        lastObservation: state.lastObservation,
+        lastTransition: state.lastTransition,
+      });
     }
 
     const summary = finalizeSummary({

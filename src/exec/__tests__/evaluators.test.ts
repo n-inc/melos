@@ -135,6 +135,50 @@ describe('exec evaluators', () => {
         { criterion: 'Has conclusion', verdict: 'yes' },
       ],
     });
+    expect(executeSpy.mock.calls[0]?.[0]).toContain('Do not use tools');
+    expect(shutdownSpy).toHaveBeenCalledTimes(1);
+
+    executeSpy.mockRestore();
+    shutdownSpy.mockRestore();
+  });
+
+  it('accepts fenced JSON from llmEvaluate output', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-evaluator-llm-fenced-pass-'));
+    const executeSpy = jest.spyOn(AppServerEngine.prototype, 'execute').mockResolvedValue({
+      success: true,
+      output: [
+        '```json',
+        JSON.stringify({
+          criteria: [
+            { criterion: 'Has evidence', verdict: 'yes', rationale: 'Included benchmarks.' },
+            { criterion: 'Has conclusion', verdict: 'yes', rationale: 'Clear recommendation.' },
+          ],
+        }),
+        '```',
+      ].join('\n'),
+      exitCode: 0,
+    });
+    const shutdownSpy = jest.spyOn(AppServerEngine.prototype, 'shutdown').mockResolvedValue();
+
+    const evaluate = llmEvaluate({
+      criteria: ['Has evidence', 'Has conclusion'],
+      engine: 'codex',
+    });
+    const observation = normalizeObservation(await evaluate({
+      ...createContext(cwd),
+      assistantText: 'Benchmarks show a 2x improvement. Use the optimized path.',
+    }));
+
+    expect(observation.ok).toBe(true);
+    expect(observation.status).toBe('pass');
+    expect(observation.data).toMatchObject({
+      engine: 'codex',
+      criteria: [
+        { criterion: 'Has evidence', verdict: 'yes' },
+        { criterion: 'Has conclusion', verdict: 'yes' },
+      ],
+    });
+    expect(executeSpy).toHaveBeenCalledTimes(1);
     expect(shutdownSpy).toHaveBeenCalledTimes(1);
 
     executeSpy.mockRestore();

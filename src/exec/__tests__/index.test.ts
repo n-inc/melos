@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { clearConfiguredRunArtifacts, clearStaleRunArtifacts } from '../index.js';
+import { clearConfiguredRunArtifacts, clearStaleRunArtifacts, shouldResetRunArtifacts } from '../index.js';
 import { createRoute } from '../recipe.js';
 
 describe('exec index', () => {
@@ -36,7 +36,9 @@ describe('exec index', () => {
         phases: {
           review: {
             task: 'Review the work',
-            pass: ['Review says the work is complete'],
+            validate: {
+              llm: ['Review says the work is complete'],
+            },
             produce: { from: { file: 'artifacts/review.json' } },
             on: {
               pass: 'stop',
@@ -67,7 +69,9 @@ describe('exec index', () => {
           review: {
             task: 'Review the work',
             run: { cwd: 'review-phase' },
-            pass: ['Review says the work is complete'],
+            validate: {
+              llm: ['Review says the work is complete'],
+            },
             produce: { from: { file: 'artifacts/review.json' } },
             on: {
               pass: 'stop',
@@ -95,12 +99,25 @@ describe('exec index', () => {
         phases: {
           research: {
             task: 'Research the topic',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
     }));
 
     expect(existsSync(reportPath)).toBe(false);
+  });
+
+  it('skips artifact reset when resuming from a later phase', () => {
+    expect(shouldResetRunArtifacts({
+      route: '/tmp/sample.ts',
+      startPhase: 'write',
+    })).toBe(false);
+  });
+
+  it('resets artifacts for a fresh run without startPhase', () => {
+    expect(shouldResetRunArtifacts({
+      route: '/tmp/sample.ts',
+    })).toBe(true);
   });
 });

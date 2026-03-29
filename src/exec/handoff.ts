@@ -1,10 +1,18 @@
 import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
-import { type Decision, type Observation, type ResolvedQuestion, type RuntimeTraceEntry } from './recipe.js';
+import {
+  type Decision,
+  type Observation,
+  type ResolvedQuestion,
+  type RuntimeTraceEntry,
+  type WorkflowHistoryEntry,
+  type WorkflowPhaseState,
+  type WorkflowTransitionState,
+} from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
 
 export const SAFE_PROMPT_CEILING = 900_000;
@@ -41,6 +49,19 @@ export interface HandoffSectionDecision {
   omittedEntries: number;
 }
 
+export interface WorkflowResumeState {
+  currentPhase?: string;
+  phaseExecution: number;
+  outputs: Record<string, unknown>;
+  history: WorkflowHistoryEntry[];
+  phaseCounts: Record<string, number>;
+  loopCounts?: Record<string, number>;
+  phaseStates: Record<string, WorkflowPhaseState>;
+  resolvedQuestions: ResolvedQuestion[];
+  lastObservation: Observation | null;
+  lastTransition?: WorkflowTransitionState;
+}
+
 function handoffRootDir(melosDir: string): string {
   return join(melosDir, 'handoff');
 }
@@ -55,6 +76,10 @@ function handoffDir(melosDir: string, fingerprint: string): string {
 
 function handoffPath(melosDir: string, fingerprint: string, iteration: number): string {
   return join(handoffDir(melosDir, fingerprint), `iteration-${iteration}.json`);
+}
+
+function workflowResumeStatePath(melosDir: string, fingerprint: string): string {
+  return join(handoffDir(melosDir, fingerprint), 'workflow-state.json');
 }
 
 function sha256(input: string): string {
@@ -197,6 +222,30 @@ export function writeIterationHandoff(melosDir: string, fingerprint: string, han
   const path = handoffPath(melosDir, fingerprint, handoff.iteration);
   writeFileSync(path, `${JSON.stringify(handoff, null, 2)}\n`, 'utf-8');
   return path;
+}
+
+export function writeWorkflowResumeState(melosDir: string, fingerprint: string, state: WorkflowResumeState): string {
+  const dir = handoffDir(melosDir, fingerprint);
+  mkdirSync(dir, { recursive: true });
+  const path = workflowResumeStatePath(melosDir, fingerprint);
+  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
+  return path;
+}
+
+export function readWorkflowResumeState(melosDir: string, fingerprint: string): WorkflowResumeState | null {
+  const path = workflowResumeStatePath(melosDir, fingerprint);
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as WorkflowResumeState;
+  } catch {
+    return null;
+  }
+}
+
+export function clearWorkflowResumeState(melosDir: string, fingerprint: string): void {
+  rmSync(workflowResumeStatePath(melosDir, fingerprint), { force: true });
 }
 
 export function readLatestHandoff(melosDir: string, fingerprint: string): IterationHandoff | null {

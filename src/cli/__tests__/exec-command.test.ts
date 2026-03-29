@@ -13,6 +13,7 @@ describe('cli run command', () => {
     expect(options.has('--route')).toBe(true);
     expect(options.has('--prompt')).toBe(true);
     expect(options.has('--output-format')).toBe(true);
+    expect(options.has('--start-phase')).toBe(true);
     expect(options.has('--criteria')).toBe(false);
     expect(options.has('--no-ask')).toBe(true);
     expect(options.has('--always-ask')).toBe(true);
@@ -23,6 +24,7 @@ describe('cli run command', () => {
     expect(routeOptions.has('--route')).toBe(false);
     expect(routeOptions.has('--prompt')).toBe(false);
     expect(routeOptions.has('--output-format')).toBe(true);
+    expect(routeOptions.has('--start-phase')).toBe(true);
     expect(routeOptions.has('--no-ask')).toBe(true);
     expect(routeOptions.has('--always-ask')).toBe(true);
   });
@@ -62,6 +64,29 @@ describe('cli run command', () => {
       outputFormat: 'text',
     })).toEqual(expect.objectContaining({
       route: '/tmp/sample.ts',
+    }));
+  });
+
+  it('maps --start-phase to run startPhase', () => {
+    expect(buildRunCommandOptions({
+      route: '/tmp/sample.ts',
+      model: 'codex-latest',
+      outputFormat: 'text',
+      startPhase: 'draft',
+    })).toEqual(expect.objectContaining({
+      route: '/tmp/sample.ts',
+      startPhase: 'draft',
+    }));
+  });
+
+  it('maps route positional path and start phase together', () => {
+    expect(buildRouteCommandOptions('/tmp/sample.ts', {
+      model: 'codex-latest',
+      outputFormat: 'text',
+      startPhase: 'draft',
+    })).toEqual(expect.objectContaining({
+      route: '/tmp/sample.ts',
+      startPhase: 'draft',
     }));
   });
 

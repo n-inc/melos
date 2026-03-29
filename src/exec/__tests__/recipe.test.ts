@@ -10,7 +10,7 @@ describe('exec recipe defaults', () => {
         phases: {
           research: {
             task: 'Research the topic',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
@@ -29,7 +29,7 @@ describe('exec recipe defaults', () => {
         phases: {
           write: {
             task: 'Write the draft',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
@@ -48,14 +48,14 @@ describe('exec recipe defaults', () => {
         phases: {
           review: {
             task: 'Review the work',
-            next: 'stop',
+            on: { pass: 'stop' },
           },
         },
       },
     })).toThrow(/workflow\.start/i);
   });
 
-  it('rejects evaluator phases without transitions', () => {
+  it('rejects validated phases without fail transitions', () => {
     expect(() => createRoute({
       run: { engine: 'auto' },
       workflow: {
@@ -63,33 +63,19 @@ describe('exec recipe defaults', () => {
         phases: {
           review: {
             task: 'Review the work',
-            pass: ['States that the review is complete'],
-          },
-        },
-      },
-    })).toThrow(/phase .*on/i);
-  });
-
-  it('rejects evaluator phases that repeat on fail', () => {
-    expect(() => compileRecipeConfig({
-      run: { engine: 'auto' },
-      workflow: {
-        start: 'review',
-        phases: {
-          review: {
-            task: 'Review the work',
-            pass: ['States that the review is complete'],
+            validate: {
+              llm: ['States that the review is complete'],
+            },
             on: {
               pass: 'stop',
-              fail: 'repeat',
             },
           },
         },
       },
-    })).toThrow(/on\.fail: "repeat"/i);
+    })).toThrow(/phase .*on\.fail/i);
   });
 
-  it('rejects action phases without next', () => {
+  it('rejects phases without pass transitions', () => {
     expect(() => createRoute({
       run: { engine: 'auto' },
       workflow: {
@@ -100,7 +86,106 @@ describe('exec recipe defaults', () => {
           },
         },
       },
-    })).toThrow(/phase .*next/i);
+    })).toThrow(/phase .*on\.pass/i);
+  });
+
+  it('rejects legacy next transitions in route config', () => {
+    expect(() => compileRecipeConfig({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'research',
+        phases: {
+          research: {
+            task: 'Research the topic',
+            next: 'stop',
+          },
+        },
+      },
+    } as never)).toThrow(/next .*removed/i);
+  });
+
+  it('rejects legacy top-level validation fields in route config', () => {
+    expect(() => compileRecipeConfig({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'review',
+        phases: {
+          review: {
+            task: 'Review the work',
+            pass: ['States that the review is complete'],
+            on: {
+              pass: 'stop',
+              fail: 'stop',
+            },
+          },
+        },
+      },
+    } as never)).toThrow(/validate/i);
+  });
+
+  it('compiles validated phases into loop-aware runtime phases', () => {
+    const route = createRoute({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'review',
+        phases: {
+          review: {
+            task: 'Review the work',
+            validate: {
+              shell: ['npm test'],
+              llm: ['States that the review is complete'],
+            },
+            on: {
+              pass: 'stop',
+              fail: 'repeat',
+            },
+          },
+        },
+      },
+    });
+
+    expect(route.workflow.phases.review.on).toEqual({
+      pass: 'stop',
+      fail: 'repeat',
+    });
+    expect(route.workflow.phases.review.next).toBeUndefined();
+    expect(route.workflow.phases.review.loop).toEqual({ name: 'review' });
+  });
+
+  it('rejects empty validate blocks', () => {
+    expect(() => createRoute({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'review',
+        phases: {
+          review: {
+            task: 'Review the work',
+            validate: {},
+            on: {
+              pass: 'stop',
+              fail: 'repeat',
+            },
+          },
+        },
+      },
+    })).toThrow(/validate .*at least one validator/i);
+  });
+
+  it('preserves runtime route inputs that still use next', () => {
+    const route = createRoute({
+      run: { engine: 'auto' },
+      workflow: {
+        start: 'research',
+        phases: {
+          research: {
+            task: 'Research the topic',
+            next: 'stop',
+          },
+        },
+      },
+    } as never);
+
+    expect(route.workflow.phases.research.next).toBe('stop');
   });
 
   it('rejects runtime phases that define evaluate without policy', () => {
