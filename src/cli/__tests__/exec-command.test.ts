@@ -1,5 +1,4 @@
 import { buildRouteCommandOptions, buildRunCommandOptions, createProgram } from '../../cli.js';
-import { CODEX_LATEST_ALIAS } from '../../models/registry.js';
 
 describe('cli run command', () => {
   it('registers route/prompt execution options', () => {
@@ -69,11 +68,21 @@ describe('cli run command', () => {
     }));
   });
 
-  it('defaults run --model to codex-latest', () => {
+  it('does not set a commander default for --model', () => {
     const program = createProgram();
     const runCommand = program.commands.find((command) => command.name() === 'run');
     const modelOption = runCommand?.options.find((option) => option.long === '--model');
 
-    expect(modelOption?.defaultValue).toBe(CODEX_LATEST_ALIAS);
+    expect(modelOption?.defaultValue).toBeUndefined();
+  });
+
+  it('keeps model undefined when the CLI did not provide one', () => {
+    expect(buildRunCommandOptions({
+      route: '/tmp/sample.ts',
+      outputFormat: 'text',
+    })).toEqual(expect.objectContaining({
+      route: '/tmp/sample.ts',
+      model: undefined,
+    }));
   });
 });

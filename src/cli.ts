@@ -1,7 +1,6 @@
 import { Command, Option } from 'commander';
 
 import type { RunCommandOptions } from './run/index.js';
-import { CODEX_LATEST_ALIAS } from './models/registry.js';
 
 export interface RunCommandActionOptions {
   route?: string;
@@ -31,7 +30,7 @@ export function createProgram(): Command {
     .description('route または prompt を実行する')
     .option('--route <path>', '実行する route module (.ts または -)')
     .option('--prompt <text>', '1回だけ実行する prompt')
-    .option('--model <model>', 'モデル', CODEX_LATEST_ALIAS)
+    .option('--model <model>', 'モデル')
     .option('--cwd <dir>', '作業ディレクトリ')
     .option('--start-phase <phase>', 'workflow route を指定 phase から再開する')
     .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
@@ -49,7 +48,7 @@ export function createProgram(): Command {
   program
     .command('route <path>')
     .description('route module を実行する')
-    .option('--model <model>', 'モデル', CODEX_LATEST_ALIAS)
+    .option('--model <model>', 'モデル')
     .option('--cwd <dir>', '作業ディレクトリ')
     .option('--start-phase <phase>', 'workflow route を指定 phase から再開する')
     .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
