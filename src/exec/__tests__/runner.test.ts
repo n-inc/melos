@@ -117,6 +117,112 @@ describe('exec runner', () => {
     });
   });
 
+  it('starts from an explicit resume phase when startPhase is provided', async () => {
+    const cwd = createGitRepo('melos-exec-resume-phase-');
+    const engine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'write resumed',
+        exitCode: 0,
+      }),
+    ]);
+
+    const summary = await runRoute({
+      recipe: createRoute({
+        run: { engine, cwd },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: 'Research the topic and return JSON.',
+              produce: { from: 'assistant-json' },
+              next: { goto: 'write' },
+            },
+            write: {
+              task: 'Write the article draft.',
+              next: 'stop',
+            },
+          },
+        },
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      startPhase: 'write',
+    });
+
+    expect(summary.success).toBe(true);
+    expect(summary.iterations).toBe(1);
+    expect(engine.prompts).toHaveLength(1);
+    expect(engine.prompts[0]).toContain('Write the article draft.');
+    expect(summary.report?.evidence?.workflow?.history).toEqual([
+      expect.objectContaining({ phase: 'write' }),
+    ]);
+  });
+
+  it('restores prior workflow outputs when resuming a later phase', async () => {
+    const cwd = createGitRepo('melos-exec-resume-state-');
+    const recipe = createRoute({
+      run: { engine: new ScriptedEngine([
+        async () => ({
+          success: true,
+          output: JSON.stringify({ notes: ['carry-forward'] }),
+          exitCode: 0,
+        }),
+      ]), cwd },
+      workflow: {
+        start: 'research',
+        phases: {
+          research: {
+            task: 'Research the topic and return JSON.',
+            produce: { from: 'assistant-json' },
+            next: { goto: 'write' },
+          },
+          write: {
+            task: ({ state }) => `Write using ${(state.outputs.research as { notes?: string[] } | undefined)?.notes?.length ?? 0} notes.`,
+            next: 'stop',
+          },
+        },
+      },
+      limits: { maxIterations: 1 },
+    });
+
+    const firstSummary = await runRoute({
+      recipe,
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      recipePath: '/tmp/resume-route.ts',
+    });
+
+    expect(firstSummary.success).toBe(false);
+    expect(firstSummary.summary).toContain('max iterations reached');
+
+    const resumedEngine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: 'write resumed',
+        exitCode: 0,
+      }),
+    ]);
+
+    const resumedSummary = await runRoute({
+      recipe: createRoute({
+        run: { engine: resumedEngine, cwd },
+        workflow: recipe.workflow,
+      }),
+      cwd,
+      melosDir: join(cwd, '.melos'),
+      recipePath: '/tmp/resume-route.ts',
+      startPhase: 'write',
+    });
+
+    expect(resumedSummary.success).toBe(true);
+    expect(resumedEngine.prompts[0]).toContain('Write using 1 notes.');
+    expect(resumedSummary.report?.evidence?.workflow?.history).toEqual([
+      expect.objectContaining({ phase: 'research' }),
+      expect.objectContaining({ phase: 'write' }),
+    ]);
+  });
+
   it('supports a review-fix-review workflow with file produce and transitions', async () => {
     const cwd = createGitRepo('melos-exec-review-fix-');
     mkdirSync(join(cwd, '.melos'), { recursive: true });

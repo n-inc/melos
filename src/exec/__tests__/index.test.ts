@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { clearConfiguredRunArtifacts, clearStaleRunArtifacts } from '../index.js';
+import { clearConfiguredRunArtifacts, clearStaleRunArtifacts, shouldResetRunArtifacts } from '../index.js';
 import { createRoute } from '../recipe.js';
 
 describe('exec index', () => {
@@ -102,5 +102,18 @@ describe('exec index', () => {
     }));
 
     expect(existsSync(reportPath)).toBe(false);
+  });
+
+  it('skips artifact reset when resuming from a later phase', () => {
+    expect(shouldResetRunArtifacts({
+      route: '/tmp/sample.ts',
+      startPhase: 'write',
+    })).toBe(false);
+  });
+
+  it('resets artifacts for a fresh run without startPhase', () => {
+    expect(shouldResetRunArtifacts({
+      route: '/tmp/sample.ts',
+    })).toBe(true);
   });
 });

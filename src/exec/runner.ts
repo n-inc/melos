@@ -8,7 +8,15 @@ import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
 import { applyConfiguredCommit, assertCommitWorkspaceClean, isCommitEnabled } from './commit.js';
-import { buildIterationHandoff, resolveHandoffFingerprint, writeIterationHandoff } from './handoff.js';
+import {
+  buildIterationHandoff,
+  clearWorkflowResumeState,
+  readWorkflowResumeState,
+  resolveHandoffFingerprint,
+  writeIterationHandoff,
+  writeWorkflowResumeState,
+} from './handoff.js';
+import { parseJsonOrEmbedded } from './json.js';
 import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
 import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
 import {
@@ -56,6 +64,7 @@ export interface RunRouteOptions {
   cwd?: string;
   melosDir: string;
   recipePath?: string;
+  startPhase?: string;
   askMode?: 'agent-first' | 'never-user' | 'always-user';
   askUser?: (input: {
     question: string;
@@ -713,88 +722,6 @@ function buildFinalReportCommitRange(range: {
   };
 }
 
-function tryParseJson(text: string): { ok: true; value: unknown } | { ok: false; error: unknown } {
-  try {
-    return { ok: true, value: JSON.parse(text) };
-  } catch (error) {
-    return { ok: false, error };
-  }
-}
-
-function extractEmbeddedJson(text: string): string | null {
-  const normalized = text.trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-
-  for (const fencedMatch of normalized.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
-    const fenced = fencedMatch[1]?.trim();
-    if (!fenced || fenced.length === 0) {
-      continue;
-    }
-    if (tryParseJson(fenced).ok) {
-      return fenced;
-    }
-  }
-
-  for (let start = 0; start < normalized.length; start += 1) {
-    const open = normalized[start];
-    if (open !== '{' && open !== '[') {
-      continue;
-    }
-
-    const stack = [open];
-    let inString = false;
-    let escaped = false;
-
-    for (let index = start + 1; index < normalized.length; index += 1) {
-      const char = normalized[index];
-
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (char === '\\') {
-          escaped = true;
-          continue;
-        }
-        if (char === '"') {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (char === '"') {
-        inString = true;
-        continue;
-      }
-
-      if (char === '{' || char === '[') {
-        stack.push(char);
-        continue;
-      }
-
-      if (char === '}' || char === ']') {
-        const expected = char === '}' ? '{' : '[';
-        if (stack[stack.length - 1] !== expected) {
-          break;
-        }
-        stack.pop();
-        if (stack.length === 0) {
-          const candidate = normalized.slice(start, index + 1);
-          if (tryParseJson(candidate).ok) {
-            return candidate;
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
 function readWorkflowProduce(input: {
   phaseName: string;
   phase: WorkflowPhaseDefinition;
@@ -806,28 +733,17 @@ function readWorkflowProduce(input: {
   }
 
   if (input.phase.produce.from === 'assistant-json') {
-    const direct = tryParseJson(input.assistantText);
-    if (direct.ok) {
+    const parsed = parseJsonOrEmbedded(input.assistantText);
+    if (parsed.ok) {
       return {
         ok: true,
-        value: direct.value,
-      };
-    }
-
-    const extracted = extractEmbeddedJson(input.assistantText);
-    if (extracted) {
-      const parsed = tryParseJson(extracted);
-      if (parsed.ok) {
-        return {
-          ok: true,
-          value: parsed.value,
-        };
+        value: parsed.value,
       }
     }
 
     return {
       ok: false,
-      message: `phase "${input.phaseName}" assistant-json output is invalid: ${direct.error instanceof Error ? direct.error.message : String(direct.error)}`,
+      message: `phase "${input.phaseName}" assistant-json output is invalid: ${parsed.error instanceof Error ? parsed.error.message : String(parsed.error)}`,
     };
   }
 
@@ -935,6 +851,10 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
   mkdirSync(melosDir, { recursive: true });
 
   const recipe = options.recipe;
+  const initialPhase = options.startPhase ?? recipe.workflow.start;
+  if (!recipe.workflow.phases[initialPhase]) {
+    throw new Error(`unknown start phase "${initialPhase}"`);
+  }
   const logger = recipe.log ?? eventLog({ melosDir });
   const startedAt = new Date().toISOString();
   const maxIterations = Math.max(1, recipe.limits?.maxIterations ?? 10);
@@ -950,29 +870,35 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
       phases: Object.keys(recipe.workflow.phases),
     }),
   }) ?? 'unknown';
+  if (!options.startPhase) {
+    clearWorkflowResumeState(melosDir, handoffFingerprint);
+  }
+  const workflowResumeState = options.startPhase
+    ? readWorkflowResumeState(melosDir, handoffFingerprint)
+    : null;
 
   let state: RunnerState = {
-    iteration: 0,
-    phaseExecution: 0,
+    iteration: workflowResumeState?.phaseExecution ?? 0,
+    phaseExecution: workflowResumeState?.phaseExecution ?? 0,
     startedAt,
-    lastObservation: null,
+    lastObservation: workflowResumeState?.lastObservation ?? null,
     bestMetrics: {},
     checkpointRef: undefined,
     cwd: resolveRunCwd(baseCwd, recipe.run.cwd),
     recipePath: options.recipePath,
     attempts: 0,
-    resolvedQuestions: [],
+    resolvedQuestions: workflowResumeState?.resolvedQuestions ?? [],
     lastAssistantText: undefined,
     lastTrace: [],
     engineThreadId: undefined,
     lastHandoffPath: undefined,
     handoffFingerprint,
-    currentPhase: recipe.workflow.start,
-    phaseCounts: {},
-    outputs: {},
-    history: [],
-    lastTransition: undefined,
-    phaseStates: {},
+    currentPhase: initialPhase,
+    phaseCounts: workflowResumeState?.phaseCounts ?? {},
+    outputs: workflowResumeState?.outputs ?? {},
+    history: workflowResumeState?.history ?? [],
+    lastTransition: workflowResumeState?.lastTransition,
+    phaseStates: workflowResumeState?.phaseStates ?? {},
   };
 
   const engines = new Set<Engine>();
@@ -1056,7 +982,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
         return summarized;
       }
 
-      const phaseName = state.currentPhase ?? recipe.workflow.start;
+      const phaseName = state.currentPhase ?? initialPhase;
       const phase = recipe.workflow.phases[phaseName];
       if (!phase) {
         const summary = finalizeSummary({
@@ -1619,6 +1545,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
       });
 
       if (transition === 'stop') {
+        clearWorkflowResumeState(melosDir, handoffFingerprint);
         if (recipe.checkpoint && state.checkpointRef) {
           await recipe.checkpoint.keep?.(createRecipeContext(state, melosDir, recipe, mergedRun), state.checkpointRef);
         }
@@ -1665,6 +1592,17 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
         ...state,
         currentPhase: nextPhase ?? phaseName,
       };
+      writeWorkflowResumeState(melosDir, handoffFingerprint, {
+        currentPhase: state.currentPhase,
+        phaseExecution: state.phaseExecution,
+        outputs: state.outputs,
+        history: state.history,
+        phaseCounts: state.phaseCounts,
+        phaseStates: state.phaseStates,
+        resolvedQuestions: state.resolvedQuestions ?? [],
+        lastObservation: state.lastObservation,
+        lastTransition: state.lastTransition,
+      });
     }
 
     const summary = finalizeSummary({

@@ -9,6 +9,7 @@ export interface RunCommandActionOptions {
   model?: string;
   cwd?: string;
   outputFormat?: 'text' | 'json' | 'stream-json';
+  startPhase?: string;
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   ask?: boolean;
   alwaysAsk?: boolean;
@@ -33,6 +34,7 @@ export function createProgram(): Command {
     .option('--model <model>', 'モデル', CODEX_LATEST_ALIAS)
     .option('--cwd <dir>', '作業ディレクトリ')
     .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
+    .option('--start-phase <phase>', 'route を指定した phase から再開する')
     .option('--effort <level>', '推論 effort (simple prompt mode 用)')
     .option('--no-ask', 'ユーザーには質問せず agent 解決のみを試みる')
     .option('--always-ask', 'agent 解決をスキップして必ずユーザーに質問する')
@@ -50,6 +52,7 @@ export function createProgram(): Command {
     .option('--model <model>', 'モデル', CODEX_LATEST_ALIAS)
     .option('--cwd <dir>', '作業ディレクトリ')
     .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
+    .option('--start-phase <phase>', 'route を指定した phase から再開する')
     .option('--effort <level>', '推論 effort')
     .option('--no-ask', 'ユーザーには質問せず agent 解決のみを試みる')
     .option('--always-ask', 'agent 解決をスキップして必ずユーザーに質問する')
@@ -72,6 +75,7 @@ export function buildRunCommandOptions(options: RunCommandActionOptions): RunCom
     cwd: options.cwd ?? process.cwd(),
     effort: options.effort,
     outputFormat: options.outputFormat,
+    startPhase: options.startPhase,
     noAsk: options.ask === false,
     alwaysAsk: options.alwaysAsk,
   };
