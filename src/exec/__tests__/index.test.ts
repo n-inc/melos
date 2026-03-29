@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { clearConfiguredRunArtifacts, clearStaleRunArtifacts, shouldResetRunArtifacts } from '../index.js';
+import {
+  applyRouteRunOverrides,
+  clearConfiguredRunArtifacts,
+  clearStaleRunArtifacts,
+  shouldResetRunArtifacts,
+} from '../index.js';
 import { createRoute } from '../recipe.js';
 
 describe('exec index', () => {
@@ -119,5 +124,30 @@ describe('exec index', () => {
     expect(shouldResetRunArtifacts({
       route: '/tmp/sample.ts',
     })).toBe(true);
+  });
+
+  it('applies CLI model and effort overrides to route recipes without mutating the original', () => {
+    const recipe = createRoute({
+      run: { engine: 'auto', model: 'opus', effort: 'max' },
+      workflow: {
+        start: 'research',
+        phases: {
+          research: {
+            task: 'Research the topic',
+            on: { pass: 'stop' },
+          },
+        },
+      },
+    });
+
+    const overridden = applyRouteRunOverrides(recipe, {
+      model: 'codex-latest',
+      effort: 'high',
+    });
+
+    expect(overridden.run.model).toBe('codex-latest');
+    expect(overridden.run.effort).toBe('high');
+    expect(recipe.run.model).toBe('opus');
+    expect(recipe.run.effort).toBe('max');
   });
 });

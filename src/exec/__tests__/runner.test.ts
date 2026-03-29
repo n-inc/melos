@@ -1158,4 +1158,5 @@ describe('exec runner', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe('final\n');
     expect(engine.prompts).toHaveLength(3);
   });
+
 });

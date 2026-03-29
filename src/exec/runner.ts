@@ -961,7 +961,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
       }
     }
 
-    for (let phaseExecution = 1; phaseExecution <= maxIterations; phaseExecution += 1) {
+    for (let phaseExecution = state.phaseExecution + 1; phaseExecution <= maxIterations; phaseExecution += 1) {
       if (deadline !== null && Date.now() > deadline) {
         const summary = finalizeSummary({
           status: 'failed',
