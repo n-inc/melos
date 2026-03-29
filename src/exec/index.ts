@@ -44,6 +44,24 @@ export interface ExecCommandOptions {
   alwaysAsk?: boolean;
 }
 
+export function applyRouteRunOverrides(
+  recipe: RecipeDefinition,
+  options: Pick<ExecCommandOptions, 'model' | 'effort'>
+): RecipeDefinition {
+  if (!options.model && !options.effort) {
+    return recipe;
+  }
+
+  return {
+    ...recipe,
+    run: {
+      ...recipe.run,
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.effort ? { effort: options.effort } : {}),
+    },
+  };
+}
+
 function assertExclusiveInput(options: ExecCommandOptions): void {
   const inputCount = Number(Boolean(options.route)) + Number(Boolean(options.prompt));
   if (inputCount !== 1) {
@@ -227,6 +245,10 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       cleanup = resolved.cleanup;
       recipePath = resolved.path;
       recipe = await loadRouteModule(resolved.path);
+      recipe = applyRouteRunOverrides(recipe, {
+        model: options.model,
+        effort: options.effort,
+      });
       recipe.log ??= log;
       log.emit({
         type: 'route_loaded',
