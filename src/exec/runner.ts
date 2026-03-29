@@ -190,11 +190,14 @@ function truncatePromptText(value: string, maxLength = 4_000): string {
 }
 
 function extractFailureChecks(data: unknown): Array<Record<string, unknown>> | undefined {
-  const checks = isRecord(data) && isRecord(data.check) && Array.isArray(data.check.checks)
-    ? data.check.checks
-    : isRecord(data) && Array.isArray(data.checks)
-      ? data.checks
-      : undefined;
+  let checks: unknown[] | undefined;
+
+  if (isRecord(data) && isRecord(data.check) && Array.isArray(data.check.checks)) {
+    checks = data.check.checks;
+  } else if (isRecord(data) && Array.isArray(data.checks)) {
+    checks = data.checks;
+  }
+
   if (!checks) {
     return undefined;
   }
