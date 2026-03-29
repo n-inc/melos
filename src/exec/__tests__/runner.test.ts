@@ -797,7 +797,9 @@ describe('exec runner', () => {
             review: {
               task: 'Review the article and save JSON.',
               produce: { from: { file: '.melos/review-result.json' } },
-              pass: ['Review result keeps the FAQ link'],
+              validate: {
+                llm: ['Review result keeps the FAQ link'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'review-fix' },
@@ -805,7 +807,7 @@ describe('exec runner', () => {
             },
             'review-fix': {
               task: 'Fix the latest review feedback.',
-              next: { goto: 'review' },
+              on: { pass: { goto: 'review' } },
             },
           },
         },
@@ -848,7 +850,9 @@ describe('exec runner', () => {
           phases: {
             outline: {
               task: 'Draft the outline.',
-              check: ['true'],
+              validate: {
+                shell: ['true'],
+              },
               on: {
                 pass: 'stop',
                 fail: { goto: 'outline-fix' },
@@ -857,7 +861,7 @@ describe('exec runner', () => {
             },
             'outline-fix': {
               task: 'Answer the blocking question or adjust the outline.',
-              next: { goto: 'outline' },
+              on: { pass: { goto: 'outline' } },
             },
           },
         },

@@ -1,3 +1,5 @@
+const inWorktree = /[/\\]\.worktrees[/\\]/.test(process.cwd());
+
 /** @type {import('jest').Config} */
 export default {
   preset: 'ts-jest/presets/default-esm',
@@ -15,6 +17,8 @@ export default {
     ],
   },
   testMatch: ['**/__tests__/**/*.test.ts'],
-  testPathIgnorePatterns: ['/node_modules/', '/\\.worktrees/'],
+  testPathIgnorePatterns: inWorktree
+    ? ['/node_modules/']
+    : ['/node_modules/', '/\\.worktrees/'],
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts'],
 };
