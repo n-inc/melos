@@ -1019,4 +1019,69 @@ describe('exec runner', () => {
     expect(readFileSync(filePath, 'utf-8')).toBe('final\n');
     expect(engine.prompts).toHaveLength(3);
   });
+
+  it('restores workflow outputs when resuming from a later phase', async () => {
+    const cwd = createGitRepo('melos-exec-resume-from-phase-');
+    const melosDir = join(cwd, '.melos');
+    const firstEngine = new ScriptedEngine([
+      async () => ({
+        success: true,
+        output: JSON.stringify({
+          sources: ['https://example.com/a', 'https://example.com/b'],
+        }),
+        exitCode: 0,
+      }),
+    ]);
+
+    const recipe = createRoute({
+      run: { engine: firstEngine, cwd },
+      workflow: {
+        start: 'research',
+        phases: {
+          research: {
+            task: 'Research the topic and return JSON.',
+            produce: { from: 'assistant-json' },
+            next: { goto: 'write' },
+          },
+          write: {
+            task: ({ state }) => `Write the article.\nSources count: ${((state.outputs.research as { sources?: string[] } | undefined)?.sources ?? []).length}`,
+            next: 'stop',
+          },
+        },
+      },
+      limit: 1,
+    });
+
+    const firstRun = await runRoute({
+      recipe,
+      cwd,
+      melosDir,
+    });
+
+    expect(firstRun.success).toBe(false);
+    expect(firstRun.summary).toContain('max iterations reached');
+
+    const resumedEngine = new ScriptedEngine([
+      async (_options, prompt) => ({
+        success: true,
+        output: prompt.includes('Sources count: 2') ? 'draft written' : 'missing prior outputs',
+        exitCode: 0,
+      }),
+    ]);
+
+    const resumedRun = await runRoute({
+      recipe: createRoute({
+        run: { engine: resumedEngine, cwd },
+        workflow: recipe.workflow,
+      }),
+      cwd,
+      melosDir,
+      startPhase: 'write',
+    });
+
+    expect(resumedRun.success).toBe(true);
+    expect(resumedRun.iterations).toBe(2);
+    expect(resumedEngine.prompts).toHaveLength(1);
+    expect(resumedEngine.prompts[0]).toContain('Sources count: 2');
+  });
 });

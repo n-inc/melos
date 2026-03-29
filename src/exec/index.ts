@@ -34,6 +34,7 @@ export interface ExecCommandOptions {
   prompt?: string;
   model?: string;
   cwd?: string;
+  startPhase?: string;
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   outputFormat?: ExecOutputFormat;
   stdin?: NodeJS.ReadableStream;
@@ -254,13 +255,16 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       });
     }
 
-    clearConfiguredRunArtifacts(cwd, recipe);
+    if (!options.startPhase) {
+      clearConfiguredRunArtifacts(cwd, recipe);
+    }
 
     const summary = await runRoute({
       recipe,
       cwd,
       melosDir,
       recipePath,
+      startPhase: options.startPhase,
       askMode,
       askUser: createAskUserPrompt(
         options.stdin ?? process.stdin,

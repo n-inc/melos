@@ -8,7 +8,7 @@ import type { Engine, EngineOptions } from '../engines/base.js';
 import { EventLog, type MissionEvent } from '../state/events.js';
 import { isClaudeFamily, resolveModelEngine, resolveRuntimeModel } from '../models/registry.js';
 import { applyConfiguredCommit, assertCommitWorkspaceClean, isCommitEnabled } from './commit.js';
-import { buildIterationHandoff, resolveHandoffFingerprint, writeIterationHandoff } from './handoff.js';
+import { buildIterationHandoff, readWorkflowState, resolveHandoffFingerprint, writeIterationHandoff, writeWorkflowState } from './handoff.js';
 import { generateFinalReport, resolveReportPath, writeFinalReport } from './report.js';
 import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
 import {
@@ -56,6 +56,7 @@ export interface RunRouteOptions {
   cwd?: string;
   melosDir: string;
   recipePath?: string;
+  startPhase?: string;
   askMode?: 'agent-first' | 'never-user' | 'always-user';
   askUser?: (input: {
     question: string;
@@ -975,6 +976,23 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
     phaseStates: {},
   };
 
+  if (options.startPhase) {
+    if (!recipe.workflow.phases[options.startPhase]) {
+      throw new Error(`unknown start phase "${options.startPhase}"`);
+    }
+    const restoredState = readWorkflowState(melosDir, handoffFingerprint);
+    if (!restoredState) {
+      throw new Error(`no saved workflow state found for start phase "${options.startPhase}"`);
+    }
+    state = {
+      ...state,
+      ...restoredState,
+      startedAt,
+      cwd: resolveRunCwd(baseCwd, recipe.run.cwd),
+      currentPhase: options.startPhase,
+    };
+  }
+
   const engines = new Set<Engine>();
   const reportCommitRange = isCommitEnabled(recipe.commit)
     ? {
@@ -1023,7 +1041,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
       }
     }
 
-    for (let phaseExecution = 1; phaseExecution <= maxIterations; phaseExecution += 1) {
+    for (let phaseExecution = state.phaseExecution + 1; phaseExecution <= maxIterations; phaseExecution += 1) {
       if (deadline !== null && Date.now() > deadline) {
         const summary = finalizeSummary({
           status: 'failed',
@@ -1372,6 +1390,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
         ...state,
         lastHandoffPath: handoffPath,
       };
+      writeWorkflowState(melosDir, handoffFingerprint, state);
 
       if (recipe.commit) {
         try {
@@ -1665,6 +1684,7 @@ export async function runRoute(options: RunRouteOptions): Promise<ExecRunSummary
         ...state,
         currentPhase: nextPhase ?? phaseName,
       };
+      writeWorkflowState(melosDir, handoffFingerprint, state);
     }
 
     const summary = finalizeSummary({

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 
 import { renderPromptWithSections, type PromptSection } from './prompt-sections.js';
-import { type Decision, type Observation, type ResolvedQuestion, type RuntimeTraceEntry } from './recipe.js';
+import { type Decision, type Observation, type ResolvedQuestion, type RunnerState, type RuntimeTraceEntry } from './recipe.js';
 import { resolveShellExecutable } from './shell.js';
 
 export const SAFE_PROMPT_CEILING = 900_000;
@@ -55,6 +55,10 @@ function handoffDir(melosDir: string, fingerprint: string): string {
 
 function handoffPath(melosDir: string, fingerprint: string, iteration: number): string {
   return join(handoffDir(melosDir, fingerprint), `iteration-${iteration}.json`);
+}
+
+function workflowStatePath(melosDir: string, fingerprint: string): string {
+  return join(handoffDir(melosDir, fingerprint), 'workflow-state.json');
 }
 
 function sha256(input: string): string {
@@ -197,6 +201,26 @@ export function writeIterationHandoff(melosDir: string, fingerprint: string, han
   const path = handoffPath(melosDir, fingerprint, handoff.iteration);
   writeFileSync(path, `${JSON.stringify(handoff, null, 2)}\n`, 'utf-8');
   return path;
+}
+
+export function writeWorkflowState(melosDir: string, fingerprint: string, state: RunnerState): string {
+  const dir = handoffDir(melosDir, fingerprint);
+  mkdirSync(dir, { recursive: true });
+  const path = workflowStatePath(melosDir, fingerprint);
+  writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, 'utf-8');
+  return path;
+}
+
+export function readWorkflowState(melosDir: string, fingerprint: string): RunnerState | null {
+  const path = workflowStatePath(melosDir, fingerprint);
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as RunnerState;
+  } catch {
+    return null;
+  }
 }
 
 export function readLatestHandoff(melosDir: string, fingerprint: string): IterationHandoff | null {
