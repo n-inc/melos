@@ -400,6 +400,102 @@ workflow:
     delete process.env.__MELOS_TEST_KEY;
   });
 
+  it('supports quoted bracket access for literal object keys', () => {
+    const dir = createTempDir();
+    writeFileSync(join(dir, 'entries.yaml'), `
+alpha:
+  lang: en
+beta:
+  lang: ja
+`, 'utf-8');
+
+    const routePath = writeYamlRoute(dir, `
+vars:
+  entries: !include entries.yaml
+  lang: $\{{ entries["alpha"].lang }}
+
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "lang=$\{{ lang }}"
+      on:
+        pass: stop
+`);
+
+    const recipe = loadYamlRoute(routePath);
+    expect(recipe.workflow.phases.x.task).toBe('lang=en');
+  });
+
+  it('supports numeric bracket access for list indexes', () => {
+    const dir = createTempDir();
+    const routePath = writeYamlRoute(dir, `
+vars:
+  list:
+    - zero
+    - one
+  second: $\{{ list[1] }}
+
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "value=$\{{ second }}"
+      on:
+        pass: stop
+`);
+
+    const recipe = loadYamlRoute(routePath);
+    expect(recipe.workflow.phases.x.task).toBe('value=one');
+  });
+
+  it('rejects invalid skills entries during YAML loading', () => {
+    const dir = createTempDir();
+    const routePath = writeYamlRoute(dir, `
+run:
+  engine: auto
+skills:
+  - ok
+  - 1
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "x"
+      on:
+        pass: stop
+`);
+
+    expect(() => loadYamlRoute(routePath)).toThrow(/skills\[1\].*string or \{ path: string \}/i);
+  });
+
+  it('rejects invalid repos values during YAML loading', () => {
+    const dir = createTempDir();
+    const routePath = writeYamlRoute(dir, `
+run:
+  engine: auto
+repos:
+  shared: 1
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "x"
+      on:
+        pass: stop
+`);
+
+    expect(() => loadYamlRoute(routePath)).toThrow(/repos\.shared must be a string/i);
+  });
+
   it('rejects YAML with missing required fields', () => {
     const dir = createTempDir();
     const routePath = writeYamlRoute(dir, `

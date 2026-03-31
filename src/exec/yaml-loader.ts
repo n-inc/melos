@@ -10,7 +10,7 @@ import yaml from 'js-yaml';
 
 import { compileRecipeConfig } from './compiler.js';
 import { normalizeRuntimeRecipe } from './recipe.js';
-import type { RecipeConfig, RecipeDefinition, RecipeRunConfig } from './recipe.js';
+import type { RecipeConfig, RecipeDefinition, RecipeRunConfig, SkillRef } from './recipe.js';
 
 // ---------------------------------------------------------------------------
 // Template Engine
@@ -20,6 +20,27 @@ const TEMPLATE_RE = /\$\{\{\s*(.+?)\s*\}\}/g;
 
 interface TemplateContext {
   vars: Record<string, unknown>;
+}
+
+function parseBracketKey(innerExpr: string, ctx: TemplateContext): string | number {
+  const trimmed = innerExpr.trim();
+  if (/^-?\d+$/.test(trimmed)) {
+    return Number(trimmed);
+  }
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+    || (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    if (trimmed.startsWith('"')) {
+      try {
+        return JSON.parse(trimmed) as string;
+      } catch {
+        throw new Error(`YAML route: invalid bracket string literal ${trimmed}`);
+      }
+    }
+    return trimmed.slice(1, -1).replace(/\\(['\\])/g, '$1');
+  }
+  return String(resolveExpression(trimmed, ctx));
 }
 
 function resolveExpression(expr: string, ctx: TemplateContext): unknown {
@@ -44,10 +65,9 @@ function resolveExpression(expr: string, ctx: TemplateContext): unknown {
       return '';
     }
     if (segment.startsWith('[') && segment.endsWith(']')) {
-      // Dynamic key: [varRef] — resolve the inner reference as a variable
       const innerRef = segment.slice(1, -1);
-      const key = String(resolveExpression(innerRef, ctx));
-      current = (current as Record<string, unknown>)[key];
+      const key = parseBracketKey(innerRef, ctx);
+      current = Reflect.get(current as object, key);
     } else {
       current = (current as Record<string, unknown>)[segment];
     }
@@ -149,6 +169,43 @@ function validateOptionalPositiveInteger(value: unknown, label: string): number 
   return value;
 }
 
+function validateSkillRef(value: unknown, label: string): SkillRef {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (isRecord(value) && typeof value.path === 'string') {
+    return { path: value.path };
+  }
+  throw new Error(`YAML route: ${label} must be a string or { path: string }`);
+}
+
+function validateSkillRefs(value: unknown, label: string): SkillRef[] | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`YAML route: ${label} must be an array`);
+  }
+  return value.map((entry, index) => validateSkillRef(entry, `${label}[${index}]`));
+}
+
+function validateRepoMap(value: unknown, label: string): Record<string, string> | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new Error(`YAML route: ${label} must be an object`);
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([alias, repoPath]) => {
+      if (typeof repoPath !== 'string') {
+        throw new Error(`YAML route: ${label}.${alias} must be a string`);
+      }
+      return [alias, repoPath];
+    })
+  );
+}
+
 function assertIncludePathWithinRoot(filePath: string, includeRoot: string, includeRef: string): void {
   const relativePath = relative(includeRoot, filePath);
   if (relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath))) {
@@ -206,8 +263,8 @@ interface YamlVarsSection {
 interface YamlRouteRaw {
   vars?: YamlVarsSection;
   run?: Partial<RecipeRunConfig>;
-  skills?: string[];
-  repos?: Record<string, string>;
+  skills?: unknown;
+  repos?: unknown;
   workflow?: {
     start?: string;
     phases?: Record<string, unknown>;
@@ -277,6 +334,9 @@ function normalizePhases(phases: Record<string, unknown> | undefined): Record<st
       if (normalized.on) {
         normalized.on = normalizePhaseOn(normalized.on);
       }
+      if (Object.prototype.hasOwnProperty.call(normalized, 'skills')) {
+        normalized.skills = validateSkillRefs(normalized.skills, `workflow.phases.${name}.skills`);
+      }
 
       const nextTransition = normalizeTransition(normalized.next);
       if (nextTransition !== undefined) {
@@ -336,11 +396,13 @@ function toRecipeConfig(raw: YamlRouteRaw): RecipeConfig {
     },
   };
 
-  if (raw.skills) {
-    config.skills = raw.skills;
+  const skills = validateSkillRefs(raw.skills, 'skills');
+  if (skills) {
+    config.skills = skills;
   }
-  if (raw.repos) {
-    config.repos = raw.repos;
+  const repos = validateRepoMap(raw.repos, 'repos');
+  if (repos) {
+    config.repos = repos;
   }
   const limit = validateOptionalPositiveInteger(raw.limit, 'limit');
   if (limit != null) {
