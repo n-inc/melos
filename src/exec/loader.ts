@@ -54,8 +54,7 @@ export async function resolveRouteSource(options: {
   }
 
   const dir = mkdtempSync(join(tmpdir(), 'melos-run-route-'));
-  const looksLikeYaml = /^\s*(vars|run|workflow|params)\s*:/m.test(sourceText);
-  const tempPath = join(dir, looksLikeYaml ? 'stdin-route.yaml' : 'stdin-route.ts');
+  const tempPath = join(dir, 'stdin-route.ts');
   writeFileSync(tempPath, sourceText, 'utf-8');
   return {
     path: tempPath,
