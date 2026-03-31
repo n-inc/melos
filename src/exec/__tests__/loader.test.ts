@@ -29,6 +29,34 @@ describe('exec loader', () => {
     resolved.cleanup?.();
   });
 
+  it('loads YAML routes from stdin through the YAML loader path', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-stdin-yaml-'));
+    const resolved = await resolveRouteSource({
+      routePath: '-',
+      cwd,
+      stdinText: `
+run:
+  engine: auto
+
+workflow:
+  start: research
+  phases:
+    research:
+      task: "Research"
+      on:
+        pass: stop
+`,
+    });
+
+    expect(resolved.path.endsWith('.yaml')).toBe(true);
+    await expect(loadRouteModule(resolved.path)).resolves.toMatchObject({
+      workflow: {
+        start: 'research',
+      },
+    });
+    resolved.cleanup?.();
+  });
+
   it('fails when default export is missing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-module-'));
     const routePath = join(cwd, 'route.mjs');

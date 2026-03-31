@@ -4,8 +4,8 @@
  * Parses .route.yaml files into RecipeConfig objects.
  * Supports template variables (${{ }}) and !include tags.
  */
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import yaml from 'js-yaml';
 
 import { compileRecipeConfig } from './compiler.js';
@@ -97,24 +97,102 @@ function resolveTemplates(value: unknown, ctx: TemplateContext): unknown {
 // !include YAML tag
 // ---------------------------------------------------------------------------
 
-function createIncludeType(baseDir: string): yaml.Type {
+const VALID_COMMIT_WHEN_VALUES = new Set(['never', 'stop', 'accepted-iteration']);
+const VALID_RUN_ENGINES = new Set(['auto', 'claude', 'codex']);
+const VALID_RUN_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validateEnumValue<T extends string>(
+  value: unknown,
+  label: string,
+  allowedValues: Set<T>
+): T | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || !allowedValues.has(value as T)) {
+    throw new Error(`YAML route: ${label} must be one of ${Array.from(allowedValues).join(', ')}`);
+  }
+  return value as T;
+}
+
+function validateOptionalString(value: unknown, label: string): string | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`YAML route: ${label} must be a string`);
+  }
+  return value;
+}
+
+function validateOptionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== 'boolean') {
+    throw new Error(`YAML route: ${label} must be a boolean`);
+  }
+  return value;
+}
+
+function validateOptionalPositiveInteger(value: unknown, label: string): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new Error(`YAML route: ${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function assertIncludePathWithinRoot(filePath: string, includeRoot: string, includeRef: string): void {
+  const relativePath = relative(includeRoot, filePath);
+  if (relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath))) {
+    return;
+  }
+  throw new Error(`YAML !include path escapes the route directory: ${includeRef}`);
+}
+
+function formatIncludeChain(includeStack: string[], nextPath: string): string {
+  return [...includeStack, nextPath].join(' -> ');
+}
+
+function resolveIncludedFilePath(baseDir: string, includeRoot: string, includeRef: string): string {
+  if (isAbsolute(includeRef)) {
+    throw new Error(`YAML !include path must be relative to the route directory: ${includeRef}`);
+  }
+
+  const candidatePath = resolve(baseDir, includeRef);
+  const resolvedPath = realpathSync(candidatePath);
+  assertIncludePathWithinRoot(resolvedPath, includeRoot, includeRef);
+  return resolvedPath;
+}
+
+function createIncludeType(baseDir: string, includeRoot: string, includeStack: string[]): yaml.Type {
   return new yaml.Type('!include', {
     kind: 'scalar',
     resolve(data: string) {
       return typeof data === 'string' && data.length > 0;
     },
     construct(data: string) {
-      const filePath = resolve(baseDir, data);
+      const filePath = resolveIncludedFilePath(baseDir, includeRoot, data);
+      if (includeStack.includes(filePath)) {
+        throw new Error(`YAML !include circular reference detected: ${formatIncludeChain(includeStack, filePath)}`);
+      }
       const content = readFileSync(filePath, 'utf-8');
       return yaml.load(content, {
-        schema: createYamlSchema(dirname(filePath)),
+        schema: createYamlSchema(dirname(filePath), includeRoot, [...includeStack, filePath]),
       });
     },
   });
 }
 
-function createYamlSchema(baseDir: string): yaml.Schema {
-  return yaml.DEFAULT_SCHEMA.extend([createIncludeType(baseDir)]);
+function createYamlSchema(baseDir: string, includeRoot: string, includeStack: string[]): yaml.Schema {
+  return yaml.DEFAULT_SCHEMA.extend([createIncludeType(baseDir, includeRoot, includeStack)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -200,9 +278,17 @@ function normalizePhases(phases: Record<string, unknown> | undefined): Record<st
         normalized.on = normalizePhaseOn(normalized.on);
       }
 
-      // Normalize next shorthand
-      if (typeof normalized.next === 'string') {
-        normalized.next = normalizeTransition(normalized.next);
+      const nextTransition = normalizeTransition(normalized.next);
+      if (nextTransition !== undefined) {
+        const on = (normalized.on && typeof normalized.on === 'object')
+          ? { ...(normalized.on as Record<string, unknown>) }
+          : {};
+        if (on.pass !== undefined) {
+          throw new Error(`YAML route: workflow phase "${name}" cannot define both next and on.pass`);
+        }
+        on.pass = nextTransition;
+        normalized.on = on;
+        delete normalized.next;
       }
 
       return [name, normalized];
@@ -210,8 +296,18 @@ function normalizePhases(phases: Record<string, unknown> | undefined): Record<st
   );
 }
 
+function normalizeCommitWhen(value: unknown): 'never' | 'stop' | 'accepted-iteration' | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || !VALID_COMMIT_WHEN_VALUES.has(value)) {
+    throw new Error('YAML route: commit.when must be one of never, stop, accepted-iteration');
+  }
+  return value as 'never' | 'stop' | 'accepted-iteration';
+}
+
 function toRecipeConfig(raw: YamlRouteRaw): RecipeConfig {
-  if (!raw.run) {
+  if (!isRecord(raw.run)) {
     throw new Error('YAML route: run is required');
   }
   if (!raw.workflow?.start) {
@@ -221,13 +317,18 @@ function toRecipeConfig(raw: YamlRouteRaw): RecipeConfig {
     throw new Error('YAML route: workflow.phases is required');
   }
 
+  const engine = validateEnumValue(raw.run.engine, 'run.engine', VALID_RUN_ENGINES) ?? 'auto';
+  const effort = validateEnumValue(raw.run.effort, 'run.effort', VALID_RUN_EFFORTS);
+  const cwd = validateOptionalString(raw.run.cwd, 'run.cwd');
+  const timeoutMs = validateOptionalPositiveInteger(raw.run.timeoutMs, 'run.timeoutMs');
+
   const config: RecipeConfig = {
     run: {
-      engine: (raw.run.engine ?? 'auto') as RecipeRunConfig['engine'],
-      model: raw.run.model,
-      ...(raw.run.effort ? { effort: raw.run.effort } : {}),
-      ...(raw.run.cwd ? { cwd: raw.run.cwd } : {}),
-      ...(raw.run.timeoutMs ? { timeoutMs: raw.run.timeoutMs } : {}),
+      engine: engine as RecipeRunConfig['engine'],
+      model: validateOptionalString(raw.run.model, 'run.model'),
+      ...(effort ? { effort: effort as RecipeRunConfig['effort'] } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(timeoutMs ? { timeoutMs } : {}),
     },
     workflow: {
       start: raw.workflow.start,
@@ -241,16 +342,30 @@ function toRecipeConfig(raw: YamlRouteRaw): RecipeConfig {
   if (raw.repos) {
     config.repos = raw.repos;
   }
-  if (raw.limit != null) {
-    config.limit = raw.limit;
+  const limit = validateOptionalPositiveInteger(raw.limit, 'limit');
+  if (limit != null) {
+    config.limit = limit;
   }
-  if (raw.report) {
-    config.report = raw.report;
+  if (raw.report != null) {
+    if (!isRecord(raw.report)) {
+      throw new Error('YAML route: report must be an object');
+    }
+    config.report = {
+      ...(validateOptionalString(raw.report.path, 'report.path')
+        ? { path: validateOptionalString(raw.report.path, 'report.path') }
+        : {}),
+      ...(validateOptionalBoolean(raw.report.stdout, 'report.stdout') != null
+        ? { stdout: validateOptionalBoolean(raw.report.stdout, 'report.stdout') }
+        : {}),
+    };
   }
-  if (raw.commit) {
+  if (raw.commit != null) {
+    if (!isRecord(raw.commit)) {
+      throw new Error('YAML route: commit must be an object');
+    }
     config.commit = {
-      when: raw.commit.when as 'never' | 'stop' | 'accepted-iteration' | undefined,
-      message: raw.commit.message,
+      when: normalizeCommitWhen(raw.commit.when),
+      message: validateOptionalString(raw.commit.message, 'commit.message'),
     };
   }
 
@@ -263,8 +378,9 @@ function toRecipeConfig(raw: YamlRouteRaw): RecipeConfig {
 
 export function loadYamlRoute(routePath: string): RecipeDefinition {
   const content = readFileSync(routePath, 'utf-8');
-  const baseDir = dirname(routePath);
-  const schema = createYamlSchema(baseDir);
+  const canonicalRoutePath = realpathSync(routePath);
+  const includeRoot = dirname(canonicalRoutePath);
+  const schema = createYamlSchema(includeRoot, includeRoot, [canonicalRoutePath]);
 
   const raw = yaml.load(content, { schema }) as YamlRouteRaw;
   if (!raw || typeof raw !== 'object') {

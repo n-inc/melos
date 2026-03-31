@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -178,6 +178,55 @@ workflow:
     expect(recipe.workflow.phases.x.task).toBe('lang=ja');
   });
 
+  it('rejects !include paths that escape the route directory', () => {
+    const baseDir = createTempDir();
+    const routeDir = join(baseDir, 'route');
+    mkdirSync(routeDir);
+    writeFileSync(join(baseDir, 'secret.yaml'), 'token: leaked\n', 'utf-8');
+
+    const routePath = writeYamlRoute(routeDir, `
+vars:
+  secret: !include ../secret.yaml
+
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "x"
+      on:
+        pass: stop
+`);
+
+    expect(() => loadYamlRoute(routePath)).toThrow(/escapes the route directory/i);
+  });
+
+  it('rejects circular !include references with a descriptive error', () => {
+    const dir = createTempDir();
+    writeFileSync(join(dir, 'a.yaml'), 'value: !include b.yaml\n', 'utf-8');
+    writeFileSync(join(dir, 'b.yaml'), 'value: !include a.yaml\n', 'utf-8');
+
+    const routePath = writeYamlRoute(dir, `
+vars:
+  data: !include a.yaml
+
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "x"
+      on:
+        pass: stop
+`);
+
+    expect(() => loadYamlRoute(routePath)).toThrow(/circular reference detected/i);
+  });
+
   it('supports skills and validate config', () => {
     const dir = createTempDir();
     const routePath = writeYamlRoute(dir, `
@@ -230,6 +279,87 @@ commit:
     expect(recipe.limits?.maxIterations).toBe(30);
     expect(recipe.report?.path).toBe('.melos/report.json');
     expect(recipe.commit?.when).toBe('never');
+  });
+
+  it('rejects invalid commit.when values', () => {
+    const dir = createTempDir();
+    const routePath = writeYamlRoute(dir, `
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "x"
+      on:
+        pass: stop
+
+commit:
+  when: typo
+`);
+
+    expect(() => loadYamlRoute(routePath)).toThrow(/commit\.when must be one of/i);
+  });
+
+  it('rejects invalid run.engine values', () => {
+    const dir = createTempDir();
+    const routePath = writeYamlRoute(dir, `
+run:
+  engine: typo
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "x"
+      on:
+        pass: stop
+`);
+
+    expect(() => loadYamlRoute(routePath)).toThrow(/run\.engine must be one of/i);
+  });
+
+  it('rejects invalid limit values', () => {
+    const dir = createTempDir();
+    const routePath = writeYamlRoute(dir, `
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "x"
+      on:
+        pass: stop
+
+limit: nope
+`);
+
+    expect(() => loadYamlRoute(routePath)).toThrow(/limit must be a positive integer/i);
+  });
+
+  it('translates YAML next shorthand into on.pass before compilation', () => {
+    const dir = createTempDir();
+    const routePath = writeYamlRoute(dir, `
+run:
+  engine: auto
+
+workflow:
+  start: draft
+  phases:
+    draft:
+      task: "draft"
+      next: review
+    review:
+      task: "review"
+      on:
+        pass: stop
+`);
+
+    const recipe = loadYamlRoute(routePath);
+    expect(recipe.workflow.phases.draft.next).toEqual({ goto: 'review' });
   });
 
   it('supports dynamic key access in vars with bracket notation', () => {

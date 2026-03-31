@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { extname, isAbsolute, resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import yaml from 'js-yaml';
+
 import { normalizeRuntimeRecipe, type RecipeDefinition, type RuntimeRecipeInput } from './recipe.js';
 import { loadYamlRoute } from './yaml-loader.js';
 
@@ -12,6 +14,29 @@ export interface ResolvedRouteSource {
   path: string;
   cleanup?: () => void;
   fromStdin: boolean;
+}
+
+function inferStdinRouteExtension(sourceText: string): '.ts' | '.yaml' {
+  const trimmed = sourceText.trimStart();
+  if (
+    trimmed.startsWith('export ')
+    || trimmed.startsWith('import ')
+    || trimmed.startsWith('//')
+    || trimmed.startsWith('/*')
+  ) {
+    return '.ts';
+  }
+
+  try {
+    const parsed = yaml.load(sourceText);
+    if (parsed != null && typeof parsed === 'object') {
+      return '.yaml';
+    }
+  } catch {
+    // Fall back to the TypeScript loader when the input is not valid YAML.
+  }
+
+  return '.ts';
 }
 
 export async function readRouteStdin(input: NodeJS.ReadableStream = process.stdin): Promise<string> {
@@ -54,7 +79,7 @@ export async function resolveRouteSource(options: {
   }
 
   const dir = mkdtempSync(join(tmpdir(), 'melos-run-route-'));
-  const tempPath = join(dir, 'stdin-route.ts');
+  const tempPath = join(dir, `stdin-route${inferStdinRouteExtension(sourceText)}`);
   writeFileSync(tempPath, sourceText, 'utf-8');
   return {
     path: tempPath,
