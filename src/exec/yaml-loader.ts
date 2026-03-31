@@ -35,14 +35,22 @@ function resolveExpression(expr: string, ctx: TemplateContext): unknown {
     return process.env[rest] ?? '';
   }
 
-  // Dot-notation access: entry.slug, entry.lang, etc.
-  const parts = expr.split('.');
+  // Dot-notation + bracket access: entry.slug, entries[slug].lang, etc.
+  // Split on '.' but also handle '[varRef]' segments
+  const segments = expr.match(/[^.[]+|\[[^\]]+\]/g) ?? [];
   let current: unknown = ctx.vars;
-  for (const part of parts) {
+  for (const segment of segments) {
     if (current == null || typeof current !== 'object') {
       return '';
     }
-    current = (current as Record<string, unknown>)[part];
+    if (segment.startsWith('[') && segment.endsWith(']')) {
+      // Dynamic key: [varRef] — resolve the inner reference as a variable
+      const innerRef = segment.slice(1, -1);
+      const key = String(resolveExpression(innerRef, ctx));
+      current = (current as Record<string, unknown>)[key];
+    } else {
+      current = (current as Record<string, unknown>)[segment];
+    }
   }
   return current ?? '';
 }

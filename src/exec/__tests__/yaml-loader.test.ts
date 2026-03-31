@@ -232,6 +232,44 @@ commit:
     expect(recipe.commit?.when).toBe('never');
   });
 
+  it('supports dynamic key access in vars with bracket notation', () => {
+    const dir = createTempDir();
+    process.env.__MELOS_TEST_KEY = 'alpha';
+    writeFileSync(join(dir, 'data.yaml'), `
+alpha:
+  slug: alpha-slug
+  lang: en
+beta:
+  slug: beta-slug
+  lang: ja
+`, 'utf-8');
+
+    const routePath = writeYamlRoute(dir, `
+vars:
+  key: $\{{ env.__MELOS_TEST_KEY }}
+  entries: !include data.yaml
+  entry: $\{{ entries[key] }}
+  slug: $\{{ entry.slug }}
+  lang: $\{{ entry.lang }}
+
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "slug=$\{{ slug }} lang=$\{{ lang }}"
+      on:
+        pass: stop
+`);
+
+    const recipe = loadYamlRoute(routePath);
+    expect(recipe.workflow.phases.x.task).toBe('slug=alpha-slug lang=en');
+
+    delete process.env.__MELOS_TEST_KEY;
+  });
+
   it('rejects YAML with missing required fields', () => {
     const dir = createTempDir();
     const routePath = writeYamlRoute(dir, `
