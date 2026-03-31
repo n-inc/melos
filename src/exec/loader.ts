@@ -4,6 +4,9 @@ import { extname, isAbsolute, resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { normalizeRuntimeRecipe, type RecipeDefinition, type RuntimeRecipeInput } from './recipe.js';
+import { loadYamlRoute } from './yaml-loader.js';
+
+const SUPPORTED_EXTENSIONS = new Set(['.ts', '.yaml', '.yml']);
 
 export interface ResolvedRouteSource {
   path: string;
@@ -25,8 +28,9 @@ export function resolveRoutePath(routePath: string, cwd: string): string {
   }
 
   const absolutePath = isAbsolute(routePath) ? routePath : resolve(cwd, routePath);
-  if (extname(absolutePath) !== '.ts') {
-    throw new Error(`--route は .ts ファイルを指定してください: ${routePath}`);
+  const ext = extname(absolutePath);
+  if (!SUPPORTED_EXTENSIONS.has(ext)) {
+    throw new Error(`--route は .ts / .yaml / .yml ファイルを指定してください: ${routePath}`);
   }
   return absolutePath;
 }
@@ -50,7 +54,8 @@ export async function resolveRouteSource(options: {
   }
 
   const dir = mkdtempSync(join(tmpdir(), 'melos-run-route-'));
-  const tempPath = join(dir, 'stdin-route.ts');
+  const looksLikeYaml = /^\s*(vars|run|workflow|params)\s*:/m.test(sourceText);
+  const tempPath = join(dir, looksLikeYaml ? 'stdin-route.yaml' : 'stdin-route.ts');
   writeFileSync(tempPath, sourceText, 'utf-8');
   return {
     path: tempPath,
@@ -61,7 +66,16 @@ export async function resolveRouteSource(options: {
   };
 }
 
+function isYamlFile(routePath: string): boolean {
+  const ext = extname(routePath);
+  return ext === '.yaml' || ext === '.yml';
+}
+
 export async function loadRouteModule(routePath: string): Promise<RecipeDefinition> {
+  if (isYamlFile(routePath)) {
+    return loadYamlRoute(routePath);
+  }
+
   const fileUrl = pathToFileURL(routePath);
   fileUrl.searchParams.set('t', String(Date.now()));
 

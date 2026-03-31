@@ -13,7 +13,7 @@ describe('exec loader', () => {
 
   it('rejects non-ts route path', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-ext-'));
-    expect(() => resolveRoutePath('route.js', cwd)).toThrow(/\.ts/);
+    expect(() => resolveRoutePath('route.js', cwd)).toThrow(/\.ts.*\.yaml.*\.yml/);
   });
 
   it('writes stdin route to a temporary ts file', async () => {
