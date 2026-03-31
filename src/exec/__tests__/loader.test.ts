@@ -13,7 +13,7 @@ describe('exec loader', () => {
 
   it('rejects non-ts route path', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-ext-'));
-    expect(() => resolveRoutePath('route.js', cwd)).toThrow(/\.ts/);
+    expect(() => resolveRoutePath('route.js', cwd)).toThrow(/\.ts.*\.yaml.*\.yml/);
   });
 
   it('writes stdin route to a temporary ts file', async () => {
@@ -26,6 +26,34 @@ describe('exec loader', () => {
 
     expect(resolved.fromStdin).toBe(true);
     expect(resolved.path.endsWith('.ts')).toBe(true);
+    resolved.cleanup?.();
+  });
+
+  it('loads YAML routes from stdin through the YAML loader path', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-stdin-yaml-'));
+    const resolved = await resolveRouteSource({
+      routePath: '-',
+      cwd,
+      stdinText: `
+run:
+  engine: auto
+
+workflow:
+  start: research
+  phases:
+    research:
+      task: "Research"
+      on:
+        pass: stop
+`,
+    });
+
+    expect(resolved.path.endsWith('.yaml')).toBe(true);
+    await expect(loadRouteModule(resolved.path)).resolves.toMatchObject({
+      workflow: {
+        start: 'research',
+      },
+    });
     resolved.cleanup?.();
   });
 

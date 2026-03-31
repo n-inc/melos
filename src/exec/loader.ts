@@ -3,12 +3,40 @@ import { tmpdir } from 'node:os';
 import { extname, isAbsolute, resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import yaml from 'js-yaml';
+
 import { normalizeRuntimeRecipe, type RecipeDefinition, type RuntimeRecipeInput } from './recipe.js';
+import { loadYamlRoute } from './yaml-loader.js';
+
+const SUPPORTED_EXTENSIONS = new Set(['.ts', '.yaml', '.yml']);
 
 export interface ResolvedRouteSource {
   path: string;
   cleanup?: () => void;
   fromStdin: boolean;
+}
+
+function inferStdinRouteExtension(sourceText: string): '.ts' | '.yaml' {
+  const trimmed = sourceText.trimStart();
+  if (
+    trimmed.startsWith('export ')
+    || trimmed.startsWith('import ')
+    || trimmed.startsWith('//')
+    || trimmed.startsWith('/*')
+  ) {
+    return '.ts';
+  }
+
+  try {
+    const parsed = yaml.load(sourceText);
+    if (parsed != null && typeof parsed === 'object') {
+      return '.yaml';
+    }
+  } catch {
+    // Fall back to the TypeScript loader when the input is not valid YAML.
+  }
+
+  return '.ts';
 }
 
 export async function readRouteStdin(input: NodeJS.ReadableStream = process.stdin): Promise<string> {
@@ -25,8 +53,9 @@ export function resolveRoutePath(routePath: string, cwd: string): string {
   }
 
   const absolutePath = isAbsolute(routePath) ? routePath : resolve(cwd, routePath);
-  if (extname(absolutePath) !== '.ts') {
-    throw new Error(`--route は .ts ファイルを指定してください: ${routePath}`);
+  const ext = extname(absolutePath);
+  if (!SUPPORTED_EXTENSIONS.has(ext)) {
+    throw new Error(`--route は .ts / .yaml / .yml ファイルを指定してください: ${routePath}`);
   }
   return absolutePath;
 }
@@ -50,7 +79,7 @@ export async function resolveRouteSource(options: {
   }
 
   const dir = mkdtempSync(join(tmpdir(), 'melos-run-route-'));
-  const tempPath = join(dir, 'stdin-route.ts');
+  const tempPath = join(dir, `stdin-route${inferStdinRouteExtension(sourceText)}`);
   writeFileSync(tempPath, sourceText, 'utf-8');
   return {
     path: tempPath,
@@ -61,7 +90,16 @@ export async function resolveRouteSource(options: {
   };
 }
 
+function isYamlFile(routePath: string): boolean {
+  const ext = extname(routePath);
+  return ext === '.yaml' || ext === '.yml';
+}
+
 export async function loadRouteModule(routePath: string): Promise<RecipeDefinition> {
+  if (isYamlFile(routePath)) {
+    return loadYamlRoute(routePath);
+  }
+
   const fileUrl = pathToFileURL(routePath);
   fileUrl.searchParams.set('t', String(Date.now()));
 

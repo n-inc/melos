@@ -112,7 +112,7 @@ export class AppServerEngine extends Engine {
     try {
       const {
         cwd = process.cwd(),
-        timeout = 15 * 60 * 1000,
+        timeout = 60 * 60 * 1000,
         model = DEFAULT_MODEL,
         reasoningEffort = DEFAULT_REASONING_EFFORT,
         approvalPolicy = DEFAULT_APPROVAL_POLICY,

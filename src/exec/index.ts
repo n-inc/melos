@@ -20,6 +20,7 @@ export * from './runner.js';
 export * from './simple.js';
 export * from './handoff.js';
 export * from './report.js';
+export * from './yaml-loader.js';
 
 const DEFAULT_EXEC_MODEL = CODEX_LATEST_ALIAS;
 const STALE_RUN_ARTIFACTS = [
