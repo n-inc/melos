@@ -4,12 +4,13 @@ import { join } from 'node:path';
 
 import { skillContextProvider } from '../compiler.js';
 import { compileRecipeConfig } from '../compiler.js';
-import type { RecipeContextBase } from '../recipe.js';
+import type { RecipeContextBase, RecipeRunConfig } from '../recipe.js';
 
-function stubContext(cwd: string): RecipeContextBase {
+function stubContext(cwd: string, runConfig?: RecipeRunConfig): RecipeContextBase {
   return {
     cwd,
     melosDir: join(cwd, '.melos'),
+    runConfig,
     state: {
       iteration: 0,
       phaseExecution: 0,
@@ -29,12 +30,16 @@ function stubContext(cwd: string): RecipeContextBase {
 
 describe('skillContextProvider', () => {
   let tmpDir: string;
+  let originalHome: string | undefined;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), 'melos-skill-test-'));
+    originalHome = process.env.HOME;
+    process.env.HOME = tmpDir;
   });
 
   afterEach(async () => {
+    process.env.HOME = originalHome;
     await rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -49,6 +54,51 @@ describe('skillContextProvider', () => {
     expect(result).toEqual({
       title: 'Skill: my-skill',
       content: '# My Skill\n\nDo the thing.',
+    });
+  });
+
+  it('falls back to Codex global skills for missing local skill names', async () => {
+    const skillDir = join(tmpDir, '.codex/skills/simplify');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, 'SKILL.md'), '---\nname: simplify\n---\n\nCodex global skill.');
+
+    const provider = skillContextProvider('simplify', tmpDir);
+    const result = await provider(stubContext(tmpDir, { engine: 'codex' }));
+
+    expect(result).toEqual({
+      title: 'Skill: simplify',
+      content: 'Codex global skill.',
+    });
+  });
+
+  it('falls back to Claude global skills for missing local skill names', async () => {
+    const skillDir = join(tmpDir, '.claude/skills/human-writing');
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, 'SKILL.md'), '---\nname: human-writing\n---\n\nClaude global skill.');
+
+    const provider = skillContextProvider('human-writing', join(tmpDir, 'workspace'));
+    const result = await provider(stubContext(join(tmpDir, 'workspace'), { engine: 'claude' }));
+
+    expect(result).toEqual({
+      title: 'Skill: human-writing',
+      content: 'Claude global skill.',
+    });
+  });
+
+  it('prefers repo-local skills over Codex global fallbacks', async () => {
+    const localSkillDir = join(tmpDir, '.claude/skills/simplify');
+    const globalSkillDir = join(tmpDir, '.codex/skills/simplify');
+    await mkdir(localSkillDir, { recursive: true });
+    await mkdir(globalSkillDir, { recursive: true });
+    await writeFile(join(localSkillDir, 'SKILL.md'), '---\nname: simplify\n---\n\nLocal skill.');
+    await writeFile(join(globalSkillDir, 'SKILL.md'), '---\nname: simplify\n---\n\nGlobal skill.');
+
+    const provider = skillContextProvider('simplify', tmpDir);
+    const result = await provider(stubContext(tmpDir, { engine: 'codex' }));
+
+    expect(result).toEqual({
+      title: 'Skill: simplify',
+      content: 'Local skill.',
     });
   });
 

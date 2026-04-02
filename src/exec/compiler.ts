@@ -1,6 +1,9 @@
-import { readFile } from 'node:fs/promises';
-import { basename, resolve } from 'node:path';
+import { constants as fsConstants } from 'node:fs';
+import { access, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
 
+import { resolveModelEngine } from '../models/registry.js';
 import { llmEvaluate, metricExtractor, shellChecks } from './evaluators.js';
 import { askDecision, continueDecision, rollbackDecision, stopDecision } from './policies.js';
 import { normalizeObservation } from './recipe.js';
@@ -16,6 +19,7 @@ import type {
   WorkflowValidateConfig,
   WorkflowPhaseConfig,
   WorkflowPhaseDefinition,
+  RecipeContextBase,
 } from './recipe.js';
 
 function normalizeThresholds(thresholds?: ThresholdCondition | ThresholdCondition[]): ThresholdCondition[] {
@@ -228,7 +232,7 @@ export function skillContextProvider(
   cwd: string,
   repos?: Record<string, string>,
 ): ContextProvider {
-  return async () => {
+  return async (ctx) => {
     let skillPath: string;
     let name: string;
 
@@ -255,8 +259,8 @@ export function skillContextProvider(
       skillPath = resolve(cwd, repoPath, '.claude/skills', skillName, 'SKILL.md');
       name = skillName;
     } else if (typeof ref === 'string') {
-      skillPath = resolve(cwd, '.claude/skills', ref, 'SKILL.md');
       name = ref;
+      skillPath = await resolveNamedSkillPath(ref, cwd, ctx);
     } else {
       skillPath = resolve(cwd, ref.path);
       name = basename(ref.path, '.md');
@@ -266,6 +270,54 @@ export function skillContextProvider(
     const body = content.replace(/^---[\s\S]*?---\n*/, '');
     return { title: `Skill: ${name}`, content: body };
   };
+}
+
+function resolveSkillRuntimeEngine(ctx: RecipeContextBase): 'claude' | 'codex' {
+  const engine = ctx.runConfig?.engine;
+  if (engine === 'claude' || engine === 'codex') {
+    return engine;
+  }
+  return resolveModelEngine(ctx.runConfig?.model);
+}
+
+function buildGlobalSkillRoot(engine: 'claude' | 'codex'): string {
+  const home = process.env.HOME ?? homedir();
+  const codexHome = process.env.CODEX_HOME;
+  const claudeHome = process.env.CLAUDE_HOME;
+  return engine === 'codex'
+    ? join(codexHome ?? home, '.codex', 'skills')
+    : join(claudeHome ?? home, '.claude', 'skills');
+}
+
+async function resolveFirstReadablePath(paths: string[]): Promise<string | null> {
+  for (const path of paths) {
+    try {
+      await access(path, fsConstants.R_OK);
+      return path;
+    } catch {
+      // Continue to the next candidate path.
+    }
+  }
+  return null;
+}
+
+async function resolveNamedSkillPath(
+  skillName: string,
+  cwd: string,
+  ctx: RecipeContextBase,
+): Promise<string> {
+  const runtimeEngine = resolveSkillRuntimeEngine(ctx);
+  const candidatePaths = [
+    resolve(cwd, '.claude/skills', skillName, 'SKILL.md'),
+    resolve(buildGlobalSkillRoot(runtimeEngine), skillName, 'SKILL.md'),
+  ];
+  const resolvedPath = await resolveFirstReadablePath(candidatePaths);
+  if (resolvedPath) {
+    return resolvedPath;
+  }
+  throw new Error(
+    `Skill "${skillName}" not found. Checked: ${candidatePaths.join(', ')}`,
+  );
 }
 
 function resolveSkillProviders(
