@@ -108,4 +108,34 @@ describe('cli run command', () => {
       model: undefined,
     }));
   });
+
+  it('registers --fast option on both run and route commands', () => {
+    const program = createProgram();
+    const runCommand = program.commands.find((command) => command.name() === 'run');
+    const routeCommand = program.commands.find((command) => command.name() === 'route');
+    const runOptions = new Set(runCommand?.options.map((option) => option.long));
+    const routeOptions = new Set(routeCommand?.options.map((option) => option.long));
+    expect(runOptions.has('--fast')).toBe(true);
+    expect(routeOptions.has('--fast')).toBe(true);
+  });
+
+  it('maps --fast to run fast', () => {
+    expect(buildRunCommandOptions({
+      route: '/tmp/sample.ts',
+      outputFormat: 'text',
+      fast: true,
+    })).toEqual(expect.objectContaining({
+      route: '/tmp/sample.ts',
+      fast: true,
+    }));
+  });
+
+  it('keeps fast undefined when not provided', () => {
+    expect(buildRunCommandOptions({
+      route: '/tmp/sample.ts',
+      outputFormat: 'text',
+    })).toEqual(expect.objectContaining({
+      fast: undefined,
+    }));
+  });
 });

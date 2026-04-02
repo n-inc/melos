@@ -497,4 +497,71 @@ describe('AppServerEngine', () => {
       args: ['app-server', '--listen', 'stdio://', '--enable', 'js_repl'],
     });
   });
+
+  it('defaults serviceTier to flex in turn/start', async () => {
+    const transport = new MockTransport();
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        return { thread: { id: 'thr_tier' } };
+      }
+      if (method === 'turn/start') {
+        setImmediate(async () => {
+          await transport.emitNotification('turn/completed', {
+            threadId: 'thr_tier',
+            turn: { id: 'turn_tier', status: 'completed', error: null },
+          });
+        });
+        return { turn: { id: 'turn_tier' } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: () => createFakeChildProcess(),
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    await engine.execute('test prompt', { cwd: process.cwd() });
+
+    const turnStartRequest = transport.requests.find((r) => r.method === 'turn/start');
+    expect(turnStartRequest?.params).toMatchObject({ serviceTier: 'flex' });
+  });
+
+  it('passes serviceTier fast when explicitly set', async () => {
+    const transport = new MockTransport();
+    transport.requestHandler = async (method) => {
+      if (method === 'initialize') {
+        return { userAgent: 'codex-app-server-test' };
+      }
+      if (method === 'thread/start') {
+        return { thread: { id: 'thr_fast' } };
+      }
+      if (method === 'turn/start') {
+        setImmediate(async () => {
+          await transport.emitNotification('turn/completed', {
+            threadId: 'thr_fast',
+            turn: { id: 'turn_fast', status: 'completed', error: null },
+          });
+        });
+        return { turn: { id: 'turn_fast' } };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    };
+
+    const engine = new AppServerEngine({
+      spawnProcess: () => createFakeChildProcess(),
+      createTransport: () => transport as unknown as JsonRpcTransport,
+    });
+
+    await engine.execute('test prompt', {
+      cwd: process.cwd(),
+      serviceTier: 'fast',
+    });
+
+    const turnStartRequest = transport.requests.find((r) => r.method === 'turn/start');
+    expect(turnStartRequest?.params).toMatchObject({ serviceTier: 'fast' });
+  });
 });

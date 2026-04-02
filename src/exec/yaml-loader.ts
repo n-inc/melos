@@ -120,6 +120,7 @@ function resolveTemplates(value: unknown, ctx: TemplateContext): unknown {
 const VALID_COMMIT_WHEN_VALUES = new Set(['never', 'stop', 'accepted-iteration']);
 const VALID_RUN_ENGINES = new Set(['auto', 'claude', 'codex']);
 const VALID_RUN_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const VALID_SERVICE_TIERS = new Set(['fast', 'flex']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -379,6 +380,7 @@ function toRecipeConfig(raw: YamlRouteRaw): RecipeConfig {
 
   const engine = validateEnumValue(raw.run.engine, 'run.engine', VALID_RUN_ENGINES) ?? 'auto';
   const effort = validateEnumValue(raw.run.effort, 'run.effort', VALID_RUN_EFFORTS);
+  const serviceTier = validateEnumValue(raw.run.serviceTier, 'run.serviceTier', VALID_SERVICE_TIERS);
   const cwd = validateOptionalString(raw.run.cwd, 'run.cwd');
   const timeoutMs = validateOptionalPositiveInteger(raw.run.timeoutMs, 'run.timeoutMs');
 
@@ -387,6 +389,7 @@ function toRecipeConfig(raw: YamlRouteRaw): RecipeConfig {
       engine: engine as RecipeRunConfig['engine'],
       model: validateOptionalString(raw.run.model, 'run.model'),
       ...(effort ? { effort: effort as RecipeRunConfig['effort'] } : {}),
+      ...(serviceTier ? { serviceTier: serviceTier as RecipeRunConfig['serviceTier'] } : {}),
       ...(cwd ? { cwd } : {}),
       ...(timeoutMs ? { timeoutMs } : {}),
     },

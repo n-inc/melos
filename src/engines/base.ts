@@ -28,6 +28,8 @@ export interface EngineOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Claude thinking budget（1024〜31999、旧モデル向け） */
   thinkingBudget?: number;
+  /** Codex サービスティア（'fast' | 'flex'） */
+  serviceTier?: 'fast' | 'flex';
 }
 
 /**

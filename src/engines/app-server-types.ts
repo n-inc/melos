@@ -139,6 +139,8 @@ export interface TextUserInput {
 /**
  * turn/start params
  */
+export type AppServerServiceTier = 'fast' | 'flex';
+
 export interface TurnStartParams {
   threadId: string;
   input: TextUserInput[];
@@ -146,6 +148,7 @@ export interface TurnStartParams {
   approvalPolicy?: AppServerApprovalPolicy | null;
   model?: string | null;
   effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | null;
+  serviceTier?: AppServerServiceTier | null;
 }
 
 /**

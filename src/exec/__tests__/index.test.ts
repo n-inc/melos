@@ -150,4 +150,34 @@ describe('exec index', () => {
     expect(recipe.run.model).toBe('opus');
     expect(recipe.run.effort).toBe('max');
   });
+
+  it('applies --fast override to set serviceTier to fast', () => {
+    const recipe = createRoute({
+      run: { engine: 'auto', model: 'codex-latest' },
+      workflow: {
+        start: 'task',
+        phases: {
+          task: { task: 'Do something', on: { pass: 'stop' } },
+        },
+      },
+    });
+
+    const overridden = applyRouteRunOverrides(recipe, { fast: true });
+    expect(overridden.run.serviceTier).toBe('fast');
+  });
+
+  it('does not override serviceTier when --fast is not set', () => {
+    const recipe = createRoute({
+      run: { engine: 'auto', model: 'codex-latest', serviceTier: 'flex' },
+      workflow: {
+        start: 'task',
+        phases: {
+          task: { task: 'Do something', on: { pass: 'stop' } },
+        },
+      },
+    });
+
+    const overridden = applyRouteRunOverrides(recipe, {});
+    expect(overridden.run.serviceTier).toBe('flex');
+  });
 });
