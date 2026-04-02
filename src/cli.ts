@@ -10,6 +10,7 @@ export interface RunCommandActionOptions {
   outputFormat?: 'text' | 'json' | 'stream-json';
   startPhase?: string;
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  fast?: boolean;
   ask?: boolean;
   alwaysAsk?: boolean;
 }
@@ -35,6 +36,7 @@ export function createProgram(): Command {
     .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
     .option('--start-phase <phase>', 'route を指定した phase から再開する')
     .option('--effort <level>', '推論 effort (simple prompt mode 用)')
+    .option('--fast', 'Codex を fast tier で実行する（デフォルト: flex）')
     .option('--no-ask', 'ユーザーには質問せず agent 解決のみを試みる')
     .option('--always-ask', 'agent 解決をスキップして必ずユーザーに質問する')
     .action(async (options: RunCommandActionOptions) => {
@@ -53,6 +55,7 @@ export function createProgram(): Command {
     .addOption(new Option('--output-format <format>', '出力形式').choices(['text', 'json', 'stream-json']).default('text'))
     .option('--start-phase <phase>', 'route を指定した phase から再開する')
     .option('--effort <level>', '推論 effort')
+    .option('--fast', 'Codex を fast tier で実行する（デフォルト: flex）')
     .option('--no-ask', 'ユーザーには質問せず agent 解決のみを試みる')
     .option('--always-ask', 'agent 解決をスキップして必ずユーザーに質問する')
     .action(async (path: string, options: SharedRunCommandActionOptions) => {
@@ -73,6 +76,7 @@ export function buildRunCommandOptions(options: RunCommandActionOptions): RunCom
     model: options.model,
     cwd: options.cwd ?? process.cwd(),
     effort: options.effort,
+    fast: options.fast,
     outputFormat: options.outputFormat,
     startPhase: options.startPhase,
     noAsk: options.ask === false,

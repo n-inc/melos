@@ -179,6 +179,7 @@ export interface RecipeRunConfig {
   engine: RuntimeEngine;
   model?: string;
   effort?: EngineOptions['effort'] | EngineOptions['reasoningEffort'];
+  serviceTier?: 'fast' | 'flex';
   cwd?: string;
   timeoutMs?: number;
 }

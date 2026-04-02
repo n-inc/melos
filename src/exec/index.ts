@@ -36,6 +36,7 @@ export interface ExecCommandOptions {
   model?: string;
   cwd?: string;
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  fast?: boolean;
   outputFormat?: ExecOutputFormat;
   startPhase?: string;
   stdin?: NodeJS.ReadableStream;
@@ -47,9 +48,10 @@ export interface ExecCommandOptions {
 
 export function applyRouteRunOverrides(
   recipe: RecipeDefinition,
-  options: Pick<ExecCommandOptions, 'model' | 'effort'>
+  options: Pick<ExecCommandOptions, 'model' | 'effort' | 'fast'>
 ): RecipeDefinition {
-  if (!options.model && !options.effort) {
+  const serviceTier = options.fast ? 'fast' as const : undefined;
+  if (!options.model && !options.effort && !serviceTier) {
     return recipe;
   }
 
@@ -59,6 +61,7 @@ export function applyRouteRunOverrides(
       ...recipe.run,
       ...(options.model ? { model: options.model } : {}),
       ...(options.effort ? { effort: options.effort } : {}),
+      ...(serviceTier ? { serviceTier } : {}),
     },
   };
 }
@@ -255,6 +258,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       recipe = applyRouteRunOverrides(recipe, {
         model: options.model,
         effort: options.effort,
+        fast: options.fast,
       });
       recipe.log ??= log;
       log.emit({
@@ -272,6 +276,7 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
         model: options.model ?? DEFAULT_EXEC_MODEL,
         cwd,
         effort: options.effort,
+        serviceTier: options.fast ? 'fast' : undefined,
       });
       recipe.log = log;
       log.emit({

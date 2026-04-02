@@ -5,6 +5,7 @@ export interface SimpleRouteOptions {
   model?: string;
   cwd?: string;
   effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  serviceTier?: 'fast' | 'flex';
 }
 
 export function createSimpleRoute(options: SimpleRouteOptions): RecipeDefinition {
@@ -14,6 +15,7 @@ export function createSimpleRoute(options: SimpleRouteOptions): RecipeDefinition
       model: options.model,
       cwd: options.cwd,
       effort: options.effort,
+      serviceTier: options.serviceTier,
     },
     workflow: {
       start: 'prompt',

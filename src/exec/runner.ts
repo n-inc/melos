@@ -169,6 +169,9 @@ function buildEngineOptions(input: {
       options.reasoningEffort = input.runConfig.effort as EngineOptions['reasoningEffort'];
     }
   }
+  if (input.runConfig.serviceTier) {
+    options.serviceTier = input.runConfig.serviceTier;
+  }
 
   return options;
 }

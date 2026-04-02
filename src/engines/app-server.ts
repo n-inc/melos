@@ -5,6 +5,7 @@ import {
   AppServerApprovalPolicy,
   AppServerSandboxMode,
   AppServerSandboxPolicyOption,
+  AppServerServiceTier,
   CommandExecutionApprovalResponse,
   CommandExecutionOutputDeltaNotification,
   CommandExecutionRequestApprovalParams,
@@ -27,6 +28,7 @@ import { CODEX_LATEST_ALIAS, resolveRuntimeModel } from '../models/registry.js';
 
 const DEFAULT_MODEL = CODEX_LATEST_ALIAS;
 const DEFAULT_REASONING_EFFORT = 'high';
+const DEFAULT_SERVICE_TIER: AppServerServiceTier = 'flex';
 const DEFAULT_APPROVAL_POLICY: AppServerApprovalPolicy = 'never';
 const DEFAULT_SANDBOX_POLICY: AppServerSandboxPolicyOption = 'dangerFullAccess';
 const SERVER_OVERLOADED_ERROR_CODE = -32001;
@@ -115,6 +117,7 @@ export class AppServerEngine extends Engine {
         timeout = 60 * 60 * 1000,
         model = DEFAULT_MODEL,
         reasoningEffort = DEFAULT_REASONING_EFFORT,
+        serviceTier = DEFAULT_SERVICE_TIER,
         approvalPolicy = DEFAULT_APPROVAL_POLICY,
         sandboxPolicy = DEFAULT_SANDBOX_POLICY,
         enabledFeatures,
@@ -181,6 +184,7 @@ export class AppServerEngine extends Engine {
           approvalPolicy,
           model: runtimeModel,
           effort: reasoningEffort,
+          serviceTier,
         },
         timeout
       );
