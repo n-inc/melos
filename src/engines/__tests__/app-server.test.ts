@@ -498,7 +498,7 @@ describe('AppServerEngine', () => {
     });
   });
 
-  it('defaults serviceTier to flex in turn/start', async () => {
+  it('omits serviceTier from turn/start when not explicitly set', async () => {
     const transport = new MockTransport();
     transport.requestHandler = async (method) => {
       if (method === 'initialize') {
@@ -527,7 +527,7 @@ describe('AppServerEngine', () => {
     await engine.execute('test prompt', { cwd: process.cwd() });
 
     const turnStartRequest = transport.requests.find((r) => r.method === 'turn/start');
-    expect(turnStartRequest?.params).toMatchObject({ serviceTier: 'flex' });
+    expect(turnStartRequest?.params).not.toHaveProperty('serviceTier');
   });
 
   it('passes serviceTier fast when explicitly set', async () => {
