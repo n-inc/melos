@@ -6,9 +6,21 @@ import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 
 import { normalizeRuntimeRecipe, type RecipeDefinition, type RuntimeRecipeInput } from './recipe.js';
+import { prependStdinYamlIncludeRoot } from './stdin-route-metadata.js';
 import { loadYamlRoute } from './yaml-loader.js';
 
 const SUPPORTED_EXTENSIONS = new Set(['.ts', '.yaml', '.yml']);
+const STDIN_ROUTE_INFERENCE_SCHEMA = yaml.DEFAULT_SCHEMA.extend([
+  new yaml.Type('!include', {
+    kind: 'scalar',
+    resolve(data: string) {
+      return typeof data === 'string' && data.length > 0;
+    },
+    construct(data: string) {
+      return data;
+    },
+  }),
+]);
 
 export interface ResolvedRouteSource {
   path: string;
@@ -28,7 +40,7 @@ function inferStdinRouteExtension(sourceText: string): '.ts' | '.yaml' {
   }
 
   try {
-    const parsed = yaml.load(sourceText);
+    const parsed = yaml.load(sourceText, { schema: STDIN_ROUTE_INFERENCE_SCHEMA });
     if (parsed != null && typeof parsed === 'object') {
       return '.yaml';
     }
@@ -79,8 +91,12 @@ export async function resolveRouteSource(options: {
   }
 
   const dir = mkdtempSync(join(tmpdir(), 'melos-run-route-'));
-  const tempPath = join(dir, `stdin-route${inferStdinRouteExtension(sourceText)}`);
-  writeFileSync(tempPath, sourceText, 'utf-8');
+  const extension = inferStdinRouteExtension(sourceText);
+  const tempPath = join(dir, `stdin-route${extension}`);
+  const content = extension === '.yaml'
+    ? prependStdinYamlIncludeRoot(sourceText, options.cwd)
+    : sourceText;
+  writeFileSync(tempPath, content, 'utf-8');
   return {
     path: tempPath,
     fromStdin: true,
@@ -100,7 +116,26 @@ export async function loadRouteModule(routePath: string): Promise<RecipeDefiniti
     return loadYamlRoute(routePath);
   }
 
-  const fileUrl = pathToFileURL(routePath);
+  // Resolve __MELOS_EXEC_MODULE__ placeholder to the actual exec module path.
+  // melos.sh exports MELOS_EXEC_MODULE_PATH for this purpose.
+  let effectivePath = routePath;
+  let tempDir: string | undefined;
+  const source = readFileSync(routePath, 'utf-8');
+  if (source.includes('__MELOS_EXEC_MODULE__')) {
+    const execModulePath = process.env.MELOS_EXEC_MODULE_PATH;
+    if (!execModulePath) {
+      throw new Error(
+        '__MELOS_EXEC_MODULE__ placeholder found in route but MELOS_EXEC_MODULE_PATH is not set. '
+        + 'Run via melos.sh or set the env var manually.',
+      );
+    }
+    const resolved = source.replaceAll('__MELOS_EXEC_MODULE__', execModulePath);
+    tempDir = mkdtempSync(join(tmpdir(), 'melos-route-resolved-'));
+    effectivePath = join(tempDir, `route${extname(routePath)}`);
+    writeFileSync(effectivePath, resolved, 'utf-8');
+  }
+
+  const fileUrl = pathToFileURL(effectivePath);
   fileUrl.searchParams.set('t', String(Date.now()));
 
   let imported: unknown;
@@ -109,6 +144,10 @@ export async function loadRouteModule(routePath: string): Promise<RecipeDefiniti
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`route module の import に失敗しました: ${message}`);
+  } finally {
+    if (tempDir) {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   }
 
   const recipe = (imported as { default?: RecipeDefinition }).default;

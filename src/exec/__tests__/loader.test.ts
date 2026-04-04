@@ -57,6 +57,46 @@ workflow:
     resolved.cleanup?.();
   });
 
+  it('loads YAML !include values from stdin relative to cwd', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-stdin-yaml-include-'));
+    writeFileSync(join(cwd, 'entries.yaml'), `
+gosashu:
+  lang: ja
+`, 'utf-8');
+
+    const resolved = await resolveRouteSource({
+      routePath: '-',
+      cwd,
+      stdinText: `
+vars:
+  entries: !include entries.yaml
+
+run:
+  engine: auto
+
+workflow:
+  start: research
+  phases:
+    research:
+      task: "lang=\${{ entries.gosashu.lang }}"
+      on:
+        pass: stop
+`,
+    });
+
+    expect(resolved.path.endsWith('.yaml')).toBe(true);
+    await expect(loadRouteModule(resolved.path)).resolves.toMatchObject({
+      workflow: {
+        phases: {
+          research: {
+            task: 'lang=ja',
+          },
+        },
+      },
+    });
+    resolved.cleanup?.();
+  });
+
   it('fails when default export is missing', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-module-'));
     const routePath = join(cwd, 'route.mjs');
@@ -80,6 +120,40 @@ workflow:
     `, 'utf-8');
 
     await expect(loadRouteModule(routePath)).rejects.toThrow(/apiVersion|createRoute/);
+  });
+
+  itIfBun('resolves __MELOS_EXEC_MODULE__ placeholder via MELOS_EXEC_MODULE_PATH env var', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-placeholder-'));
+    const routePath = join(cwd, 'route.ts');
+    writeFileSync(routePath, `
+      import { createRoute } from "__MELOS_EXEC_MODULE__";
+      export default createRoute({
+        run: { engine: 'codex' },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: 'placeholder test',
+              on: { pass: 'stop' },
+            },
+          },
+        },
+      });
+    `, 'utf-8');
+
+    const execModulePath = join(process.cwd(), 'src/exec/index.ts');
+    const result = spawnSync('bun', ['-e', `
+      process.env.MELOS_EXEC_MODULE_PATH = ${JSON.stringify(execModulePath)};
+      const { loadRouteModule } = await import(${JSON.stringify(join(process.cwd(), 'src/exec/loader.ts'))});
+      const route = await loadRouteModule(${JSON.stringify(routePath)});
+      process.stdout.write(route.workflow.start + "\\n");
+    `], {
+      encoding: 'utf-8',
+      cwd: process.cwd(),
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('research');
   });
 
   itIfBun('imports a workflow ts route module through Bun-compatible dynamic import', async () => {

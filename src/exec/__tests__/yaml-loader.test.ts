@@ -178,6 +178,28 @@ workflow:
     expect(recipe.workflow.phases.x.task).toBe('lang=ja');
   });
 
+  it('preserves YAML timestamp scalars during template resolution', () => {
+    const dir = createTempDir();
+    const routePath = writeYamlRoute(dir, `
+vars:
+  releaseDate: 2026-03-31
+
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "release=$\{{ releaseDate }}"
+      on:
+        pass: stop
+`);
+
+    const recipe = loadYamlRoute(routePath);
+    expect(recipe.workflow.phases.x.task).toBe('release=2026-03-31T00:00:00.000Z');
+  });
+
   it('rejects !include paths that escape the route directory', () => {
     const baseDir = createTempDir();
     const routeDir = join(baseDir, 'route');
@@ -225,6 +247,29 @@ workflow:
 `);
 
     expect(() => loadYamlRoute(routePath)).toThrow(/circular reference detected/i);
+  });
+
+  it('rejects recursive YAML aliases from included files with a descriptive error', () => {
+    const dir = createTempDir();
+    writeFileSync(join(dir, 'recursive.yaml'), 'node: &node { self: *node }\n', 'utf-8');
+
+    const routePath = writeYamlRoute(dir, `
+vars:
+  data: !include recursive.yaml
+
+run:
+  engine: auto
+
+workflow:
+  start: x
+  phases:
+    x:
+      task: "x"
+      on:
+        pass: stop
+`);
+
+    expect(() => loadYamlRoute(routePath)).toThrow(/recursive YAML aliases/i);
   });
 
   it('supports skills and validate config', () => {

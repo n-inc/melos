@@ -11,6 +11,7 @@ import yaml from 'js-yaml';
 import { compileRecipeConfig } from './compiler.js';
 import { normalizeRuntimeRecipe } from './recipe.js';
 import type { RecipeConfig, RecipeDefinition, RecipeRunConfig, SkillRef } from './recipe.js';
+import { extractStdinYamlIncludeRoot } from './stdin-route-metadata.js';
 
 // ---------------------------------------------------------------------------
 // Template Engine
@@ -20,6 +21,19 @@ const TEMPLATE_RE = /\$\{\{\s*(.+?)\s*\}\}/g;
 
 interface TemplateContext {
   vars: Record<string, unknown>;
+}
+
+interface TemplateResolveState {
+  active: WeakSet<object>;
+  cache: WeakMap<object, unknown>;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function parseBracketKey(innerExpr: string, ctx: TemplateContext): string | number {
@@ -84,15 +98,85 @@ function resolveTemplateString(value: string, ctx: TemplateContext): string {
     if (typeof resolved === 'number' || typeof resolved === 'boolean') {
       return String(resolved);
     }
-    return JSON.stringify(resolved);
+    if (resolved instanceof Date) {
+      return resolved.toISOString();
+    }
+    if (resolved === null || resolved === undefined) {
+      return '';
+    }
+    const jsonValue = typeof resolved === 'object' && 'toJSON' in resolved
+      && typeof resolved.toJSON === 'function'
+      ? resolved.toJSON()
+      : resolved;
+    if (typeof jsonValue === 'string') {
+      return jsonValue;
+    }
+    if (typeof jsonValue === 'number' || typeof jsonValue === 'boolean') {
+      return String(jsonValue);
+    }
+    return JSON.stringify(jsonValue) ?? '';
   });
+}
+
+function resolveTemplateArray(
+  value: unknown[],
+  ctx: TemplateContext,
+  state: TemplateResolveState
+): unknown[] {
+  if (state.active.has(value)) {
+    throw new Error('YAML route: recursive YAML aliases are not supported');
+  }
+  if (state.cache.has(value)) {
+    return state.cache.get(value) as unknown[];
+  }
+
+  const resolved: unknown[] = [];
+  state.cache.set(value, resolved);
+  state.active.add(value);
+  try {
+    for (const item of value) {
+      resolved.push(resolveTemplates(item, ctx, state));
+    }
+    return resolved;
+  } finally {
+    state.active.delete(value);
+  }
+}
+
+function resolveTemplateObject(
+  value: Record<string, unknown>,
+  ctx: TemplateContext,
+  state: TemplateResolveState
+): Record<string, unknown> {
+  if (state.active.has(value)) {
+    throw new Error('YAML route: recursive YAML aliases are not supported');
+  }
+  if (state.cache.has(value)) {
+    return state.cache.get(value) as Record<string, unknown>;
+  }
+
+  const resolved: Record<string, unknown> = {};
+  state.cache.set(value, resolved);
+  state.active.add(value);
+  try {
+    for (const [key, nestedValue] of Object.entries(value)) {
+      resolved[key] = resolveTemplates(nestedValue, ctx, state);
+    }
+    return resolved;
+  } finally {
+    state.active.delete(value);
+  }
 }
 
 /**
  * Recursively walk a parsed YAML value and resolve all ${{ }} templates.
  * Non-string leaves are returned as-is.
  */
-function resolveTemplates(value: unknown, ctx: TemplateContext): unknown {
+function resolveTemplates(
+  value: unknown,
+  ctx: TemplateContext,
+  state: TemplateResolveState = { active: new WeakSet<object>(), cache: new WeakMap<object, unknown>() }
+): unknown {
   if (typeof value === 'string') {
     // Check if the entire string is a single template expression
     // (allows resolving to non-string types)
@@ -103,12 +187,10 @@ function resolveTemplates(value: unknown, ctx: TemplateContext): unknown {
     return resolveTemplateString(value, ctx);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => resolveTemplates(item, ctx));
+    return resolveTemplateArray(value, ctx, state);
   }
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, resolveTemplates(v, ctx)])
-    );
+  if (isPlainObject(value)) {
+    return resolveTemplateObject(value, ctx, state);
   }
   return value;
 }
@@ -442,9 +524,10 @@ function toRecipeConfig(raw: YamlRouteRaw): RecipeConfig {
 // ---------------------------------------------------------------------------
 
 export function loadYamlRoute(routePath: string): RecipeDefinition {
-  const content = readFileSync(routePath, 'utf-8');
+  const rawContent = readFileSync(routePath, 'utf-8');
   const canonicalRoutePath = realpathSync(routePath);
-  const includeRoot = dirname(canonicalRoutePath);
+  const { content, includeRoot: stdinIncludeRoot } = extractStdinYamlIncludeRoot(rawContent);
+  const includeRoot = stdinIncludeRoot ? realpathSync(stdinIncludeRoot) : dirname(canonicalRoutePath);
   const schema = createYamlSchema(includeRoot, includeRoot, [canonicalRoutePath]);
 
   const raw = yaml.load(content, { schema }) as YamlRouteRaw;
