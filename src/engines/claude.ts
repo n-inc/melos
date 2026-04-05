@@ -343,7 +343,7 @@ export class ClaudeEngine extends Engine {
             ? { CLAUDE_CODE_EFFORT_LEVEL: effort }
             : thinkingBudget != null
               ? { MAX_THINKING_TOKENS: String(thinkingBudget) }
-            : { CLAUDE_CODE_EFFORT_LEVEL: 'max' }
+            : { CLAUDE_CODE_EFFORT_LEVEL: 'high' }
           ),
         },
         detached: true,
