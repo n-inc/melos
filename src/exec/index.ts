@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { join, resolve } from 'node:path';
 
@@ -226,10 +226,14 @@ export async function exec(options: ExecCommandOptions): Promise<ExecRunSummary>
       ? createProgressSink(stderr)
       : undefined;
 
+  const runId = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').split('.')[0];
+  const eventsFileName = `events-${runId}.jsonl`;
   const log = eventLog({
     melosDir,
+    fileName: eventsFileName,
     onEvent,
   });
+  writeFileSync(join(melosDir, 'events-latest'), `${eventsFileName}\n`);
   log.emit({
     type: 'run_started',
     iteration: 0,
