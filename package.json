@@ -1,6 +1,6 @@
 {
   "name": "@n-inc/melos",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Route runner for agentic execution loops",
   "license": "MIT",
   "type": "module",
