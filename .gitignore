@@ -5,6 +5,7 @@ dist/
 coverage/
 
 .melos/
+.claude/
 routes/
 
 # Mission runtime artifacts (do not commit)
@@ -13,3 +14,5 @@ PROGRESS.md
 WORK_REPORT.json
 SESSION.json
 .worktrees
+.wt-panes
+.melos-route-*.mjs

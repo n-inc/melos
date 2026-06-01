@@ -105,6 +105,104 @@ workflow:
     await expect(loadRouteModule(routePath)).rejects.toThrow(/default export/);
   });
 
+  it('loads TypeScript route modules under Node by transpiling to ESM', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-ts-node-'));
+    const routePath = join(cwd, 'route.ts');
+    writeFileSync(routePath, `
+      const phaseName: string = 'research';
+
+      export default {
+        apiVersion: 2 as const,
+        run: { engine: 'codex' as const },
+        workflow: {
+          start: phaseName,
+          phases: {
+            research: {
+              task: 'hello from ts',
+              on: { pass: 'stop' },
+            },
+          },
+        },
+        report: {
+          path: '.melos/final-report.json',
+          stdout: true,
+        },
+      };
+    `, 'utf-8');
+
+    const route = await loadRouteModule(routePath);
+
+    expect(route.workflow.start).toBe('research');
+    expect(route.workflow.phases.research.task).toBe('hello from ts');
+  });
+
+  it('loads TypeScript route modules with route-relative imports under Node', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-ts-import-'));
+    writeFileSync(join(cwd, 'package.json'), '{"type":"module"}\n', 'utf-8');
+    writeFileSync(join(cwd, 'helper.js'), `
+      export const routeTask = 'hello from route-relative helper';
+    `, 'utf-8');
+    const routePath = join(cwd, 'route.ts');
+    writeFileSync(routePath, `
+      import { routeTask } from './helper.js';
+
+      export default {
+        apiVersion: 2 as const,
+        run: { engine: 'codex' as const },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task: routeTask,
+              on: { pass: 'stop' },
+            },
+          },
+        },
+        report: {
+          path: '.melos/final-report.json',
+          stdout: true,
+        },
+      };
+    `, 'utf-8');
+
+    const route = await loadRouteModule(routePath);
+
+    expect(route.workflow.phases.research.task).toBe('hello from route-relative helper');
+  });
+
+  it('loads TypeScript route modules that resolve assets through import.meta.url under Node', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'melos-exec-loader-ts-import-meta-'));
+    writeFileSync(join(cwd, 'prompt.md'), 'hello from import.meta.url asset\n', 'utf-8');
+    const routePath = join(cwd, 'route.ts');
+    writeFileSync(routePath, `
+      import { readFileSync } from 'node:fs';
+
+      const task = readFileSync(new URL('./prompt.md', import.meta.url), 'utf-8').trim();
+
+      export default {
+        apiVersion: 2 as const,
+        run: { engine: 'codex' as const },
+        workflow: {
+          start: 'research',
+          phases: {
+            research: {
+              task,
+              on: { pass: 'stop' },
+            },
+          },
+        },
+        report: {
+          path: '.melos/final-report.json',
+          stdout: true,
+        },
+      };
+    `, 'utf-8');
+
+    const route = await loadRouteModule(routePath);
+
+    expect(route.workflow.phases.research.task).toBe('hello from import.meta.url asset');
+  });
+
   const itIfBun = spawnSync('bun', ['--version'], { encoding: 'utf-8' }).status === 0 ? it : it.skip;
 
   it('rejects legacy route modules that export the old runtime shape directly', async () => {

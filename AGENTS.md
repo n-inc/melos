@@ -9,13 +9,8 @@ Melos は route runner です。
 3. 実行結果の source of truth は `.melos/events.jsonl` と `.melos/final-report.json`。
 4. final report は main task の最後の一言ではなく、終了後の report phase が生成する。
 
-## Git Workflow Skills
+## Public Repository Hygiene
 
-Git 運用の詳細は `.claude/skills/` 配下の skill を正とする。
-
-- コミット: `/git-commit`
-- 同期: `/git-sync`
-- PR 作成: `/git-new-pull-request`
-- 一括 ship: `/git-ship`
-- review/CI 修正: `/git-fix-review-ci-on-pull-request`
-- handoff 作成: `/handoff`
+- この repo には project-local agent skills や個人用 agent 設定を置かない。
+- Route examples and docs must work from the published package surface.
+- Runtime artifacts (`.melos/`, handoff files, work reports) must stay out of git.

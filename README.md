@@ -36,14 +36,32 @@ Melos turns that loop into a versioned workflow file.
 
 ## Installation
 
+Melos is currently published to GitHub Packages as `@n-inc/melos`.
+
+Configure npm for the `@n-inc` scope:
+
+```ini
+@n-inc:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_PACKAGES_TOKEN}
+```
+
+`GITHUB_PACKAGES_TOKEN` should be a classic PAT with `read:packages`. Do not
+commit a real token in `.npmrc`. In GitHub Actions, `GITHUB_TOKEN` can be used
+when the workflow has package read permission.
+
+```bash
+npm install --save-dev @n-inc/melos
+```
+
+If install fails with `401`, check the token and `.npmrc` entry. If it fails
+with `404`, check package visibility and that the `@n-inc` scope maps to
+`https://npm.pkg.github.com`.
+
+### Developing Locally
+
 ```bash
 npm install
 npm run build
-```
-
-For local development:
-
-```bash
 npm test
 npm run typecheck
 npm run lint
@@ -54,13 +72,13 @@ npm run lint
 Run a route file:
 
 ```bash
-npx melos route ./path/to/route.ts
+npm exec -- melos route ./path/to/route.ts
 ```
 
 Run a single prompt:
 
 ```bash
-npx melos run --prompt "Summarize this diff"
+npm exec -- melos run --prompt "Summarize this diff"
 ```
 
 Common options:
@@ -75,6 +93,37 @@ Common options:
 - `--start-phase <phase>`
 - `--no-ask`
 - `--always-ask`
+
+## Try It in 60 Seconds
+
+Melos routes can ask an agent runtime to run commands and edit files. The basic
+example asks the runtime to inspect without editing, but start from a clean or
+disposable checkout before running routes that make changes.
+
+From a local checkout:
+
+```bash
+npm install
+npm run build
+node bin/melos.js route examples/basic-route.yaml
+```
+
+From a project that installed `@n-inc/melos`:
+
+```bash
+cp node_modules/@n-inc/melos/examples/basic-route.yaml ./melos-route.yaml
+npm exec -- melos route ./melos-route.yaml
+```
+
+After a route run, inspect:
+
+```bash
+cat .melos/events.jsonl
+cat .melos/final-report.json
+```
+
+See [`examples/final-report.example.json`](examples/final-report.example.json)
+for the final report shape.
 
 ## Route Example
 
@@ -131,9 +180,13 @@ working context, prompts, logs, or review details.
 
 ## Documentation
 
+- [Basic TypeScript route](examples/basic-route.ts)
+- [Basic YAML route](examples/basic-route.yaml)
+- [Codex review route](examples/codex-review-route.ts)
 - [Workflow runtime spec](docs/workflow-runtime-spec.md)
 - [Contributing guide](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
+- [Roadmap](ROADMAP.md)
 
 ## Project Status
 

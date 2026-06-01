@@ -1,9 +1,11 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { extname, isAbsolute, resolve, join } from 'node:path';
+import { basename, dirname, extname, isAbsolute, resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import yaml from 'js-yaml';
+import ts from 'typescript';
 
 import { normalizeRuntimeRecipe, type RecipeDefinition, type RuntimeRecipeInput } from './recipe.js';
 import { prependStdinYamlIncludeRoot } from './stdin-route-metadata.js';
@@ -111,6 +113,50 @@ function isYamlFile(routePath: string): boolean {
   return ext === '.yaml' || ext === '.yml';
 }
 
+function isTypeScriptFile(routePath: string): boolean {
+  return extname(routePath) === '.ts';
+}
+
+function formatTypeScriptDiagnostic(diagnostic: ts.Diagnostic): string {
+  const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
+  if (diagnostic.file && diagnostic.start != null) {
+    const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start);
+    return `${diagnostic.file.fileName}:${position.line + 1}:${position.character + 1} ${message}`;
+  }
+  return message;
+}
+
+function transpileTypeScriptRoute(routePath: string, source: string): ResolvedRouteSource {
+  const result = ts.transpileModule(source, {
+    fileName: routePath,
+    reportDiagnostics: true,
+    compilerOptions: {
+      esModuleInterop: true,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      target: ts.ScriptTarget.ES2022,
+    },
+  });
+
+  const errors = result.diagnostics?.filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error) ?? [];
+  if (errors.length > 0) {
+    throw new Error(`TypeScript route の変換に失敗しました: ${errors.map(formatTypeScriptDiagnostic).join('; ')}`);
+  }
+
+  const hash = createHash('sha256').update(routePath).update('\0').update(source).digest('hex').slice(0, 16);
+  const safeBaseName = basename(routePath, extname(routePath)).replace(/[^A-Za-z0-9._-]/g, '-');
+  const effectivePath = join(dirname(routePath), `.melos-route-${safeBaseName}-${hash}-${randomUUID()}.mjs`);
+  writeFileSync(effectivePath, result.outputText, 'utf-8');
+
+  return {
+    path: effectivePath,
+    fromStdin: false,
+    cleanup: () => {
+      rmSync(effectivePath, { force: true });
+    },
+  };
+}
+
 export async function loadRouteModule(routePath: string): Promise<RecipeDefinition> {
   if (isYamlFile(routePath)) {
     return loadYamlRoute(routePath);
@@ -119,8 +165,8 @@ export async function loadRouteModule(routePath: string): Promise<RecipeDefiniti
   // Resolve __MELOS_EXEC_MODULE__ placeholder to the actual exec module path.
   // melos.sh exports MELOS_EXEC_MODULE_PATH for this purpose.
   let effectivePath = routePath;
-  let tempDir: string | undefined;
-  const source = readFileSync(routePath, 'utf-8');
+  let cleanupEffectivePath: (() => void) | undefined;
+  let source = readFileSync(routePath, 'utf-8');
   if (source.includes('__MELOS_EXEC_MODULE__')) {
     const execModulePath = process.env.MELOS_EXEC_MODULE_PATH;
     if (!execModulePath) {
@@ -129,10 +175,20 @@ export async function loadRouteModule(routePath: string): Promise<RecipeDefiniti
         + 'Run via melos.sh or set the env var manually.',
       );
     }
-    const resolved = source.replaceAll('__MELOS_EXEC_MODULE__', execModulePath);
-    tempDir = mkdtempSync(join(tmpdir(), 'melos-route-resolved-'));
+    source = source.replaceAll('__MELOS_EXEC_MODULE__', execModulePath);
+  }
+
+  if (isTypeScriptFile(routePath)) {
+    const resolved = transpileTypeScriptRoute(routePath, source);
+    effectivePath = resolved.path;
+    cleanupEffectivePath = resolved.cleanup;
+  } else if (source !== readFileSync(routePath, 'utf-8')) {
+    const tempDir = mkdtempSync(join(tmpdir(), 'melos-route-resolved-'));
     effectivePath = join(tempDir, `route${extname(routePath)}`);
-    writeFileSync(effectivePath, resolved, 'utf-8');
+    writeFileSync(effectivePath, source, 'utf-8');
+    cleanupEffectivePath = () => {
+      rmSync(tempDir, { recursive: true, force: true });
+    };
   }
 
   const fileUrl = pathToFileURL(effectivePath);
@@ -145,9 +201,7 @@ export async function loadRouteModule(routePath: string): Promise<RecipeDefiniti
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`route module の import に失敗しました: ${message}`);
   } finally {
-    if (tempDir) {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
+    cleanupEffectivePath?.();
   }
 
   const recipe = (imported as { default?: RecipeDefinition }).default;
