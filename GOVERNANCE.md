@@ -12,6 +12,8 @@ Current maintainer:
 
 - [@kmagai](https://github.com/kmagai)
 
+The maintainer list and release owner are tracked in [MAINTAINERS.md](MAINTAINERS.md).
+
 ## Adding Maintainers
 
 Maintainers may invite regular contributors after they have demonstrated good

@@ -1,0 +1,31 @@
+{
+  "summary": "Updated the route documentation and verified the package build.",
+  "changes": [
+    "Clarified the package install command.",
+    "Added a minimal route example.",
+    "Ran test, typecheck, lint, and package dry-run checks."
+  ],
+  "rationale": [
+    "The route file is the source of truth for validation and retry behavior.",
+    "The final report records what happened after the agent finishes."
+  ],
+  "finalState": "ready for maintainer review",
+  "remainingIssues": [],
+  "userConfirmationNeeded": [],
+  "evidence": {
+    "checks": [
+      {
+        "command": "npm test",
+        "exitCode": 0,
+        "ok": true
+      }
+    ],
+    "pass": [
+      {
+        "criterion": "The change is scoped and maintainable.",
+        "verdict": "yes",
+        "rationale": "The diff only touches documentation and route examples."
+      }
+    ]
+  }
+}
