@@ -1,14 +1,18 @@
-#!/usr/bin/env node
-/**
- * Melos CLI エントリーポイント
- *
- * @module index
- */
+export {
+  run,
+  type ExecRunSummary,
+  type RunOutputFormat,
+  type RunCommandOptions,
+} from './run/index.js';
 
-import { run } from './cli.js';
-
-// CLI を実行
-run().catch((error) => {
-  console.error('予期しないエラー:', error);
-  process.exit(1);
-});
+export * from './exec/recipe.js';
+export * from './exec/loader.js';
+export * from './exec/evaluators.js';
+export * from './exec/policies.js';
+export * from './exec/checkpoint.js';
+export * from './exec/commit.js';
+export * from './exec/runner.js';
+export * from './exec/simple.js';
+export * from './exec/handoff.js';
+export * from './exec/report.js';
+export * from './exec/yaml-loader.js';
