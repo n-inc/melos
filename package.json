@@ -7,21 +7,31 @@
   "bin": {
     "melos": "./bin/melos.js"
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": [
     "bin",
     "dist",
-    "prompts",
-    "src"
+    "docs"
   ],
   "scripts": {
     "melos": "bun src/index.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "prebuild": "npm run clean",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "bootstrap:skills": "node scripts/bootstrap-agent-skills.mjs",
     "hooks:install": "npx --yes lefthook install",
     "setup:agent-workflow": "npm run bootstrap:skills && npm run hooks:install",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "build": "tsc"
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"

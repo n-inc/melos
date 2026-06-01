@@ -1,30 +1,69 @@
-# Melos CLI
+# Melos
 
-Melos は route module または single prompt を実行するための CLI です。
+Melos is a route runner for agentic development workflows. It lets maintainers
+describe a multi-step coding, review, validation, and reporting loop as a small
+route file, then execute that route through a supported agent runtime.
 
-公開実行面は `melos run` と `melos route` です。
+The project is used to make long-running AI coding work auditable: prompts are
+not the source of truth for stopping conditions, route configuration is. Every
+run writes structured events and a final report so maintainers can inspect what
+happened after the agent finishes.
 
-## Setup
+## Why Melos Exists
+
+AI coding agents are good at individual tasks, but real maintenance work usually
+needs a repeatable loop:
+
+- implement a change
+- run shell checks
+- ask an LLM to review behavior or product fit
+- retry when validation fails
+- stop only when route-level criteria pass
+- write a final report that can be reviewed later
+
+Melos turns that loop into a versioned workflow file.
+
+## Features
+
+- Route-based workflow execution with explicit phase transitions
+- Shell, LLM, and metric-based validation
+- Resume support through `--start-phase`
+- YAML and TypeScript route files
+- Structured event log at `.melos/events.jsonl`
+- Final report output at `.melos/final-report.json`
+- Runtime support for Claude Code and OpenAI Codex-style app-server execution
+- Skill injection for agent-specific operating instructions
+
+## Installation
 
 ```bash
 npm install
+npm run build
+```
+
+For local development:
+
+```bash
+npm test
+npm run typecheck
+npm run lint
 ```
 
 ## Usage
 
-route を実行:
+Run a route file:
 
 ```bash
 npx melos route ./path/to/route.ts
 ```
 
-prompt を 1 回だけ実行:
+Run a single prompt:
 
 ```bash
-npx melos run --prompt "この diff を要約して"
+npx melos run --prompt "Summarize this diff"
 ```
 
-主なオプション:
+Common options:
 
 - `route <path>`
 - `--route <path>`
@@ -33,14 +72,15 @@ npx melos run --prompt "この diff を要約して"
 - `--model <model>`
 - `--effort <level>`
 - `--output-format text|json|stream-json`
+- `--start-phase <phase>`
 - `--no-ask`
 - `--always-ask`
 
-`context` は公開 API から削除されました。動的な prompt 文面が必要な場合は `task(ctx)` で組み立ててください。
-
-route phase は単一モデルです。すべての phase は `task` と `on.pass` を持ち、validation が必要な phase だけ `validate` を追加します。
+## Route Example
 
 ```ts
+import { createRoute } from '@n-inc/melos';
+
 export default createRoute({
   run: { engine: 'auto' },
   limit: 12,
@@ -48,27 +88,17 @@ export default createRoute({
     start: 'implement',
     phases: {
       implement: {
-        task: '仕様に沿って実装する',
-        on: { pass: { goto: 'designReview' } },
+        task: 'Implement the requested change.',
+        on: { pass: { goto: 'review' } },
       },
-      designReview: {
-        task: 'デザインレビューを行う',
-        validate: {
-          llm: [
-            'デザイン方針が要件に整合している',
-            'UI/UX の破綻がない',
-          ],
-        },
-        on: {
-          pass: { goto: 'codeReview' },
-          fail: { goto: 'implement' },
-        },
-      },
-      codeReview: {
-        task: 'コードレビューを行う',
+      review: {
+        task: 'Review the change for correctness and maintainability.',
         validate: {
           shell: ['npm test'],
-          llm: ['実装が要件を満たしている'],
+          llm: [
+            'The implementation satisfies the requested behavior.',
+            'The change is scoped and maintainable.',
+          ],
         },
         on: {
           pass: 'stop',
@@ -80,23 +110,37 @@ export default createRoute({
 });
 ```
 
-`validate` は次の 3 系統です。
+`validate` supports three families:
 
-- `validate.shell`: shell command による検証
-- `validate.llm`: LLM criteria による検証
-- `validate.metrics`: metric 抽出と `thresholds` / `plateau` による検証
+- `validate.shell`: shell commands that must pass
+- `validate.llm`: review criteria evaluated by an agent runtime
+- `validate.metrics`: numeric checks with thresholds or plateau detection
 
-`next`, `check`, `pass`, `measure`, `until`, `plateau` の phase 直下指定は公開 route API から削除されました。
-
-`review.path` は既定で `.melos/review-result.json`、`report.path` は既定で `.melos/final-report.json` を使います。保存先を変えたいときだけ指定してください。
-
-`report` 自体も省略できます。省略時でも final report は既定で生成されて保存され、標準出力にも表示されます。標準出力だけ止めたい場合は `report: { stdout: false }` を指定してください。
+Stopping and branching should live in the route file, not in prompt wording.
 
 ## Runtime Artifacts
 
-`cwd/.melos/` 配下に以下を保存します。
+Melos writes run artifacts under `cwd/.melos/`:
 
-- `events.jsonl`
-- `final-report.json`
+- `events.jsonl`: append-only event log for the route run
+- `final-report.json`: structured summary generated after the run
+- `review-result.json`: review output when the route uses review phases
 
-標準 output の truth source は route 実行結果と `.melos/final-report.json` です。
+These files are intentionally ignored by git because they can contain local
+working context, prompts, logs, or review details.
+
+## Documentation
+
+- [Workflow runtime spec](docs/workflow-runtime-spec.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+
+## Project Status
+
+Melos is actively maintained by n-inc as an open-source agent workflow runner.
+The public API is still evolving, but route execution, validation, reporting,
+and resume behavior are covered by tests and used in real maintenance workflows.
+
+## License
+
+MIT

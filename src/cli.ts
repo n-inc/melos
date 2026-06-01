@@ -23,7 +23,7 @@ export function createProgram(): Command {
   program
     .name('melos')
     .description('Melos route runner')
-    .version('0.11.0', '-v, --version', 'バージョンを表示')
+    .version('0.12.0', '-v, --version', 'バージョンを表示')
     .helpOption('-h, --help', 'ヘルプを表示');
 
   program
